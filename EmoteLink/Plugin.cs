@@ -51,6 +51,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly Dictionary<string, PoseTarget> optionPoses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> optionGroupMulti = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> modSyncKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> modCatalogKeys = new(StringComparer.OrdinalIgnoreCase);
     private PoseTarget? cyclingPose;
     private long nextPoseCycleTime;
     private int poseCycleAttempts;
@@ -121,6 +122,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         optionPoses.Clear();
         optionGroupMulti.Clear();
         modSyncKeys.Clear();
+        modCatalogKeys.Clear();
         foreach (var mod in allMods)
         {
             var path = Path.Combine(root, mod.Directory);
@@ -138,6 +140,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
             animationMods.Add(mod);
             modSyncKeys[mod.Directory] = BuildModSyncKey(path, mod.Name);
+            modCatalogKeys[mod.Directory] = CatalogFingerprint(modSyncKeys[mod.Directory]);
             IndexPoseOptions(path, mod.Directory);
             var groups = penumbra.GetOptionGroups(mod.Directory, mod.Name)
                 .Select(group => optionGroupMulti.TryGetValue(OptionGroupKey(mod.Directory, group.Name), out var multi)
@@ -151,10 +154,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Mods = animationMods;
         Status = $"Loaded {Mods.Count} mod(s) containing PAP animations.";
         NormalizeOrganization();
+        if (sync.IsInRoom) _ = sync.SetCatalogAsync(GetCatalogFingerprints());
     }
 
     public IReadOnlyList<ModOptionGroup> GetOptionGroups(string directory) =>
         optionGroups.TryGetValue(directory, out var groups) ? groups : [];
+
+    public (int Matches, int Members) GetModMatch(string directory)
+    {
+        var members = sync.Room?.Members.Count ?? 0;
+        if (!modCatalogKeys.TryGetValue(directory, out var fingerprint) ||
+            !sync.MatchCounts.TryGetValue(fingerprint, out var matches)) return (0, members);
+        return (matches, members);
+    }
 
     public bool IsOptionSelected(string directory, string group, string option) =>
         configuration.ModOptionSelections.TryGetValue(directory, out var groups) &&
@@ -230,13 +242,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public void CreateSyncRoom(string displayName)
     {
         SaveSyncSettings(displayName);
-        RunSync(sync.CreateRoomAsync(configuration.SyncDisplayName), "Created group-play room.");
+        RunSync(sync.CreateRoomAsync(configuration.SyncDisplayName, GetCatalogFingerprints()), "Created group-play room.");
     }
 
     public void JoinSyncRoom(string code, string displayName)
     {
         SaveSyncSettings(displayName);
-        RunSync(sync.JoinRoomAsync(code, configuration.SyncDisplayName), "Joined group-play room.");
+        RunSync(sync.JoinRoomAsync(code, configuration.SyncDisplayName, GetCatalogFingerprints()), "Joined group-play room.");
     }
 
     public void LeaveSyncRoom() => RunSync(sync.LeaveRoomAsync(), "Left group-play room.");
@@ -513,6 +525,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private static string NormalizeModKey(string modName) =>
         string.Join(' ', modName.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+
+    private IReadOnlyList<string> GetCatalogFingerprints() => modCatalogKeys.Values.Distinct().ToList();
+
+    private static string CatalogFingerprint(string modSyncKey) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(modSyncKey)));
 
     private static string BuildModSyncKey(string modPath, string modName)
     {

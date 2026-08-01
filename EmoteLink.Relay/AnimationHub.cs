@@ -44,6 +44,37 @@ public sealed class AnimationHub : Hub
         return state;
     }
 
+    public async Task SetCatalog(IReadOnlyList<string> fingerprints)
+    {
+        var room = GetCurrentRoom();
+        lock (room.Gate)
+        {
+            var member = room.Members[Context.ConnectionId];
+            member.Catalog = fingerprints
+                .Select(CleanFingerprint)
+                .Where(value => value.Length == 64)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(1000)
+                .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        }
+        await Clients.Group(room.Code).SendAsync("CatalogChanged");
+    }
+
+    public Dictionary<string, int> GetMatchCounts(IReadOnlyList<string> fingerprints)
+    {
+        var room = GetCurrentRoom();
+        var requested = fingerprints.Select(CleanFingerprint)
+            .Where(value => value.Length == 64)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(1000)
+            .ToList();
+        lock (room.Gate)
+            return requested.ToDictionary(
+                fingerprint => fingerprint,
+                fingerprint => room.Members.Values.Count(member => member.Catalog.Contains(fingerprint)),
+                StringComparer.OrdinalIgnoreCase);
+    }
+
     public async Task LeaveRoom()
     {
         if (!ConnectionRooms.TryRemove(Context.ConnectionId, out var code)) return;
@@ -62,7 +93,11 @@ public sealed class AnimationHub : Hub
         }
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, code);
         if (removeRoom) Rooms.TryRemove(code, out _);
-        else await Clients.Group(code).SendAsync("RoomStateChanged", Snapshot(room));
+        else
+        {
+            await Clients.Group(code).SendAsync("RoomStateChanged", Snapshot(room));
+            await Clients.Group(code).SendAsync("CatalogChanged");
+        }
     }
 
     public async Task<RoomStateDto> SetReady(string modKey)
@@ -152,6 +187,8 @@ public sealed class AnimationHub : Hub
     private static string CleanCode(string value) => new string(value.Where(char.IsLetterOrDigit).Take(8).ToArray()).ToUpperInvariant();
     private static string CleanName(string value) => string.IsNullOrWhiteSpace(value) ? "Player" : value.Trim()[..Math.Min(40, value.Trim().Length)];
     private static string CleanModKey(string value) => value.Trim()[..Math.Min(160, value.Trim().Length)];
+    private static string CleanFingerprint(string value) =>
+        new(value.Where(Uri.IsHexDigit).Take(64).Select(char.ToUpperInvariant).ToArray());
 
     private sealed class Room(string code)
     {
@@ -167,6 +204,7 @@ public sealed class AnimationHub : Hub
         public bool IsLeader { get; set; } = leader;
         public bool Ready { get; set; }
         public string ModKey { get; set; } = "";
+        public HashSet<string> Catalog { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }
 

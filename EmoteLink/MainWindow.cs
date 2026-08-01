@@ -7,6 +7,8 @@ namespace EmoteLink;
 
 public sealed class MainWindow : Window
 {
+    private static readonly Vector4 EveryoneColor = new(0.35f, 0.9f, 0.45f, 1f);
+    private static readonly Vector4 SomeColor = new(1f, 0.62f, 0.2f, 1f);
     private readonly Plugin plugin;
     private string search = "";
     private string newFolderName = "";
@@ -99,6 +101,11 @@ public sealed class MainWindow : Window
             var marker = member.Ready ? "Ready" : "Waiting";
             ImGui.BulletText($"{member.DisplayName}{(member.IsLeader ? " (host)" : "")} — {marker}");
         }
+        ImGui.TextColored(EveryoneColor, "● Everyone has it");
+        ImGui.SameLine();
+        ImGui.TextColored(SomeColor, "● Some members");
+        ImGui.SameLine();
+        ImGui.TextDisabled("○ No match");
         ImGui.TextDisabled("Choose an animation below to ready up. Playback begins when everyone is ready on the same mod.");
         ImGui.Separator();
     }
@@ -175,9 +182,15 @@ public sealed class MainWindow : Window
         }
         ImGui.SameLine();
         var groups = plugin.GetOptionGroups(mod.Directory);
+        var match = plugin.GetModMatch(mod.Directory);
+        var hasMatchColor = match.Members > 1 && match.Matches > 1;
+        if (hasMatchColor)
+            ImGui.PushStyleColor(ImGuiCol.Text,
+                match.Matches >= match.Members ? EveryoneColor : SomeColor);
         var open = groups.Count > 0
             ? ImGui.TreeNodeEx(mod.Name, ImGuiTreeNodeFlags.SpanAvailWidth)
             : ImGui.Selectable(mod.Name, false, ImGuiSelectableFlags.AllowDoubleClick);
+        if (hasMatchColor) ImGui.PopStyleColor();
 
         if (ImGui.BeginDragDropSource())
         {

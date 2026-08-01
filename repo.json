@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "EmoteLink",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.7.0",
+    "AssemblyVersion": "1.0.8.0",
     "Description": "A plain Penumbra animation launcher with temporary activation, target alignment, and synchronized group play.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -12,9 +12,9 @@
     "Tags": [ "penumbra", "animation", "emote" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.7/EmoteLink-1.0.7.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.7/EmoteLink-1.0.7.zip",
-    "Changelog": "Added separate Ready and Solo actions while in a room. Solo playback starts immediately and cancels any existing synchronized ready state.",
-    "LastUpdate": "1785560000"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.8/EmoteLink-1.0.8.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.8/EmoteLink-1.0.8.zip",
+    "Changelog": "Added private room match highlighting: green when everyone has an animation, orange when some members do, and normal text when there is no match.",
+    "LastUpdate": "1785561000"
   }
 ]

@@ -36,6 +36,8 @@ Click the displayed room code to copy it. While in a room, right-click another p
 
 While connected to a room, animation rows show **Ready** for synchronized playback and **Solo** for immediate local playback. Solo cancels that client's current ready state without removing them from the room.
 
+Room members privately compare opaque animation fingerprints. A mod name is green when everyone in the room has the same animation, orange when only some members match, and unchanged when nobody else matches. Clients receive counts only for their own fingerprints; mod names, paths, options, and other members' catalogs are not returned.
+
 No mod files, character appearance, chat, or arbitrary commands are sent. The fingerprint contains only the normalized mod name and a hash of its redirected PAP game paths.
 
 ## Build

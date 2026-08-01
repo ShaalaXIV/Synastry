@@ -11,6 +11,16 @@ await first.StartAsync();
 await second.StartAsync();
 var room = await first.InvokeAsync<RoomStateDto>("CreateRoom", "Top");
 await second.InvokeAsync<RoomStateDto>("JoinRoom", room.RoomCode, "Bottom");
+var sharedFingerprint = new string('A', 64);
+var firstOnlyFingerprint = new string('B', 64);
+var secondOnlyFingerprint = new string('C', 64);
+await first.InvokeAsync("SetCatalog", new[] { sharedFingerprint, firstOnlyFingerprint });
+await second.InvokeAsync("SetCatalog", new[] { sharedFingerprint, secondOnlyFingerprint });
+var firstMatches = await first.InvokeAsync<Dictionary<string, int>>(
+    "GetMatchCounts", new[] { sharedFingerprint, firstOnlyFingerprint });
+if (firstMatches.Count != 2 || firstMatches[sharedFingerprint] != 2 || firstMatches[firstOnlyFingerprint] != 1 ||
+    firstMatches.ContainsKey(secondOnlyFingerprint))
+    throw new InvalidOperationException("Private catalog match counts were incorrect.");
 const string modKey = "deep plaps:0123456789ABCDEF";
 await first.InvokeAsync<RoomStateDto>("SetReady", modKey);
 await second.InvokeAsync<RoomStateDto>("SetReady", modKey);
