@@ -19,7 +19,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 {
     private const string Command = "/emotelink";
     private const float MaxAlignDistance = 2f;
-    public const string OfficialRelayUrl = "http://74.208.141.184:5080";
+    private const string RelayUrl = "http://74.208.141.184:5080";
 
     [PluginService] private static IDalamudPluginInterface PluginInterface { get; set; } = null!;
     [PluginService] private static ICommandManager Commands { get; set; } = null!;
@@ -208,7 +208,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public void ConnectSync(string displayName)
     {
         SaveSyncSettings(displayName);
-        RunSync(sync.ConnectAsync(OfficialRelayUrl), "Connected to animation relay.");
+        RunSync(sync.ConnectAsync(RelayUrl), "Connected to animation relay.");
     }
 
     public void DisconnectSync() => RunSync(sync.DisconnectAsync(), "Disconnected from animation relay.");

@@ -30,7 +30,7 @@ The plugin intentionally does not remove temporary settings created by other plu
 
 ## Group play
 
-The built-in Linux relay provides Snowcloak-style persistent client/server callbacks, limited to animation synchronization. The client is hardwired to `http://74.208.141.184:5080`; users cannot select an alternate relay. Connect both plugins, create or join a short-code room, then select local options from the same mod. Options may differ between participants. Once at least two room members are ready with the same mod fingerprint, the relay sends every member the same 1.5-second relative countdown. Relative timing prevents differences between players' system clocks from causing multi-second playback skew.
+The built-in Linux relay provides Snowcloak-style persistent client/server callbacks, limited to animation synchronization. The client uses the official EmoteLink relay; users cannot select an alternate relay. Connect both plugins, create or join a short-code room, then select local options from the same mod. Options may differ between participants. Once at least two room members are ready with the same mod fingerprint, the relay sends every member the same 1.5-second relative countdown. Relative timing prevents differences between players' system clocks from causing multi-second playback skew.
 
 No mod files, character appearance, chat, or arbitrary commands are sent. The fingerprint contains only the normalized mod name and a hash of its redirected PAP game paths.
 

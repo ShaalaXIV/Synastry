@@ -55,7 +55,7 @@ public sealed class MainWindow : Window
     private void DrawGroupPlay()
     {
         if (!ImGui.CollapsingHeader("Group Play")) return;
-        ImGui.TextDisabled($"Relay: {Plugin.OfficialRelayUrl}");
+        ImGui.TextDisabled(plugin.Sync.IsConnected ? "Connected" : "Not connected");
         ImGui.SetNextItemWidth(-1);
         ImGui.InputTextWithHint("##syncName", "Display name", ref syncDisplayName, 40);
 
