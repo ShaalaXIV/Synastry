@@ -10,6 +10,7 @@ public sealed record PoseTarget(PoseKind Kind, byte Index);
 
 public sealed unsafe class PoseService
 {
+    public const byte MaxPoseIndex = 6;
     private readonly IObjectTable objects;
 
     public PoseService(IObjectTable objects) => this.objects = objects;
@@ -18,8 +19,10 @@ public sealed unsafe class PoseService
     {
         var state = PlayerState.Instance();
         if (state is null) return;
-        state->SelectedPoses[(int)ToGameType(target.Kind)] = target.Index;
+        state->SelectedPoses[(int)ToGameType(target.Kind)] = ClampIndex(target.Index);
     }
+
+    public static byte ClampIndex(int index) => (byte)Math.Clamp(index, 0, MaxPoseIndex);
 
     public PoseKind? CurrentKind()
     {

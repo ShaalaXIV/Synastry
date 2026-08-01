@@ -225,25 +225,30 @@ public sealed class MainWindow : Window
         if (plugin.HasManualPose(directory, group, option) && ImGui.Button("Use automatic detection"))
             plugin.SetManualPose(directory, group, option, null);
 
-        var index = current?.Index ?? (byte)0;
-        var indexValue = (int)index;
-        ImGui.SetNextItemWidth(100);
-        if (ImGui.InputInt("Pose index", ref indexValue))
-        {
-            indexValue = Math.Clamp(indexValue, 0, byte.MaxValue);
-            plugin.SetManualPose(directory, group, option,
-                new PoseTarget(current?.Kind ?? PoseKind.Idle, (byte)indexValue));
-            current = plugin.GetOptionPose(directory, group, option);
-        }
-
+        var selectedKind = current?.Kind ?? PoseKind.Idle;
+        ImGui.TextDisabled("Pose state");
         foreach (var kind in Enum.GetValues<PoseKind>())
         {
-            if (ImGui.Button(kind.ToString()))
+            if (ImGui.RadioButton(kind.ToString(), selectedKind == kind))
             {
-                plugin.SetManualPose(directory, group, option, new PoseTarget(kind, (byte)indexValue));
-                ImGui.CloseCurrentPopup();
+                selectedKind = kind;
+                plugin.SetManualPose(directory, group, option,
+                    new PoseTarget(selectedKind, current?.Index ?? 0));
+                current = plugin.GetOptionPose(directory, group, option);
             }
             if (kind != PoseKind.Doze) ImGui.SameLine();
+        }
+
+        ImGui.TextDisabled("Pose number");
+        for (var index = 0; index <= PoseService.MaxPoseIndex; index++)
+        {
+            var label = index == 0 ? "Default" : index.ToString();
+            if (ImGui.Button($"{label}##poseIndex{index}"))
+            {
+                plugin.SetManualPose(directory, group, option, new PoseTarget(selectedKind, (byte)index));
+                ImGui.CloseCurrentPopup();
+            }
+            if (index < PoseService.MaxPoseIndex) ImGui.SameLine();
         }
         ImGui.EndPopup();
     }

@@ -251,7 +251,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         var key = OptionPoseKey(directory, group, option);
         if (configuration.ManualPoseAssignments.TryGetValue(key, out var manual))
-            return new PoseTarget(manual.Kind, manual.Index);
+            return new PoseTarget(manual.Kind, PoseService.ClampIndex(manual.Index));
         return optionPoses.TryGetValue(key, out var pose) ? pose : null;
     }
 
@@ -262,7 +262,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         var key = OptionPoseKey(directory, group, option);
         if (pose is null) configuration.ManualPoseAssignments.Remove(key);
-        else configuration.ManualPoseAssignments[key] = new ManualPoseAssignment { Kind = pose.Kind, Index = pose.Index };
+        else configuration.ManualPoseAssignments[key] = new ManualPoseAssignment
+        {
+            Kind = pose.Kind,
+            Index = PoseService.ClampIndex(pose.Index)
+        };
         SaveOrganization();
     }
 
@@ -518,7 +522,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             foreach (var candidate in candidates)
             {
                 var match = Regex.Match(path, candidate.Pattern, RegexOptions.IgnoreCase);
-                if (match.Success && byte.TryParse(match.Groups[1].Value, out var index))
+                if (match.Success && byte.TryParse(match.Groups[1].Value, out var index) &&
+                    index <= PoseService.MaxPoseIndex)
                     return new PoseTarget(candidate.Kind, index);
             }
             if (path.Contains("/resident/idle.pap")) return new PoseTarget(PoseKind.Idle, 0);
@@ -531,7 +536,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
             {
                 var labelIndex = Regex.Match(optionName, @"(\d+)(?!.*\d)");
                 return new PoseTarget(kind.Value,
-                    labelIndex.Success && byte.TryParse(labelIndex.Value, out var index) ? index : (byte)0);
+                    labelIndex.Success && byte.TryParse(labelIndex.Value, out var index)
+                        ? PoseService.ClampIndex(index)
+                        : (byte)0);
             }
         }
         return null;
