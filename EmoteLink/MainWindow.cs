@@ -166,7 +166,13 @@ public sealed class MainWindow : Window
     private void DrawModRow((string Directory, string Name) mod, string? categoryId)
     {
         ImGui.PushID(mod.Directory);
-        if (ImGui.Button("Activate")) plugin.Activate(mod.Directory, mod.Name);
+        if (ImGui.Button(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
+            plugin.Activate(mod.Directory, mod.Name);
+        if (plugin.Sync.IsInRoom)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Solo")) plugin.ActivateSolo(mod.Directory, mod.Name);
+        }
         ImGui.SameLine();
         var groups = plugin.GetOptionGroups(mod.Directory);
         var open = groups.Count > 0
@@ -217,8 +223,14 @@ public sealed class MainWindow : Window
                 if (ImGui.SmallButton($"{poseLabel}##pose")) ImGui.OpenPopup("Pose assignment");
                 DrawPoseAssignmentPopup(mod.Directory, group.Name, option, pose);
                 ImGui.SameLine();
-                if (ImGui.SmallButton("Activate##option"))
+                if (ImGui.SmallButton($"{(plugin.Sync.IsInRoom ? "Ready" : "Activate")}##option"))
                     plugin.ActivateOption(mod.Directory, mod.Name, group.Name, option, group.IsMultiSelect);
+                if (plugin.Sync.IsInRoom)
+                {
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Solo##option"))
+                        plugin.ActivateOptionSolo(mod.Directory, mod.Name, group.Name, option, group.IsMultiSelect);
+                }
                 ImGui.PopID();
             }
             ImGui.PopID();

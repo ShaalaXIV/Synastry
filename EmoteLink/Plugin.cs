@@ -202,6 +202,18 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ActivateInternal(directory, name, GetOptionPose(directory, group, option));
     }
 
+    public void ActivateOptionSolo(
+        string directory,
+        string name,
+        string group,
+        string option,
+        bool multiSelect)
+    {
+        SetOptionSelected(directory, group, option, true, multiSelect);
+        CancelGroupReadinessForSolo();
+        ActivateInternal(directory, name, GetOptionPose(directory, group, option), false);
+    }
+
     public void SaveSyncSettings(string displayName)
     {
         configuration.SyncDisplayName = displayName.Trim();
@@ -234,6 +246,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
         preparedCommand = null;
         preparedPose = null;
         RunSync(sync.CancelReadyAsync(), "Group-play readiness cancelled.");
+    }
+
+    private void CancelGroupReadinessForSolo()
+    {
+        preparedModKey = null;
+        preparedCommand = null;
+        preparedPose = null;
+        if (!sync.IsInRoom) return;
+        _ = sync.CancelReadyAsync().ContinueWith(task =>
+        {
+            if (task.Exception is not null)
+                Log.Warning(task.Exception.GetBaseException(), "Could not cancel readiness before solo playback.");
+        }, TaskScheduler.Default);
     }
 
     public void NotifyRoomCodeCopied(string roomCode)
@@ -410,7 +435,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void Activate(string directory, string name) => ActivateInternal(directory, name, null);
 
-    private void ActivateInternal(string directory, string name, PoseTarget? requestedPose)
+    public void ActivateSolo(string directory, string name)
+    {
+        CancelGroupReadinessForSolo();
+        ActivateInternal(directory, name, null, false);
+    }
+
+    private void ActivateInternal(
+        string directory,
+        string name,
+        PoseTarget? requestedPose,
+        bool allowGroupPlay = true)
     {
         ClearTemporaryAssignmentsInternal(false);
         var collection = penumbra.GetPlayerCollection();
@@ -434,7 +469,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         if (requestedPose is not null)
         {
-            if (PrepareForGroupPlay(directory, name, null, requestedPose)) return;
+            if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, requestedPose)) return;
             SchedulePose(name, requestedPose, 300);
             return;
         }
@@ -447,7 +482,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
 
-        if (PrepareForGroupPlay(directory, name, command, null)) return;
+        if (allowGroupPlay && PrepareForGroupPlay(directory, name, command, null)) return;
         ScheduleCommand(name, command, 300);
     }
 

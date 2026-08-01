@@ -34,6 +34,8 @@ The built-in Linux relay provides Snowcloak-style persistent client/server callb
 
 Click the displayed room code to copy it. While in a room, right-click another player and choose **Invite to EmoteLink** to send them the room code in a tell.
 
+While connected to a room, animation rows show **Ready** for synchronized playback and **Solo** for immediate local playback. Solo cancels that client's current ready state without removing them from the room.
+
 No mod files, character appearance, chat, or arbitrary commands are sent. The fingerprint contains only the normalized mod name and a hash of its redirected PAP game paths.
 
 ## Build
