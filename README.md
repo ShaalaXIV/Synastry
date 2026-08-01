@@ -7,7 +7,7 @@ A deliberately small Dalamud plugin for browsing Penumbra mods, temporarily acti
 Add this URL under **Dalamud Settings → Experimental → Custom Plugin Repositories**:
 
 ```text
-https://raw.githubusercontent.com/ShaalaXIV/EmoteLink/main/repo.json
+https://shaalaxiv.github.io/EmoteLink/repo.json
 ```
 
 Save the settings, open the Plugin Installer, search for **EmoteLink**, and install it.
