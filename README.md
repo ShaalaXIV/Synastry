@@ -32,6 +32,8 @@ The plugin intentionally does not remove temporary settings created by other plu
 
 The built-in Linux relay provides Snowcloak-style persistent client/server callbacks, limited to animation synchronization. The client uses the official EmoteLink relay; users cannot select an alternate relay. Connect both plugins, create or join a short-code room, then select local options from the same mod. Options may differ between participants. Once at least two room members are ready with the same mod fingerprint, the relay sends every member the same 1.5-second relative countdown. Relative timing prevents differences between players' system clocks from causing multi-second playback skew.
 
+Click the displayed room code to copy it. While in a room, right-click another player and choose **Invite to EmoteLink** to send them the room code in a tell.
+
 No mod files, character appearance, chat, or arbitrary commands are sent. The fingerprint contains only the normalized mod name and a hash of its redirected PAP game paths.
 
 ## Build

@@ -1,4 +1,5 @@
 using Dalamud.Game.Command;
+using Dalamud.Game.Gui.ContextMenu;
 using Dalamud.Game.Text;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
@@ -30,6 +31,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] private static IGameInteropProvider Interop { get; set; } = null!;
     [PluginService] private static IDataManager DataManager { get; set; } = null!;
     [PluginService] private static IChatGui Chat { get; set; } = null!;
+    [PluginService] private static IContextMenu ContextMenu { get; set; } = null!;
 
     private readonly Configuration configuration;
     private readonly PenumbraService penumbra;
@@ -85,6 +87,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenMainUi += ToggleWindow;
         PluginInterface.UiBuilder.OpenConfigUi += ToggleWindow;
         Framework.Update += OnUpdate;
+        ContextMenu.OnMenuOpened += OnContextMenuOpened;
         Commands.AddHandler(Command, new CommandInfo((_, _) => ToggleWindow())
         {
             HelpMessage = "Open EmoteLink."
@@ -231,6 +234,49 @@ public sealed unsafe class Plugin : IDalamudPlugin
         preparedCommand = null;
         preparedPose = null;
         RunSync(sync.CancelReadyAsync(), "Group-play readiness cancelled.");
+    }
+
+    public void NotifyRoomCodeCopied(string roomCode)
+    {
+        Status = $"Copied room code {roomCode}.";
+    }
+
+    private void OnContextMenuOpened(IMenuOpenedArgs args)
+    {
+        var roomCode = sync.Room?.RoomCode;
+        if (roomCode is null || args.Target is not MenuTargetDefault target ||
+            string.IsNullOrWhiteSpace(target.TargetName)) return;
+        if (target.TargetContentId == 0 &&
+            target.TargetObject is not Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter) return;
+
+        var targetName = target.TargetName;
+        var worldName = "";
+        try
+        {
+            if (target.TargetHomeWorld.RowId != 0)
+                worldName = DataManager.GetExcelSheet<Lumina.Excel.Sheets.World>()
+                    .GetRow(target.TargetHomeWorld.RowId).Name.ExtractText();
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Could not resolve invite target's home world.");
+        }
+        args.AddMenuItem(new MenuItem
+        {
+            Name = "Invite to EmoteLink",
+            PrefixChar = 'E',
+            OnClicked = _ => SendRoomInvite(targetName, worldName, roomCode)
+        });
+    }
+
+    private void SendRoomInvite(string targetName, string worldName, string roomCode)
+    {
+        var cleanName = Regex.Replace(targetName, @"[^\p{L}'\- ]", "").Trim();
+        var cleanWorld = Regex.Replace(worldName, @"[^\p{L}\d\-]", "");
+        if (cleanName.Length == 0) return;
+        var recipient = cleanWorld.Length == 0 ? cleanName : $"{cleanName}@{cleanWorld}";
+        ExecuteCommand($"/tell {recipient} EmoteLink room code: {roomCode}");
+        Status = $"Invited {cleanName} to room {roomCode}.";
     }
 
     private void RunSync(Task operation, string success)
@@ -794,6 +840,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         ClearTemporaryAssignments();
         Framework.Update -= OnUpdate;
+        ContextMenu.OnMenuOpened -= OnContextMenuOpened;
         PluginInterface.UiBuilder.Draw -= windows.Draw;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleWindow;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleWindow;

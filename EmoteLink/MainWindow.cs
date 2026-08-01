@@ -82,7 +82,14 @@ public sealed class MainWindow : Window
 
         var room = plugin.Sync.Room;
         if (room is null) return;
-        ImGui.TextUnformatted($"Room: {room.RoomCode}");
+        ImGui.TextUnformatted("Room:");
+        ImGui.SameLine();
+        if (ImGui.SmallButton($"{room.RoomCode}##copyRoomCode"))
+        {
+            ImGui.SetClipboardText(room.RoomCode);
+            plugin.NotifyRoomCodeCopied(room.RoomCode);
+        }
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Click to copy room code");
         ImGui.SameLine();
         if (ImGui.SmallButton("Leave")) plugin.LeaveSyncRoom();
         ImGui.SameLine();
