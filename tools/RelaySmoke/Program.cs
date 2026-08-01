@@ -32,6 +32,13 @@ if (plays[0].SequenceId != plays[1].SequenceId ||
     throw new InvalidOperationException("Clients received different play signals.");
 if (plays[0].DelayMilliseconds <= 0)
     throw new InvalidOperationException("Relay did not provide a relative play countdown.");
+await first.StopAsync();
+await second.StopAsync();
+await using var recovered = new HubConnectionBuilder().WithUrl(baseUrl + "/animation").Build();
+await recovered.StartAsync();
+var recoveredRoom = await recovered.InvokeAsync<RoomStateDto>("JoinRoom", room.RoomCode, "Top");
+if (recoveredRoom.Members.Count != 1 || !recoveredRoom.Members[0].IsLeader)
+    throw new InvalidOperationException("An empty room was not retained for reconnect recovery.");
 Console.WriteLine($"PASS room={room.RoomCode} sequence={plays[0].SequenceId} delay={plays[0].DelayMilliseconds}ms");
 
 public sealed record RoomStateDto(string RoomCode, IReadOnlyList<RoomMemberDto> Members);

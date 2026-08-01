@@ -80,6 +80,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
         poses = new PoseService(Objects);
         sync = new AnimationSyncService();
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
+        sync.Diagnostic += (message, exception) =>
+        {
+            if (exception is null) Log.Information("{Message}", message);
+            else Log.Warning(exception, "{Message}", message);
+        };
         mainWindow = new MainWindow(this);
         BuildEmoteLookup();
         windows.AddWindow(mainWindow);

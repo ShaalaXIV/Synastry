@@ -57,15 +57,13 @@ public sealed class MainWindow : Window
     private void DrawGroupPlay()
     {
         if (!ImGui.CollapsingHeader("Group Play")) return;
-        ImGui.TextDisabled(plugin.Sync.IsConnected ? "Connected" : "Not connected");
+        ImGui.TextDisabled($"{(plugin.Sync.IsConnected ? "Connected" : "Not connected")} - {plugin.Sync.Status}");
         ImGui.SetNextItemWidth(-1);
         ImGui.InputTextWithHint("##syncName", "Display name", ref syncDisplayName, 40);
 
         if (!plugin.Sync.IsConnected)
         {
             if (ImGui.Button("Connect")) plugin.ConnectSync(syncDisplayName);
-            ImGui.SameLine();
-            ImGui.TextDisabled(plugin.Sync.Status);
             return;
         }
 

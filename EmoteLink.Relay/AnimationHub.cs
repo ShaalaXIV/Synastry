@@ -7,6 +7,7 @@ namespace EmoteLink.Relay;
 public sealed class AnimationHub : Hub
 {
     private const int PlayDelayMilliseconds = 1500;
+    private static readonly TimeSpan EmptyRoomGracePeriod = TimeSpan.FromSeconds(30);
     private static readonly ConcurrentDictionary<string, Room> Rooms = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, string> ConnectionRooms = new();
     private const int MaxMembers = 16;
@@ -34,7 +35,10 @@ public sealed class AnimationHub : Hub
         lock (room.Gate)
         {
             if (room.Members.Count >= MaxMembers) throw new HubException("Room is full.");
-            room.Members[Context.ConnectionId] = new Member(Context.ConnectionId, CleanName(displayName), false);
+            room.Members[Context.ConnectionId] = new Member(
+                Context.ConnectionId,
+                CleanName(displayName),
+                room.Members.Count == 0);
             ResetReady(room);
         }
         ConnectionRooms[Context.ConnectionId] = code;
@@ -92,11 +96,21 @@ public sealed class AnimationHub : Hub
             }
         }
         await Groups.RemoveFromGroupAsync(Context.ConnectionId, code);
-        if (removeRoom) Rooms.TryRemove(code, out _);
+        if (removeRoom) _ = RemoveEmptyRoomAfterGracePeriodAsync(room);
         else
         {
             await Clients.Group(code).SendAsync("RoomStateChanged", Snapshot(room));
             await Clients.Group(code).SendAsync("CatalogChanged");
+        }
+    }
+
+    private static async Task RemoveEmptyRoomAfterGracePeriodAsync(Room room)
+    {
+        await Task.Delay(EmptyRoomGracePeriod);
+        lock (room.Gate)
+        {
+            if (room.Members.Count != 0) return;
+            Rooms.TryRemove(new KeyValuePair<string, Room>(room.Code, room));
         }
     }
 
