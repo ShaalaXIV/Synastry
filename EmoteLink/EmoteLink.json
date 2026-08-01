@@ -1,0 +1,14 @@
+{
+  "Author": "ShaalaXIV",
+  "Name": "EmoteLink",
+  "InternalName": "EmoteLink",
+  "AssemblyVersion": "1.0.3",
+  "Description": "A plain Penumbra animation launcher with temporary activation, target alignment, and synchronized group play.",
+  "ApplicableVersion": "any",
+  "Tags": [ "penumbra", "animation", "emote" ],
+  "DalamudApiLevel": 15,
+  "LoadRequiredState": 1,
+  "LoadSync": false,
+  "CanUnloadAsync": true,
+  "Punchline": "Pick an emote, link up, and play together."
+}

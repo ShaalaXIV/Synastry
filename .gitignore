@@ -1,0 +1,9 @@
+bin/
+obj/
+.vs/
+dist/
+*.user
+*.pdb
+Encore-reference/
+Snowcloak-reference/
+relay-test.*.log

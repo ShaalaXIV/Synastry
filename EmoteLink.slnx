@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="EmoteLink/EmoteLink.csproj" />
+  <Project Path="EmoteLink.Relay/EmoteLink.Relay.csproj" />
+</Solution>
