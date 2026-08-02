@@ -13,7 +13,6 @@ public sealed class Configuration : IPluginConfiguration
         new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, ManualPoseAssignment> ManualPoseAssignments { get; set; } =
         new(StringComparer.OrdinalIgnoreCase);
-    public string SyncDisplayName { get; set; } = "";
     public Dictionary<string, string> OptionNotes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
 
     public void Save(IDalamudPluginInterface pluginInterface) => pluginInterface.SavePluginConfig(this);

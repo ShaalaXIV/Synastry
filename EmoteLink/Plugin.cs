@@ -4,11 +4,14 @@ using Dalamud.Game.Text;
 using Dalamud.Game.Text.SeStringHandling;
 using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Game.Chat;
+using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using System.Text.Json;
@@ -52,6 +55,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private string? pendingCommand;
     private long pendingCommandTime;
     private PoseTarget? pendingPose;
+    private string? pendingSelectionModKey;
+    private long lobbyEmoteRefreshTime;
     private readonly Dictionary<string, PoseTarget> optionPoses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<PoseTarget>> modPoses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> optionGroupMulti = new(StringComparer.OrdinalIgnoreCase);
@@ -83,7 +88,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public bool IsAligning => movement.IsWalking || alignmentFramesRemaining > 0;
     public string Status { get; private set; } = "Ready.";
     public AnimationSyncService Sync => sync;
-    public string SyncDisplayName => configuration.SyncDisplayName;
+    public string SyncDisplayName => CurrentCharacterName() ?? "Unavailable";
 
     public Plugin()
     {
@@ -114,7 +119,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Commands.AddHandler(Command, new CommandInfo((_, arguments) =>
         {
             var match = Regex.Match(arguments, @"^\s*join\s+([A-Za-z0-9]{4,8})\s*$", RegexOptions.IgnoreCase);
-            if (match.Success) JoinSyncRoom(match.Groups[1].Value, configuration.SyncDisplayName);
+            if (match.Success) JoinSyncRoom(match.Groups[1].Value);
             else ToggleWindow();
         })
         {
@@ -283,29 +288,37 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ActivateInternal(directory, name, GetOptionPose(directory, group, option), false);
     }
 
-    public void SaveSyncSettings(string displayName)
+    public void ConnectSync()
     {
-        configuration.SyncDisplayName = displayName.Trim();
-        SaveOrganization();
-    }
-
-    public void ConnectSync(string displayName)
-    {
-        SaveSyncSettings(displayName);
+        if (!RequireCharacterName(out _)) return;
         RunSync(sync.ConnectAsync(RelayUrl), "Connected to animation relay.");
     }
 
     public void DisconnectSync() => RunSync(sync.DisconnectAsync(), "Disconnected from animation relay.");
-    public void CreateSyncRoom(string displayName)
+    public void CreateSyncRoom()
     {
-        SaveSyncSettings(displayName);
-        RunSync(sync.CreateRoomAsync(configuration.SyncDisplayName, GetCatalogFingerprints()), "Created group-play room.");
+        if (!RequireCharacterName(out var characterName)) return;
+        RunSync(sync.CreateRoomAsync(characterName, GetCatalogFingerprints()), "Created group-play room.");
     }
 
-    public void JoinSyncRoom(string code, string displayName)
+    public void JoinSyncRoom(string code)
     {
-        SaveSyncSettings(displayName);
-        RunSync(sync.JoinRoomAsync(code, configuration.SyncDisplayName, GetCatalogFingerprints()), "Joined group-play room.");
+        if (!RequireCharacterName(out var characterName)) return;
+        RunSync(sync.JoinRoomAsync(code, characterName, GetCatalogFingerprints()), "Joined group-play room.");
+    }
+
+    private static string? CurrentCharacterName()
+    {
+        var name = Objects.LocalPlayer?.Name.TextValue.Trim();
+        return string.IsNullOrWhiteSpace(name) ? null : name;
+    }
+
+    private bool RequireCharacterName(out string characterName)
+    {
+        characterName = CurrentCharacterName() ?? "";
+        if (characterName.Length > 0) return true;
+        Status = "Your character must be logged in before connecting to group play.";
+        return false;
     }
 
     public bool TryTakeTransferOffer(out ModTransferOfferDto offer) => transferOffers.TryDequeue(out offer!);
@@ -464,7 +477,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     mainWindow.IsOpen = true;
                     return;
                 }
-                JoinSyncRoom(code, configuration.SyncDisplayName);
+                JoinSyncRoom(code);
                 mainWindow.IsOpen = true;
             });
             inviteLinks[commandId] = link;
@@ -958,17 +971,31 @@ public sealed unsafe class Plugin : IDalamudPlugin
         UpdateAlignment();
         ProcessCompletedDownloads();
         ProcessSyncPlaySignals();
+        var initializedPendingMod = false;
         if (pendingPose is not null && Environment.TickCount64 >= pendingCommandTime)
         {
             var pose = pendingPose;
             pendingPose = null;
             ExecutePose(pose);
+            initializedPendingMod = true;
         }
         if (pendingCommand is not null && Environment.TickCount64 >= pendingCommandTime)
         {
             var command = pendingCommand;
             pendingCommand = null;
             ExecuteCommand(command);
+            initializedPendingMod = true;
+        }
+        if (initializedPendingMod && pendingSelectionModKey is not null)
+        {
+            ClearRemoteSelections(pendingSelectionModKey);
+            pendingSelectionModKey = null;
+            lobbyEmoteRefreshTime = Environment.TickCount64 + 750;
+        }
+        if (lobbyEmoteRefreshTime > 0 && Environment.TickCount64 >= lobbyEmoteRefreshTime)
+        {
+            lobbyEmoteRefreshTime = 0;
+            RefreshLobbyEmotes();
         }
         UpdatePoseCycling();
         if (!waitingForAnimation) return;
@@ -1074,6 +1101,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingCommandTime = Environment.TickCount64 + delay;
             pendingCommand = preparedCommand;
             pendingPose = preparedPose;
+            pendingSelectionModKey = signal.ModKey;
             Status = $"Group ready. Starting in {delay / 1000f:F1}s.";
             Log.Information(
                 "Group play {SequenceId} received; scheduling {ModKey} in {DelayMilliseconds} ms ({TimingMode}).",
@@ -1085,6 +1113,49 @@ public sealed unsafe class Plugin : IDalamudPlugin
             preparedCommand = null;
             preparedPose = null;
         }
+    }
+
+    private void ClearRemoteSelections(string modKey)
+    {
+        foreach (var pair in remoteOptionSelections.Where(pair =>
+                     pair.Value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase)))
+            remoteOptionSelections.TryRemove(pair.Key, out _);
+    }
+
+    private void RefreshLobbyEmotes()
+    {
+        var room = sync.Room;
+        var localPlayer = Objects.LocalPlayer;
+        if (room is null || localPlayer is null) return;
+
+        var lobbyNames = room.Members.Select(member => member.DisplayName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var refreshed = 0;
+        foreach (var actor in Objects.OfType<IPlayerCharacter>())
+        {
+            // The local player is necessarily a lobby member. Remote actors are included
+            // only when their character name is one of the room's displayed identities.
+            if (actor.Address != localPlayer.Address && !lobbyNames.Contains(actor.Name.TextValue)) continue;
+            if (RefreshActorEmote(actor.Address)) refreshed++;
+        }
+        Log.Debug("Refreshed synchronized emote time for {ActorCount} visible lobby actors.", refreshed);
+    }
+
+    private static bool RefreshActorEmote(nint address)
+    {
+        var character = (Character*)address;
+        if (character is null || character->DrawObject is null ||
+            character->DrawObject->GetObjectType() != ObjectType.CharacterBase) return false;
+        var characterBase = (CharacterBase*)character->DrawObject;
+        if (characterBase->GetModelType() != CharacterBase.ModelType.Human) return false;
+        var skeleton = ((Human*)character->DrawObject)->Skeleton;
+        if (skeleton is null || skeleton->PartialSkeletonCount < 1) return false;
+        var animatedSkeleton = skeleton->PartialSkeletons[0].GetHavokAnimatedSkeleton(0);
+        if (animatedSkeleton is null || animatedSkeleton->AnimationControls.Length < 1) return false;
+        var control = animatedSkeleton->AnimationControls[0].Value;
+        if (control is null) return false;
+        control->hkaAnimationControl.LocalTime = 0f;
+        return true;
     }
 
     private void UpdateMovementCleanup()

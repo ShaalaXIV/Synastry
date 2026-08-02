@@ -13,7 +13,6 @@ public sealed class MainWindow : Window
     private readonly Plugin plugin;
     private string search = "";
     private string newFolderName = "";
-    private string syncDisplayName;
     private string roomCode = "";
     private ModTransferOfferDto? activeTransferOffer;
     private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
@@ -23,7 +22,6 @@ public sealed class MainWindow : Window
     public MainWindow(Plugin plugin) : base("EmoteLink###EmoteLink")
     {
         this.plugin = plugin;
-        syncDisplayName = plugin.SyncDisplayName;
         Size = new Vector2(520, 460);
         SizeCondition = ImGuiCond.FirstUseEver;
     }
@@ -63,23 +61,22 @@ public sealed class MainWindow : Window
         ImGui.Separator();
         ImGui.TextUnformatted("Group Play");
         ImGui.TextDisabled($"{(plugin.Sync.IsConnected ? "Connected" : "Not connected")} - {plugin.Sync.Status}");
-        ImGui.SetNextItemWidth(-1);
-        ImGui.InputTextWithHint("##syncName", "Display name", ref syncDisplayName, 40);
+        ImGui.TextDisabled($"Character: {plugin.SyncDisplayName}");
 
         if (!plugin.Sync.IsConnected)
         {
-            if (ImGui.Button("Connect")) plugin.ConnectSync(syncDisplayName);
+            if (ImGui.Button("Connect")) plugin.ConnectSync();
             return;
         }
 
         if (!plugin.Sync.IsInRoom)
         {
-            if (ImGui.Button("Create room")) plugin.CreateSyncRoom(syncDisplayName);
+            if (ImGui.Button("Create room")) plugin.CreateSyncRoom();
             ImGui.SameLine();
             ImGui.SetNextItemWidth(100);
             ImGui.InputTextWithHint("##room", "Room code", ref roomCode, 8);
             ImGui.SameLine();
-            if (ImGui.Button("Join")) plugin.JoinSyncRoom(roomCode, syncDisplayName);
+            if (ImGui.Button("Join")) plugin.JoinSyncRoom(roomCode);
             ImGui.SameLine();
             if (ImGui.Button("Disconnect")) plugin.DisconnectSync();
             return;

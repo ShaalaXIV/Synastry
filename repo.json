@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "EmoteLink",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.16.0",
+    "AssemblyVersion": "1.0.17.0",
     "Description": "A plain Penumbra animation launcher with temporary activation, target alignment, and synchronized group play.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -12,9 +12,9 @@
     "Tags": [ "penumbra", "animation", "emote" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.16/EmoteLink-1.0.16.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.16/EmoteLink-1.0.16.zip",
-    "Changelog": "Restores Activate/Ready and Solo controls for detected actor roles while keeping configuration options as checkbox-only toggles.",
-    "LastUpdate": "1785702663"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.17/EmoteLink-1.0.17.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.17/EmoteLink-1.0.17.zip",
+    "Changelog": "Uses the logged-in character name for room identity and performs a delayed SimpleHeels-style animation refresh only for visible lobby actors after synchronized modded emotes initialize. Purple selections clear at initialization.",
+    "LastUpdate": "1785704533"
   }
 ]
