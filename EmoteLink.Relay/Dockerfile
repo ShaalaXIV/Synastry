@@ -8,6 +8,6 @@ RUN dotnet publish -c Release -o /out --no-restore
 FROM mcr.microsoft.com/dotnet/aspnet:10.0
 WORKDIR /app
 COPY --from=build /out .
-ENV ASPNETCORE_URLS=http://0.0.0.0:5080
-EXPOSE 5080
+ENV ASPNETCORE_URLS=http://0.0.0.0:25080
+EXPOSE 25080
 ENTRYPOINT ["dotnet", "EmoteLink.Relay.dll"]

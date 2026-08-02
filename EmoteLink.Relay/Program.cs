@@ -3,6 +3,8 @@ using Microsoft.AspNetCore.SignalR;
 using System.Security.Cryptography;
 
 var builder = WebApplication.CreateBuilder(args);
+if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS")))
+    builder.WebHost.UseUrls("http://0.0.0.0:25080");
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = TransferStore.MaximumBytes);
 builder.Services.AddSingleton<TransferStore>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<TransferStore>());

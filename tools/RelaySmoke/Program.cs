@@ -1,6 +1,6 @@
 using Microsoft.AspNetCore.SignalR.Client;
 
-var baseUrl = args.Length > 0 ? args[0].TrimEnd('/') : "http://127.0.0.1:5080";
+var baseUrl = args.Length > 0 ? args[0].TrimEnd('/') : "http://127.0.0.1:25080";
 await using var first = new HubConnectionBuilder().WithUrl(baseUrl + "/animation").Build();
 await using var second = new HubConnectionBuilder().WithUrl(baseUrl + "/animation").Build();
 var firstPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
