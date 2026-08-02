@@ -27,6 +27,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 {
     private const string Command = "/emotelink";
     private const float MaxAlignDistance = 2f;
+    private const int LobbyEmoteRefreshDelayMs = 5000;
     private const string RelayUrl = "https://emotelink.aethercast.org";
 
     [PluginService] private static IDalamudPluginInterface PluginInterface { get; set; } = null!;
@@ -990,7 +991,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             ClearRemoteSelections(pendingSelectionModKey);
             pendingSelectionModKey = null;
-            lobbyEmoteRefreshTime = Environment.TickCount64 + 750;
+            lobbyEmoteRefreshTime = Environment.TickCount64 + LobbyEmoteRefreshDelayMs;
         }
         if (lobbyEmoteRefreshTime > 0 && Environment.TickCount64 >= lobbyEmoteRefreshTime)
         {
@@ -1146,6 +1147,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var character = (Character*)address;
         if (character is null || character->DrawObject is null ||
             character->DrawObject->GetObjectType() != ObjectType.CharacterBase) return false;
+        if (character->Mode is not (CharacterModes.EmoteLoop or CharacterModes.InPositionLoop)) return false;
         var characterBase = (CharacterBase*)character->DrawObject;
         if (characterBase->GetModelType() != CharacterBase.ModelType.Human) return false;
         var skeleton = ((Human*)character->DrawObject)->Skeleton;
