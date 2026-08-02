@@ -1,6 +1,9 @@
 using Dalamud.Game.Command;
 using Dalamud.Game.Gui.ContextMenu;
 using Dalamud.Game.Text;
+using Dalamud.Game.Text.SeStringHandling;
+using Dalamud.Game.Text.SeStringHandling.Payloads;
+using Dalamud.Game.Chat;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
@@ -13,6 +16,7 @@ using System.Text.RegularExpressions;
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
+using System.IO.Compression;
 
 namespace EmoteLink;
 
@@ -20,7 +24,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 {
     private const string Command = "/emotelink";
     private const float MaxAlignDistance = 2f;
-    private const string RelayUrl = "http://74.208.141.184:5080";
+    private const string RelayUrl = "https://emotelink.aethercast.org";
 
     [PluginService] private static IDalamudPluginInterface PluginInterface { get; set; } = null!;
     [PluginService] private static ICommandManager Commands { get; set; } = null!;
@@ -64,11 +68,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private string? preparedModKey;
     private string? preparedCommand;
     private PoseTarget? preparedPose;
+    private nint alignmentTargetAddress;
+    private int alignmentFramesRemaining;
+    private int alignmentStableFrames;
+    private readonly ConcurrentQueue<ModTransferOfferDto> transferOffers = new();
+    private readonly ConcurrentQueue<(ModTransferOfferDto Offer, string Path, Exception? Error)> completedDownloads = new();
+    private readonly ConcurrentDictionary<string, OptionSelectionDto> remoteOptionSelections = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<uint, DalamudLinkPayload> inviteLinks = [];
+    private string? remoteSelectionRoom;
 
     public IReadOnlyList<(string Directory, string Name)> Mods { get; private set; } = [];
     public IReadOnlyList<ModCategory> Categories => configuration.Categories;
     public bool PenumbraAvailable => penumbra.IsAvailable;
-    public bool IsAligning => movement.IsWalking;
+    public bool IsAligning => movement.IsWalking || alignmentFramesRemaining > 0;
     public string Status { get; private set; } = "Ready.";
     public AnimationSyncService Sync => sync;
     public string SyncDisplayName => configuration.SyncDisplayName;
@@ -81,6 +93,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         poses = new PoseService(Objects);
         sync = new AnimationSyncService();
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
+        sync.ModTransferOffered += offer => transferOffers.Enqueue(offer);
+        sync.OptionSelectionChanged += RememberOptionSelection;
+        sync.StateChanged += OnSyncStateChanged;
         sync.Diagnostic += (message, exception) =>
         {
             if (exception is null) Log.Information("{Message}", message);
@@ -95,9 +110,15 @@ public sealed unsafe class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi += ToggleWindow;
         Framework.Update += OnUpdate;
         ContextMenu.OnMenuOpened += OnContextMenuOpened;
-        Commands.AddHandler(Command, new CommandInfo((_, _) => ToggleWindow())
+        Chat.ChatMessage += OnChatMessage;
+        Commands.AddHandler(Command, new CommandInfo((_, arguments) =>
         {
-            HelpMessage = "Open EmoteLink."
+            var match = Regex.Match(arguments, @"^\s*join\s+([A-Za-z0-9]{4,8})\s*$", RegexOptions.IgnoreCase);
+            if (match.Success) JoinSyncRoom(match.Groups[1].Value, configuration.SyncDisplayName);
+            else ToggleWindow();
+        })
+        {
+            HelpMessage = "Open EmoteLink, or join with /emotelink join ROOMCODE."
         });
 
         // Recover from an unload/crash that left our tracked overrides behind.
@@ -202,6 +223,28 @@ public sealed unsafe class Plugin : IDalamudPlugin
             selections.RemoveAll(item => item.Equals(option, StringComparison.OrdinalIgnoreCase));
         }
         SaveOrganization();
+        if (selected && sync.IsInRoom && modSyncKeys.TryGetValue(directory, out var modKey))
+            RunSync(sync.SetOptionSelectionAsync(modKey, group, option), $"Selected {option} for the room.");
+    }
+
+    public string? GetRemoteOptionSelector(string directory, string group, string option)
+    {
+        if (!modSyncKeys.TryGetValue(directory, out var modKey)) return null;
+        return remoteOptionSelections.Values.FirstOrDefault(value =>
+            value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase) &&
+            value.Group.Equals(group, StringComparison.OrdinalIgnoreCase) &&
+            value.Option.Equals(option, StringComparison.OrdinalIgnoreCase))?.MemberName;
+    }
+
+    public string GetOptionNote(string directory, string group, string option) =>
+        configuration.OptionNotes.TryGetValue(OptionNoteKey(directory, group, option), out var note) ? note : "";
+
+    public void SaveOptionNote(string directory, string group, string option, string note)
+    {
+        var key = OptionNoteKey(directory, group, option);
+        if (string.IsNullOrWhiteSpace(note)) configuration.OptionNotes.Remove(key);
+        else configuration.OptionNotes[key] = note.Trim();
+        configuration.Save(PluginInterface);
     }
 
     public void ApplyOption(string directory, string name, string group, string option, bool selected)
@@ -256,6 +299,75 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         SaveSyncSettings(displayName);
         RunSync(sync.JoinRoomAsync(code, configuration.SyncDisplayName, GetCatalogFingerprints()), "Joined group-play room.");
+    }
+
+    public bool TryTakeTransferOffer(out ModTransferOfferDto offer) => transferOffers.TryDequeue(out offer!);
+
+    public void SendMod(string directory, string name)
+    {
+        if (!sync.IsInRoom)
+        {
+            Status = "Join a room before sending a mod.";
+            return;
+        }
+        var root = penumbra.GetModRoot();
+        var source = root is null ? null : Path.Combine(root, directory);
+        if (source is null || !Directory.Exists(source))
+        {
+            Status = $"Could not find {name} on disk.";
+            return;
+        }
+
+        Status = $"Packaging {name} for the room...";
+        _ = Task.Run(() =>
+        {
+            var package = Path.Combine(Path.GetTempPath(), $"EmoteLink-{Guid.NewGuid():N}.pmp");
+            try
+            {
+                ZipFile.CreateFromDirectory(source, package, CompressionLevel.Optimal, false);
+                var size = new FileInfo(package).Length;
+                if (size > 75L * 1024 * 1024)
+                    throw new InvalidDataException($"The packaged mod is {size / 1024f / 1024f:F1} MB; the limit is 75 MB.");
+                using var packageInput = File.OpenRead(package);
+                var hash = Convert.ToHexString(SHA256.HashData(packageInput));
+                Status = $"Uploading {name} ({size / 1024f / 1024f:F1} MB)...";
+                sync.SendModAsync(name, package, size, hash).GetAwaiter().GetResult();
+                Status = $"Sent {name} to the room.";
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not send animation mod {ModName}.", name);
+                Status = $"Could not send {name}: {ex.GetBaseException().Message}";
+            }
+            finally
+            {
+                try { File.Delete(package); } catch { }
+            }
+        });
+    }
+
+    public void AcceptModTransfer(ModTransferOfferDto offer)
+    {
+        Status = $"Downloading {offer.ModName} from {offer.SenderName}...";
+        _ = Task.Run(() =>
+        {
+            var path = Path.Combine(Path.GetTempPath(), $"EmoteLink-{Guid.NewGuid():N}.pmp");
+            try
+            {
+                sync.DownloadModAsync(offer, path).GetAwaiter().GetResult();
+                completedDownloads.Enqueue((offer, path, null));
+            }
+            catch (Exception ex)
+            {
+                try { File.Delete(path); } catch { }
+                completedDownloads.Enqueue((offer, path, ex));
+            }
+        });
+    }
+
+    public void DeclineModTransfer(ModTransferOfferDto offer)
+    {
+        RunSync(sync.DeclineModTransferAsync(offer.TransferId), $"Declined {offer.ModName} from {offer.SenderName}.");
     }
 
     public void LeaveSyncRoom() => RunSync(sync.LeaveRoomAsync(), "Left group-play room.");
@@ -321,6 +433,35 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var recipient = cleanWorld.Length == 0 ? cleanName : $"{cleanName}@{cleanWorld}";
         ExecuteCommand($"/tell {recipient} EmoteLink room code: {roomCode}");
         Status = $"Invited {cleanName} to room {roomCode}.";
+    }
+
+    private void OnChatMessage(IHandleableChatMessage chatMessage)
+    {
+        var match = Regex.Match(chatMessage.Message.TextValue, @"^EmoteLink room code:\s*([A-Za-z0-9]{4,8})\s*$", RegexOptions.IgnoreCase);
+        if (!match.Success) return;
+        var code = match.Groups[1].Value.ToUpperInvariant();
+        var commandId = 0xE1000000u | (uint)(code.GetHashCode(StringComparison.OrdinalIgnoreCase) & 0x00FFFFFF);
+        if (!inviteLinks.TryGetValue(commandId, out var link))
+        {
+            link = Chat.AddChatLinkHandler(commandId, (_, _) =>
+            {
+                if (!sync.IsConnected)
+                {
+                    Status = $"Connect to Group Play, then click the room invite again to join {code}.";
+                    mainWindow.IsOpen = true;
+                    return;
+                }
+                JoinSyncRoom(code, configuration.SyncDisplayName);
+                mainWindow.IsOpen = true;
+            });
+            inviteLinks[commandId] = link;
+        }
+        chatMessage.Message = new SeStringBuilder()
+            .AddText("EmoteLink invitation: ")
+            .Add(link)
+            .AddText($"Join room {code}")
+            .Add(RawPayload.LinkTerminator)
+            .Build();
     }
 
     private void RunSync(Task operation, string success)
@@ -773,7 +914,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void ToggleAlignment()
     {
-        if (movement.IsWalking) { movement.Cancel(); return; }
+        if (IsAligning)
+        {
+            movement.Cancel();
+            alignmentFramesRemaining = 0;
+            alignmentStableFrames = 0;
+            Status = "Alignment cancelled.";
+            return;
+        }
         var target = Targets.Target ?? Targets.SoftTarget;
         var player = (Character*)(Objects.LocalPlayer?.Address ?? 0);
         if (target is null || player is null || player->Mode != CharacterModes.Normal) return;
@@ -781,15 +929,21 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         var position = target.Position;
         var rotation = target.Rotation;
+        var targetAddress = target.Address;
+        Status = "Aligning position and facing direction...";
         movement.WalkTo(position, () =>
         {
-            player->GameObject.SetPosition(position.X, position.Y, position.Z);
-            player->GameObject.SetRotation(rotation);
+            alignmentTargetAddress = targetAddress;
+            alignmentFramesRemaining = 12;
+            alignmentStableFrames = 0;
+            ApplyAlignment(position, rotation);
         });
     }
 
     private void OnUpdate(IFramework _)
     {
+        UpdateAlignment();
+        ProcessCompletedDownloads();
         ProcessSyncPlaySignals();
         if (pendingPose is not null && Environment.TickCount64 >= pendingCommandTime)
         {
@@ -806,6 +960,87 @@ public sealed unsafe class Plugin : IDalamudPlugin
         UpdatePoseCycling();
         if (!waitingForAnimation) return;
         UpdateMovementCleanup();
+    }
+
+    private void ProcessCompletedDownloads()
+    {
+        while (completedDownloads.TryDequeue(out var result))
+        {
+            if (result.Error is not null)
+            {
+                Status = $"Could not download {result.Offer.ModName}: {result.Error.GetBaseException().Message}";
+                Log.Warning(result.Error, "Transferred mod download failed.");
+                continue;
+            }
+            if (!penumbra.InstallMod(result.Path))
+            {
+                Status = $"Downloaded {result.Offer.ModName}, but Penumbra rejected the install request.";
+                continue;
+            }
+            RunSync(sync.CompleteModTransferAsync(result.Offer.TransferId),
+                $"Downloaded {result.Offer.ModName}; Penumbra is installing it.");
+        }
+    }
+
+    private void RememberOptionSelection(OptionSelectionDto selection) =>
+        remoteOptionSelections[selection.MemberName + "\n" + selection.ModKey + "\n" + selection.Group] = selection;
+
+    private void OnSyncStateChanged()
+    {
+        var roomCode = sync.Room?.RoomCode;
+        if (roomCode is null)
+        {
+            remoteSelectionRoom = null;
+            remoteOptionSelections.Clear();
+            return;
+        }
+        var currentMembers = sync.Room!.Members.Select(member => member.DisplayName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        foreach (var pair in remoteOptionSelections.Where(pair => !currentMembers.Contains(pair.Value.MemberName)))
+            remoteOptionSelections.TryRemove(pair.Key, out _);
+        if (roomCode.Equals(remoteSelectionRoom, StringComparison.OrdinalIgnoreCase)) return;
+        remoteSelectionRoom = roomCode;
+        remoteOptionSelections.Clear();
+        _ = sync.GetOptionSelectionsAsync().ContinueWith(task =>
+        {
+            if (!task.IsCompletedSuccessfully) return;
+            foreach (var selection in task.Result) RememberOptionSelection(selection);
+        }, TaskScheduler.Default);
+    }
+
+    private static string OptionNoteKey(string directory, string group, string option) =>
+        directory + "\n" + group + "\n" + option;
+
+    private void UpdateAlignment()
+    {
+        if (alignmentFramesRemaining <= 0) return;
+
+        var target = Objects.FirstOrDefault(gameObject => gameObject.Address == alignmentTargetAddress);
+        if (target is null || Objects.LocalPlayer is null)
+        {
+            alignmentFramesRemaining = 0;
+            alignmentStableFrames = 0;
+            Status = "Alignment stopped because the target was lost.";
+            return;
+        }
+
+        var positionMatched = System.Numerics.Vector3.Distance(Objects.LocalPlayer.Position, target.Position) <= 0.01f;
+        var rotationDelta = MathF.Abs(MathF.IEEERemainder(Objects.LocalPlayer.Rotation - target.Rotation, MathF.Tau));
+        alignmentStableFrames = positionMatched && rotationDelta <= 0.01f ? alignmentStableFrames + 1 : 0;
+
+        ApplyAlignment(target.Position, target.Rotation);
+        alignmentFramesRemaining--;
+        if (alignmentStableFrames < 3 && alignmentFramesRemaining > 0) return;
+
+        alignmentFramesRemaining = 0;
+        Status = "Aligned with target: position and facing direction match.";
+    }
+
+    private static void ApplyAlignment(System.Numerics.Vector3 position, float rotation)
+    {
+        var player = (Character*)(Objects.LocalPlayer?.Address ?? 0);
+        if (player is null) return;
+        player->GameObject.SetPosition(position.X, position.Y, position.Z);
+        player->GameObject.SetRotation(rotation);
     }
 
     private void ProcessSyncPlaySignals()
@@ -931,6 +1166,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ClearTemporaryAssignments();
         Framework.Update -= OnUpdate;
         ContextMenu.OnMenuOpened -= OnContextMenuOpened;
+        Chat.ChatMessage -= OnChatMessage;
+        Chat.RemoveChatLinkHandler();
         PluginInterface.UiBuilder.Draw -= windows.Draw;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleWindow;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleWindow;

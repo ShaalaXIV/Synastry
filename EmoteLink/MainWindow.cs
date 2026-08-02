@@ -9,11 +9,14 @@ public sealed class MainWindow : Window
 {
     private static readonly Vector4 EveryoneColor = new(0.35f, 0.9f, 0.45f, 1f);
     private static readonly Vector4 SomeColor = new(1f, 0.62f, 0.2f, 1f);
+    private static readonly Vector4 ClaimedColor = new(0.72f, 0.42f, 1f, 1f);
     private readonly Plugin plugin;
     private string search = "";
     private string newFolderName = "";
     private string syncDisplayName;
     private string roomCode = "";
+    private ModTransferOfferDto? activeTransferOffer;
+    private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
     private const string ModPayload = "EMOTELINK_MOD";
     private const string FolderPayload = "EMOTELINK_FOLDER";
 
@@ -36,15 +39,16 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         if (ImGui.Button("Clear temporary animations")) plugin.ClearTemporaryAssignments();
 
+        ImGui.TextDisabled("Activating a mod clears the previous temporary animation first.");
+        ImGui.TextWrapped(plugin.Status);
+        DrawGroupPlay();
         ImGui.Separator();
         if (ImGui.Button("New folder")) ImGui.OpenPopup("Create folder");
         DrawCreateFolderPopup();
         ImGui.SameLine();
         ImGui.SetNextItemWidth(-1);
         ImGui.InputTextWithHint("##search", "Search Penumbra mods...", ref search, 128);
-        ImGui.TextDisabled("Activating a mod clears the previous temporary animation first.");
-        ImGui.TextWrapped(plugin.Status);
-        DrawGroupPlay();
+        DrawTransferOfferPopup();
 
         if (ImGui.BeginChild("mods", new Vector2(0, 0), true))
         {
@@ -56,7 +60,8 @@ public sealed class MainWindow : Window
 
     private void DrawGroupPlay()
     {
-        if (!ImGui.CollapsingHeader("Group Play")) return;
+        ImGui.Separator();
+        ImGui.TextUnformatted("Group Play");
         ImGui.TextDisabled($"{(plugin.Sync.IsConnected ? "Connected" : "Not connected")} - {plugin.Sync.Status}");
         ImGui.SetNextItemWidth(-1);
         ImGui.InputTextWithHint("##syncName", "Display name", ref syncDisplayName, 40);
@@ -106,6 +111,36 @@ public sealed class MainWindow : Window
         ImGui.TextDisabled("○ No match");
         ImGui.TextDisabled("Choose an animation below to ready up. Playback begins when everyone is ready on the same mod.");
         ImGui.Separator();
+    }
+
+    private void DrawTransferOfferPopup()
+    {
+        if (activeTransferOffer is null && plugin.TryTakeTransferOffer(out var offer))
+        {
+            activeTransferOffer = offer;
+            ImGui.OpenPopup("Animation mod received");
+        }
+        if (!ImGui.BeginPopupModal("Animation mod received", ImGuiWindowFlags.AlwaysAutoResize)) return;
+        var active = activeTransferOffer;
+        if (active is null) { ImGui.CloseCurrentPopup(); ImGui.EndPopup(); return; }
+        ImGui.TextWrapped($"{active.SenderName} wants to send you:");
+        ImGui.TextUnformatted(active.ModName);
+        ImGui.TextDisabled($"{active.Size / 1024f / 1024f:F1} MB");
+        ImGui.Spacing();
+        if (ImGui.Button("Accept", new Vector2(110, 0)))
+        {
+            plugin.AcceptModTransfer(active);
+            activeTransferOffer = null;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Decline", new Vector2(110, 0)))
+        {
+            plugin.DeclineModTransfer(active);
+            activeTransferOffer = null;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndPopup();
     }
 
     private void DrawCreateFolderPopup()
@@ -192,6 +227,15 @@ public sealed class MainWindow : Window
             : ImGui.Selectable(mod.Name, false, ImGuiSelectableFlags.AllowDoubleClick);
         if (hasMatchColor) ImGui.PopStyleColor();
 
+        if (plugin.Sync.IsInRoom)
+        {
+            var width = ImGui.CalcTextSize("Send").X + ImGui.GetStyle().FramePadding.X * 2;
+            ImGui.SameLine();
+            ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMax().X - width);
+            if (ImGui.SmallButton("Send")) plugin.SendMod(mod.Directory, mod.Name);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Offer this mod to everyone else in the room (75 MB maximum).");
+        }
+
         if (ImGui.BeginDragDropSource())
         {
             ImGui.SetDragDropPayload(ModPayload, Encoding.UTF8.GetBytes(mod.Directory));
@@ -244,11 +288,22 @@ public sealed class MainWindow : Window
             {
                 ImGui.PushID(option);
                 var selected = plugin.IsOptionSelected(mod.Directory, group.Name, option);
+                var selectedBy = plugin.GetRemoteOptionSelector(mod.Directory, group.Name, option);
+                if (selectedBy is not null)
+                {
+                    ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
+                    ImGui.PushStyleColor(ImGuiCol.CheckMark, ClaimedColor);
+                }
                 if (ImGui.Checkbox(option, ref selected))
                 {
                     plugin.SetOptionSelected(mod.Directory, group.Name, option, selected, group.IsMultiSelect);
                     var appliedSelection = plugin.IsOptionSelected(mod.Directory, group.Name, option);
                     plugin.ApplyOption(mod.Directory, mod.Name, group.Name, option, appliedSelection);
+                }
+                if (selectedBy is not null)
+                {
+                    ImGui.PopStyleColor(2);
+                    if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{selectedBy} selected this option.");
                 }
                 var pose = plugin.GetOptionPose(mod.Directory, group.Name, option);
                 if (pose is not null)
@@ -265,11 +320,41 @@ public sealed class MainWindow : Window
                     if (ImGui.SmallButton("Solo##option"))
                         plugin.ActivateOptionSolo(mod.Directory, mod.Name, group.Name, option, group.IsMultiSelect);
                 }
+                ImGui.SameLine();
+                if (ImGui.SmallButton("Notes"))
+                {
+                    var key = NoteKey(mod.Directory, group.Name, option);
+                    noteBuffers[key] = plugin.GetOptionNote(mod.Directory, group.Name, option);
+                    ImGui.OpenPopup("Option notes");
+                }
+                DrawOptionNotesPopup(mod.Directory, group.Name, option);
                 ImGui.PopID();
             }
             ImGui.PopID();
         }
     }
+
+    private void DrawOptionNotesPopup(string directory, string group, string option)
+    {
+        if (!ImGui.BeginPopup("Option notes")) return;
+        var key = NoteKey(directory, group, option);
+        if (!noteBuffers.TryGetValue(key, out var note)) note = plugin.GetOptionNote(directory, group, option);
+        ImGui.TextWrapped(option);
+        ImGui.SetNextItemWidth(340);
+        ImGui.InputTextMultiline("##note", ref note, 1000, new Vector2(340, 130));
+        noteBuffers[key] = note;
+        if (ImGui.Button("Save"))
+        {
+            plugin.SaveOptionNote(directory, group, option, note);
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel")) ImGui.CloseCurrentPopup();
+        ImGui.EndPopup();
+    }
+
+    private static string NoteKey(string directory, string group, string option) =>
+        directory + "\n" + group + "\n" + option;
 
     private static string PoseDisplayName(PoseTarget pose) => pose.Kind switch
     {

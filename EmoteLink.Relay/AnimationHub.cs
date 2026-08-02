@@ -11,6 +11,9 @@ public sealed class AnimationHub : Hub
     private static readonly ConcurrentDictionary<string, Room> Rooms = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, string> ConnectionRooms = new();
     private const int MaxMembers = 16;
+    private readonly TransferStore transfers;
+
+    public AnimationHub(TransferStore transfers) => this.transfers = transfers;
 
     public async Task<RoomStateDto> CreateRoom(string displayName)
     {
@@ -79,6 +82,50 @@ public sealed class AnimationHub : Hub
                 StringComparer.OrdinalIgnoreCase);
     }
 
+    public TransferUploadDto BeginModTransfer(string modName, long size, string sha256)
+    {
+        var room = GetCurrentRoom();
+        lock (room.Gate)
+        {
+            var sender = room.Members[Context.ConnectionId];
+            var recipients = room.Members.Keys.Where(id => id != Context.ConnectionId).ToList();
+            return transfers.Begin(room.Code, Context.ConnectionId, sender.DisplayName, modName, size, sha256, recipients);
+        }
+    }
+
+    public Task CompleteModTransfer(string transferId)
+    {
+        transfers.MarkDownloaded(transferId, Context.ConnectionId);
+        return Task.CompletedTask;
+    }
+
+    public Task DeclineModTransfer(string transferId)
+    {
+        transfers.Decline(transferId, Context.ConnectionId);
+        return Task.CompletedTask;
+    }
+
+    public async Task SetOptionSelection(string modKey, string group, string option)
+    {
+        var room = GetCurrentRoom();
+        OptionSelectionDto selection;
+        lock (room.Gate)
+        {
+            var member = room.Members[Context.ConnectionId];
+            selection = new OptionSelectionDto(member.DisplayName, CleanModKey(modKey), CleanLabel(group), CleanLabel(option));
+            member.OptionSelections[selection.ModKey + "\n" + selection.Group] = selection;
+        }
+        await Clients.OthersInGroup(room.Code).SendAsync("OptionSelectionChanged", selection);
+    }
+
+    public IReadOnlyList<OptionSelectionDto> GetOptionSelections()
+    {
+        var room = GetCurrentRoom();
+        lock (room.Gate)
+            return room.Members.Where(pair => pair.Key != Context.ConnectionId)
+                .SelectMany(pair => pair.Value.OptionSelections.Values).ToList();
+    }
+
     public async Task LeaveRoom()
     {
         if (!ConnectionRooms.TryRemove(Context.ConnectionId, out var code)) return;
@@ -104,13 +151,14 @@ public sealed class AnimationHub : Hub
         }
     }
 
-    private static async Task RemoveEmptyRoomAfterGracePeriodAsync(Room room)
+    private async Task RemoveEmptyRoomAfterGracePeriodAsync(Room room)
     {
         await Task.Delay(EmptyRoomGracePeriod);
         lock (room.Gate)
         {
             if (room.Members.Count != 0) return;
             Rooms.TryRemove(new KeyValuePair<string, Room>(room.Code, room));
+            transfers.RemoveForRoom(room.Code);
         }
     }
 
@@ -201,6 +249,11 @@ public sealed class AnimationHub : Hub
     private static string CleanCode(string value) => new string(value.Where(char.IsLetterOrDigit).Take(8).ToArray()).ToUpperInvariant();
     private static string CleanName(string value) => string.IsNullOrWhiteSpace(value) ? "Player" : value.Trim()[..Math.Min(40, value.Trim().Length)];
     private static string CleanModKey(string value) => value.Trim()[..Math.Min(160, value.Trim().Length)];
+    private static string CleanLabel(string value)
+    {
+        var clean = value.Trim();
+        return clean[..Math.Min(120, clean.Length)];
+    }
     private static string CleanFingerprint(string value) =>
         new(value.Where(Uri.IsHexDigit).Take(64).Select(char.ToUpperInvariant).ToArray());
 
@@ -219,6 +272,7 @@ public sealed class AnimationHub : Hub
         public bool Ready { get; set; }
         public string ModKey { get; set; } = "";
         public HashSet<string> Catalog { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, OptionSelectionDto> OptionSelections { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }
 
@@ -229,3 +283,4 @@ public sealed record PlaySignalDto(
     long StartUnixMilliseconds,
     string SequenceId,
     int DelayMilliseconds = 0);
+public sealed record OptionSelectionDto(string MemberName, string ModKey, string Group, string Option);

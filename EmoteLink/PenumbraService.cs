@@ -20,6 +20,7 @@ public sealed class PenumbraService
     private readonly ICallGateSubscriber<string> getModDirectory;
     private readonly ICallGateSubscriber<string, string,
         IReadOnlyDictionary<string, (string[] Options, int GroupType)>?> getAvailableSettings;
+    private readonly ICallGateSubscriber<string, int> installMod;
 
     public PenumbraService(IDalamudPluginInterface pi, IPluginLog log)
     {
@@ -36,6 +37,7 @@ public sealed class PenumbraService
         getModDirectory = pi.GetIpcSubscriber<string>("Penumbra.GetModDirectory");
         getAvailableSettings = pi.GetIpcSubscriber<string, string,
             IReadOnlyDictionary<string, (string[] Options, int GroupType)>?>("Penumbra.GetAvailableModSettings.V5");
+        installMod = pi.GetIpcSubscriber<string, int>("Penumbra.InstallMod");
     }
 
     public bool IsAvailable
@@ -149,6 +151,19 @@ public sealed class PenumbraService
         {
             log.Warning(ex, "Could not inspect changed items for {Mod}.", name);
             return [];
+        }
+    }
+
+    public bool InstallMod(string packagePath)
+    {
+        try
+        {
+            return installMod.InvokeFunc(packagePath) == 0;
+        }
+        catch (Exception ex)
+        {
+            log.Error(ex, "Could not queue transferred mod for Penumbra installation.");
+            return false;
         }
     }
 

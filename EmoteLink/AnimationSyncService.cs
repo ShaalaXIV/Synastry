@@ -1,5 +1,6 @@
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.Http.Connections;
+using System.Security.Cryptography;
 
 namespace EmoteLink;
 
@@ -12,10 +13,14 @@ public sealed class AnimationSyncService : IAsyncDisposable
     private Dictionary<string, int> matchCounts = new(StringComparer.OrdinalIgnoreCase);
     private string? desiredRoomCode;
     private string desiredDisplayName = "Player";
+    private string relayBaseUrl = "";
+    private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(10) };
 
     public event Action? StateChanged;
     public event Action<PlaySignalDto>? PlayReceived;
     public event Action<string, Exception?>? Diagnostic;
+    public event Action<ModTransferOfferDto>? ModTransferOffered;
+    public event Action<OptionSelectionDto>? OptionSelectionChanged;
     public string Status { get; private set; } = "Disconnected";
     public bool IsConnected => connection?.State == HubConnectionState.Connected;
     public RoomStateDto? Room { get { lock (gate) return room; } }
@@ -26,6 +31,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
     {
         await DisconnectAsync();
         Status = "Connecting...";
+        relayBaseUrl = baseUrl.Trim().TrimEnd('/');
         Notify();
         var hub = new HubConnectionBuilder()
             // Long polling is less sensitive to VPNs, proxies, and firewalls that accept a
@@ -37,6 +43,8 @@ public sealed class AnimationSyncService : IAsyncDisposable
         hub.On<RoomStateDto>("RoomStateChanged", UpdateRoom);
         hub.On<PlaySignalDto>("AnimationPlay", signal => PlayReceived?.Invoke(signal));
         hub.On("CatalogChanged", () => _ = RefreshMatchCountsAsync());
+        hub.On<ModTransferOfferDto>("ModTransferOffered", offer => ModTransferOffered?.Invoke(offer));
+        hub.On<OptionSelectionDto>("OptionSelectionChanged", selection => OptionSelectionChanged?.Invoke(selection));
         hub.Reconnecting += exception =>
         {
             if (!ReferenceEquals(connection, hub)) return Task.CompletedTask;
@@ -110,6 +118,59 @@ public sealed class AnimationSyncService : IAsyncDisposable
             // Catalog matching is optional when connected to an older relay.
         }
     }
+
+    public async Task SendModAsync(string modName, string packagePath, long size, string sha256)
+    {
+        var upload = await RequireConnection().InvokeAsync<TransferUploadDto>("BeginModTransfer", modName, size, sha256);
+        await using var input = File.OpenRead(packagePath);
+        using var content = new StreamContent(input);
+        content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
+        using var response = await Http.PutAsync(
+            $"{relayBaseUrl}/transfers/{Uri.EscapeDataString(upload.TransferId)}?token={Uri.EscapeDataString(upload.UploadToken)}",
+            content);
+        response.EnsureSuccessStatusCode();
+    }
+
+    public async Task DownloadModAsync(ModTransferOfferDto offer, string destination)
+    {
+        using var response = await Http.GetAsync(
+            $"{relayBaseUrl}/transfers/{Uri.EscapeDataString(offer.TransferId)}?token={Uri.EscapeDataString(offer.DownloadToken)}",
+            HttpCompletionOption.ResponseHeadersRead);
+        response.EnsureSuccessStatusCode();
+        if (response.Content.Headers.ContentLength is > 75L * 1024 * 1024)
+            throw new InvalidDataException("The mod exceeds the 75 MB transfer limit.");
+
+        await using var input = await response.Content.ReadAsStreamAsync();
+        await using var output = new FileStream(destination, FileMode.Create, FileAccess.Write, FileShare.None,
+            1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan);
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+        var buffer = new byte[1024 * 1024];
+        long total = 0;
+        while (true)
+        {
+            var read = await input.ReadAsync(buffer);
+            if (read == 0) break;
+            total += read;
+            if (total > 75L * 1024 * 1024) throw new InvalidDataException("The mod exceeds the 75 MB transfer limit.");
+            hash.AppendData(buffer, 0, read);
+            await output.WriteAsync(buffer.AsMemory(0, read));
+        }
+        await output.FlushAsync();
+        if (total != offer.Size || !Convert.ToHexString(hash.GetHashAndReset()).Equals(offer.Sha256, StringComparison.OrdinalIgnoreCase))
+            throw new InvalidDataException("The downloaded mod failed checksum verification.");
+    }
+
+    public Task CompleteModTransferAsync(string transferId) =>
+        RequireConnection().InvokeAsync("CompleteModTransfer", transferId);
+
+    public Task DeclineModTransferAsync(string transferId) =>
+        RequireConnection().InvokeAsync("DeclineModTransfer", transferId);
+
+    public Task SetOptionSelectionAsync(string modKey, string group, string option) =>
+        RequireConnection().InvokeAsync("SetOptionSelection", modKey, group, option);
+
+    public async Task<IReadOnlyList<OptionSelectionDto>> GetOptionSelectionsAsync() =>
+        await RequireConnection().InvokeAsync<IReadOnlyList<OptionSelectionDto>>("GetOptionSelections");
 
     private async Task RefreshMatchCountsAsync()
     {
@@ -228,6 +289,10 @@ public sealed class AnimationSyncService : IAsyncDisposable
 
 public sealed record RoomStateDto(string RoomCode, IReadOnlyList<RoomMemberDto> Members);
 public sealed record RoomMemberDto(string ConnectionId, string DisplayName, bool IsLeader, bool Ready, string ModKey);
+public sealed record TransferUploadDto(string TransferId, string UploadToken);
+public sealed record ModTransferOfferDto(string TransferId, string ModName, string SenderName, long Size,
+    string Sha256, string DownloadToken, DateTimeOffset ExpiresAt);
+public sealed record OptionSelectionDto(string MemberName, string ModKey, string Group, string Option);
 public sealed record PlaySignalDto(
     string ModKey,
     long StartUnixMilliseconds,
