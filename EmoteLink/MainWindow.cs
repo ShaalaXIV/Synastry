@@ -290,15 +290,6 @@ public sealed class MainWindow : Window
             {
                 ImGui.PushID($"detected-{pose.Kind}-{pose.Index}");
                 ImGui.TextUnformatted(PoseDisplayName(pose));
-                ImGui.SameLine();
-                if (ImGui.SmallButton(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
-                    plugin.ActivateDetectedPose(mod.Directory, mod.Name, pose);
-                if (plugin.Sync.IsInRoom)
-                {
-                    ImGui.SameLine();
-                    if (ImGui.SmallButton("Solo"))
-                        plugin.ActivateDetectedPoseSolo(mod.Directory, mod.Name, pose);
-                }
                 ImGui.PopID();
             }
         }
@@ -332,15 +323,6 @@ public sealed class MainWindow : Window
                 {
                     ImGui.SameLine();
                     ImGui.TextDisabled(PoseDisplayName(pose));
-                    ImGui.SameLine();
-                    if (ImGui.SmallButton($"{(plugin.Sync.IsInRoom ? "Ready" : "Activate")}##option"))
-                        plugin.ActivateOption(mod.Directory, mod.Name, group.Name, option, group.IsMultiSelect);
-                    if (plugin.Sync.IsInRoom)
-                    {
-                        ImGui.SameLine();
-                        if (ImGui.SmallButton("Solo##option"))
-                            plugin.ActivateOptionSolo(mod.Directory, mod.Name, group.Name, option, group.IsMultiSelect);
-                    }
                 }
                 ImGui.SameLine();
                 if (ImGui.SmallButton("Notes"))
