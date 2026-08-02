@@ -972,9 +972,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 Log.Warning(result.Error, "Transferred mod download failed.");
                 continue;
             }
-            if (!penumbra.InstallMod(result.Path))
+            var installation = penumbra.InstallMod(result.Path);
+            if (!installation.Success)
             {
-                Status = $"Downloaded {result.Offer.ModName}, but Penumbra rejected the install request.";
+                Status = $"Downloaded {result.Offer.ModName}, but installation failed: {installation.Error}.";
                 continue;
             }
             RunSync(sync.CompleteModTransferAsync(result.Offer.TransferId),

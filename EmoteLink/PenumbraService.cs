@@ -37,7 +37,7 @@ public sealed class PenumbraService
         getModDirectory = pi.GetIpcSubscriber<string>("Penumbra.GetModDirectory");
         getAvailableSettings = pi.GetIpcSubscriber<string, string,
             IReadOnlyDictionary<string, (string[] Options, int GroupType)>?>("Penumbra.GetAvailableModSettings.V5");
-        installMod = pi.GetIpcSubscriber<string, int>("Penumbra.InstallMod");
+        installMod = pi.GetIpcSubscriber<string, int>("Penumbra.InstallMod.V5");
     }
 
     public bool IsAvailable
@@ -154,16 +154,25 @@ public sealed class PenumbraService
         }
     }
 
-    public bool InstallMod(string packagePath)
+    public (bool Success, string Error) InstallMod(string packagePath)
     {
         try
         {
-            return installMod.InvokeFunc(packagePath) == 0;
+            var result = installMod.InvokeFunc(packagePath);
+            return result == 0
+                ? (true, "")
+                : (false, result switch
+                {
+                    9 => "Penumbra could not find the downloaded file",
+                    11 => "Penumbra rejected the package path",
+                    17 => "Penumbra is shutting down",
+                    _ => $"Penumbra error code {result}"
+                });
         }
         catch (Exception ex)
         {
             log.Error(ex, "Could not queue transferred mod for Penumbra installation.");
-            return false;
+            return (false, ex.GetBaseException().Message);
         }
     }
 
