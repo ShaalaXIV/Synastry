@@ -15,7 +15,6 @@ public sealed class MainWindow : Window
     private string newFolderName = "";
     private string roomCode = "";
     private ModTransferOfferDto? activeTransferOffer;
-    private AnimationSuggestion? activeAnimationSuggestion;
     private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
     private const string ModPayload = "EMOTELINK_MOD";
     private const string FolderPayload = "EMOTELINK_FOLDER";
@@ -48,7 +47,6 @@ public sealed class MainWindow : Window
         ImGui.SetNextItemWidth(-1);
         ImGui.InputTextWithHint("##search", "Search Penumbra mods...", ref search, 128);
         DrawTransferOfferPopup();
-        DrawAnimationSuggestionWindow();
 
         if (ImGui.BeginChild("mods", new Vector2(0, 0), true))
         {
@@ -153,64 +151,6 @@ public sealed class MainWindow : Window
         {
             plugin.DeclineModTransfer(active);
             activeTransferOffer = null;
-            ImGui.CloseCurrentPopup();
-        }
-        ImGui.EndPopup();
-    }
-
-    private void DrawAnimationSuggestionWindow()
-    {
-        if (activeAnimationSuggestion is null && plugin.TryTakeAnimationSuggestion(out var suggestion))
-        {
-            activeAnimationSuggestion = suggestion;
-            ImGui.OpenPopup("Animation suggestion");
-        }
-        var active = activeAnimationSuggestion;
-        if (active is null) return;
-
-        ImGui.SetNextWindowSize(new Vector2(500, 420), ImGuiCond.Appearing);
-        if (!ImGui.BeginPopupModal("Animation suggestion", ImGuiWindowFlags.NoCollapse)) return;
-        ImGui.TextWrapped($"{active.SuggestedBy} suggested:");
-        ImGui.TextColored(ClaimedColor, active.ModName);
-        var accepted = false;
-        if (ImGui.Button(plugin.Sync.IsInRoom ? "Ready" : "Activate", new Vector2(100, 0)))
-        {
-            plugin.Activate(active.Directory, active.ModName);
-            accepted = true;
-        }
-        if (plugin.Sync.IsInRoom)
-        {
-            ImGui.SameLine();
-            if (ImGui.Button("Solo", new Vector2(80, 0)))
-            {
-                plugin.ActivateSolo(active.Directory, active.ModName);
-                accepted = true;
-            }
-        }
-        if (accepted)
-        {
-            activeAnimationSuggestion = null;
-            ImGui.CloseCurrentPopup();
-            ImGui.EndPopup();
-            return;
-        }
-        ImGui.Separator();
-        if (ImGui.BeginChild("suggestionOptions", new Vector2(0, -42), false))
-            accepted = DrawOptions((active.Directory, active.ModName), plugin.GetOptionGroups(active.Directory),
-                plugin.GetDetectedPoses(active.Directory));
-        ImGui.EndChild();
-        if (accepted)
-        {
-            activeAnimationSuggestion = null;
-            ImGui.CloseCurrentPopup();
-            ImGui.EndPopup();
-            return;
-        }
-        ImGui.Separator();
-        if (ImGui.Button("Decline suggestion", new Vector2(150, 0)))
-        {
-            plugin.DeclineAnimationSuggestion(active);
-            activeAnimationSuggestion = null;
             ImGui.CloseCurrentPopup();
         }
         ImGui.EndPopup();
@@ -339,10 +279,9 @@ public sealed class MainWindow : Window
         ImGui.PopID();
     }
 
-    private bool DrawOptions((string Directory, string Name) mod, IReadOnlyList<ModOptionGroup> groups,
+    private void DrawOptions((string Directory, string Name) mod, IReadOnlyList<ModOptionGroup> groups,
         IReadOnlyList<PoseTarget> detectedPoses)
     {
-        var activated = false;
         if (detectedPoses.Count > 1)
         {
             ImGui.TextDisabled("Detected actor roles");
@@ -354,7 +293,6 @@ public sealed class MainWindow : Window
                 if (ImGui.SmallButton(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
                 {
                     plugin.ActivateDetectedPose(mod.Directory, mod.Name, pose);
-                    activated = true;
                 }
                 if (plugin.Sync.IsInRoom)
                 {
@@ -362,7 +300,6 @@ public sealed class MainWindow : Window
                     if (ImGui.SmallButton("Solo"))
                     {
                         plugin.ActivateDetectedPoseSolo(mod.Directory, mod.Name, pose);
-                        activated = true;
                     }
                 }
                 ImGui.PopID();
@@ -411,7 +348,6 @@ public sealed class MainWindow : Window
             }
             ImGui.PopID();
         }
-        return activated;
     }
 
     private void DrawOptionNotesPopup(string directory, string group, string option)

@@ -80,10 +80,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly ConcurrentQueue<ModTransferOfferDto> transferOffers = new();
     private readonly ConcurrentQueue<(ModTransferOfferDto Offer, string Path, Exception? Error)> completedDownloads = new();
     private readonly ConcurrentDictionary<string, OptionSelectionDto> remoteOptionSelections = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, byte> seenAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentDictionary<string, byte> declinedAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, AnimationSuggestion> activeAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
-    private readonly ConcurrentQueue<AnimationSuggestion> animationSuggestions = new();
     private readonly Dictionary<uint, DalamudLinkPayload> inviteLinks = [];
     private string? remoteSelectionRoom;
 
@@ -256,22 +253,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
                    value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase))?.SuggestedBy;
     }
 
-    public bool TryTakeAnimationSuggestion(out AnimationSuggestion suggestion) =>
-        animationSuggestions.TryDequeue(out suggestion!);
-
-    public void DeclineAnimationSuggestion(AnimationSuggestion suggestion)
-    {
-        var key = SuggestionKey(suggestion.SuggestedBy, suggestion.ModKey);
-        declinedAnimationSuggestions[key] = 0;
-        activeAnimationSuggestions.TryRemove(key, out _);
-        foreach (var pair in remoteOptionSelections.Where(pair =>
-                     pair.Value.MemberName.Equals(suggestion.SuggestedBy, StringComparison.OrdinalIgnoreCase) &&
-                     pair.Value.ModKey.Equals(suggestion.ModKey, StringComparison.OrdinalIgnoreCase)))
-            remoteOptionSelections.TryRemove(pair.Key, out _);
-        RunSync(sync.DeclineAnimationSuggestionAsync(suggestion.ModKey, suggestion.SuggestedBy),
-            $"Declined {suggestion.SuggestedBy}'s suggestion of {suggestion.ModName}.");
-    }
-
     public string GetOptionNote(string directory, string group, string option) =>
         configuration.OptionNotes.TryGetValue(OptionNoteKey(directory, group, option), out var note) ? note : "";
 
@@ -286,7 +267,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public void ApplyOption(string directory, string name, string group, string option, bool selected)
     {
         var pose = selected ? GetOptionPose(directory, group, option) : null;
-        ActivateInternal(directory, name, pose);
+        var command = selected && pose is null ? DetectEmoteCommandFromLabel(option) : null;
+        ActivateInternal(directory, name, pose, requestedCommand: command);
     }
 
     public void ActivateOption(
@@ -297,7 +279,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         bool multiSelect)
     {
         SetOptionSelected(directory, group, option, true, multiSelect);
-        ActivateInternal(directory, name, GetOptionPose(directory, group, option));
+        var pose = GetOptionPose(directory, group, option);
+        ActivateInternal(directory, name, pose, requestedCommand: pose is null ? DetectEmoteCommandFromLabel(option) : null);
     }
 
     public void ActivateOptionSolo(
@@ -309,7 +292,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         SetOptionSelected(directory, group, option, true, multiSelect);
         CancelGroupReadinessForSolo();
-        ActivateInternal(directory, name, GetOptionPose(directory, group, option), false);
+        var pose = GetOptionPose(directory, group, option);
+        ActivateInternal(directory, name, pose, false, pose is null ? DetectEmoteCommandFromLabel(option) : null);
     }
 
     public void ConnectSync()
@@ -578,17 +562,18 @@ public sealed unsafe class Plugin : IDalamudPlugin
         return order.Where(byDirectory.ContainsKey)
             .Select(directory => byDirectory[directory])
             // LINQ's stable ordering preserves the user's manual order inside each
-            // match tier while promoting green, then orange, within every folder.
+            // match tier while promoting purple, green, then orange, within every folder.
             .OrderBy(mod => GetMatchSortTier(mod.Directory))
             .ToList();
     }
 
     private int GetMatchSortTier(string directory)
     {
+        if (GetRemoteModSelector(directory) is not null) return 0; // Purple: suggested.
         var (matches, members) = GetModMatch(directory);
-        if (members > 1 && matches >= members) return 0; // Green: everyone has it.
-        if (members > 1 && matches > 1) return 1;        // Orange: some members have it.
-        return 2;                                        // White: no shared match.
+        if (members > 1 && matches >= members) return 1; // Green: everyone has it.
+        if (members > 1 && matches > 1) return 2;        // Orange: some members have it.
+        return 3;                                        // White: no shared match.
     }
 
     public void CreateCategory(string name)
@@ -662,7 +647,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         string directory,
         string name,
         PoseTarget? requestedPose,
-        bool allowGroupPlay = true)
+        bool allowGroupPlay = true,
+        string? requestedCommand = null)
     {
         if (requestedPose is null && modPoses.TryGetValue(directory, out var detected) && detected.Count == 1)
             requestedPose = detected[0];
@@ -693,7 +679,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
 
-        var command = DetectEmoteCommand(directory, name);
+        var command = requestedCommand ?? DetectEmoteCommand(directory, name);
         if (command is null)
         {
             Status = $"Activated {name}, but no emote command was detected.";
@@ -927,6 +913,20 @@ public sealed unsafe class Plugin : IDalamudPlugin
         return null;
     }
 
+    private string? DetectEmoteCommandFromLabel(string option)
+    {
+        var normalized = NormalizeEmoteName(option);
+        if (emoteCommandsByName.TryGetValue(normalized, out var direct)) return direct;
+        if (emoteCommandsByName.TryGetValue(normalized.Replace("-", ""), out direct)) return direct;
+        var partial = emoteCommandsByName
+            .Where(pair => pair.Key.Length > 3 &&
+                (normalized.Contains(pair.Key, StringComparison.OrdinalIgnoreCase) ||
+                 pair.Key.Contains(normalized, StringComparison.OrdinalIgnoreCase)))
+            .OrderByDescending(pair => pair.Key.Length)
+            .FirstOrDefault();
+        return string.IsNullOrWhiteSpace(partial.Value) ? null : partial.Value;
+    }
+
     private static string NormalizeEmoteName(string value) =>
         string.Join(' ', value.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries));
 
@@ -1056,15 +1056,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void QueueAnimationSuggestion(string memberName, string modKey)
     {
         var suggestionKey = SuggestionKey(memberName, modKey);
-        if (declinedAnimationSuggestions.ContainsKey(suggestionKey) ||
-            !seenAnimationSuggestions.TryAdd(suggestionKey, 0)) return;
         var mod = Mods.FirstOrDefault(candidate => modSyncKeys.TryGetValue(candidate.Directory, out var key) &&
             key.Equals(modKey, StringComparison.OrdinalIgnoreCase));
         if (string.IsNullOrWhiteSpace(mod.Directory)) return;
         var suggestion = new AnimationSuggestion(memberName, modKey, mod.Directory, mod.Name);
         activeAnimationSuggestions[suggestionKey] = suggestion;
-        animationSuggestions.Enqueue(suggestion);
-        Log.Information("Queued animation suggestion from {MemberName}: {ModName}.", memberName, mod.Name);
+        Log.Information("Marked animation suggestion from {MemberName}: {ModName}.", memberName, mod.Name);
     }
 
     private void OnAnimationSuggestionDeclined(AnimationSuggestionDeclinedDto decline)
@@ -1082,10 +1079,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             remoteSelectionRoom = null;
             remoteOptionSelections.Clear();
-            seenAnimationSuggestions.Clear();
-            declinedAnimationSuggestions.Clear();
             activeAnimationSuggestions.Clear();
-            while (animationSuggestions.TryDequeue(out _)) { }
             return;
         }
         var roomChanged = !roomCode.Equals(remoteSelectionRoom, StringComparison.OrdinalIgnoreCase);
@@ -1093,10 +1087,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             remoteSelectionRoom = roomCode;
             remoteOptionSelections.Clear();
-            seenAnimationSuggestions.Clear();
-            declinedAnimationSuggestions.Clear();
             activeAnimationSuggestions.Clear();
-            while (animationSuggestions.TryDequeue(out _)) { }
         }
         var currentMembers = sync.Room!.Members.Select(member => member.DisplayName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in remoteOptionSelections.Where(pair => !currentMembers.Contains(pair.Value.MemberName)))
@@ -1186,10 +1177,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         foreach (var pair in remoteOptionSelections.Where(pair =>
                      pair.Value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase)))
             remoteOptionSelections.TryRemove(pair.Key, out _);
-        foreach (var key in seenAnimationSuggestions.Keys.Where(key => key.EndsWith("\n" + modKey, StringComparison.OrdinalIgnoreCase)))
-            seenAnimationSuggestions.TryRemove(key, out _);
-        foreach (var key in declinedAnimationSuggestions.Keys.Where(key => key.EndsWith("\n" + modKey, StringComparison.OrdinalIgnoreCase)))
-            declinedAnimationSuggestions.TryRemove(key, out _);
         foreach (var pair in activeAnimationSuggestions.Where(pair =>
                      pair.Value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase)))
             activeAnimationSuggestions.TryRemove(pair.Key, out _);
