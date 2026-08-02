@@ -180,12 +180,14 @@ public sealed class MainWindow : Window
         }
         ImGui.SameLine();
         var groups = plugin.GetOptionGroups(mod.Directory);
+        var detectedPoses = plugin.GetDetectedPoses(mod.Directory);
         var match = plugin.GetModMatch(mod.Directory);
         var hasMatchColor = match.Members > 1 && match.Matches > 1;
         if (hasMatchColor)
             ImGui.PushStyleColor(ImGuiCol.Text,
                 match.Matches >= match.Members ? EveryoneColor : SomeColor);
-        var open = groups.Count > 0
+        var hasDetails = groups.Count > 0 || detectedPoses.Count > 1;
+        var open = hasDetails
             ? ImGui.TreeNodeEx(mod.Name, ImGuiTreeNodeFlags.SpanAvailWidth)
             : ImGui.Selectable(mod.Name, false, ImGuiSelectableFlags.AllowDoubleClick);
         if (hasMatchColor) ImGui.PopStyleColor();
@@ -204,16 +206,36 @@ public sealed class MainWindow : Window
                 plugin.MoveMod(source, categoryId, mod.Directory);
             ImGui.EndDragDropTarget();
         }
-        if (groups.Count > 0 && open)
+        if (hasDetails && open)
         {
-            DrawOptions(mod, groups);
+            DrawOptions(mod, groups, detectedPoses);
             ImGui.TreePop();
         }
         ImGui.PopID();
     }
 
-    private void DrawOptions((string Directory, string Name) mod, IReadOnlyList<ModOptionGroup> groups)
+    private void DrawOptions((string Directory, string Name) mod, IReadOnlyList<ModOptionGroup> groups,
+        IReadOnlyList<PoseTarget> detectedPoses)
     {
+        if (detectedPoses.Count > 1)
+        {
+            ImGui.TextDisabled("Detected actor roles");
+            foreach (var pose in detectedPoses)
+            {
+                ImGui.PushID($"detected-{pose.Kind}-{pose.Index}");
+                ImGui.TextUnformatted(PoseDisplayName(pose));
+                ImGui.SameLine();
+                if (ImGui.SmallButton(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
+                    plugin.ActivateDetectedPose(mod.Directory, mod.Name, pose);
+                if (plugin.Sync.IsInRoom)
+                {
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Solo"))
+                        plugin.ActivateDetectedPoseSolo(mod.Directory, mod.Name, pose);
+                }
+                ImGui.PopID();
+            }
+        }
         foreach (var group in groups)
         {
             ImGui.PushID(group.Name);
@@ -229,10 +251,11 @@ public sealed class MainWindow : Window
                     plugin.ApplyOption(mod.Directory, mod.Name, group.Name, option, appliedSelection);
                 }
                 var pose = plugin.GetOptionPose(mod.Directory, group.Name, option);
-                ImGui.SameLine();
-                var poseLabel = pose is null ? "Set pose..." : $"{pose.Kind} {pose.Index}";
-                if (ImGui.SmallButton($"{poseLabel}##pose")) ImGui.OpenPopup("Pose assignment");
-                DrawPoseAssignmentPopup(mod.Directory, group.Name, option, pose);
+                if (pose is not null)
+                {
+                    ImGui.SameLine();
+                    ImGui.TextDisabled(PoseDisplayName(pose));
+                }
                 ImGui.SameLine();
                 if (ImGui.SmallButton($"{(plugin.Sync.IsInRoom ? "Ready" : "Activate")}##option"))
                     plugin.ActivateOption(mod.Directory, mod.Name, group.Name, option, group.IsMultiSelect);
@@ -248,40 +271,13 @@ public sealed class MainWindow : Window
         }
     }
 
-    private void DrawPoseAssignmentPopup(string directory, string group, string option, PoseTarget? current)
+    private static string PoseDisplayName(PoseTarget pose) => pose.Kind switch
     {
-        if (!ImGui.BeginPopup("Pose assignment")) return;
-        ImGui.TextUnformatted("What pose does this option replace?");
-        if (plugin.HasManualPose(directory, group, option) && ImGui.Button("Use automatic detection"))
-            plugin.SetManualPose(directory, group, option, null);
-
-        var selectedKind = current?.Kind ?? PoseKind.Idle;
-        ImGui.TextDisabled("Pose state");
-        foreach (var kind in Enum.GetValues<PoseKind>())
-        {
-            if (ImGui.RadioButton(kind.ToString(), selectedKind == kind))
-            {
-                selectedKind = kind;
-                plugin.SetManualPose(directory, group, option,
-                    new PoseTarget(selectedKind, current?.Index ?? 0));
-                current = plugin.GetOptionPose(directory, group, option);
-            }
-            if (kind != PoseKind.Doze) ImGui.SameLine();
-        }
-
-        ImGui.TextDisabled("Pose number");
-        for (var index = 0; index <= PoseService.MaxPoseIndex; index++)
-        {
-            var label = index == 0 ? "Default" : index.ToString();
-            if (ImGui.Button($"{label}##poseIndex{index}"))
-            {
-                plugin.SetManualPose(directory, group, option, new PoseTarget(selectedKind, (byte)index));
-                ImGui.CloseCurrentPopup();
-            }
-            if (index < PoseService.MaxPoseIndex) ImGui.SameLine();
-        }
-        ImGui.EndPopup();
-    }
+        PoseKind.Sit => $"Chair Sit {pose.Index}",
+        PoseKind.GroundSit => $"Ground Sit {pose.Index}",
+        PoseKind.Doze => $"Doze {pose.Index}",
+        _ => $"Idle {pose.Index}"
+    };
 
     private static void DrawFolderDragSource(ModCategory category)
     {

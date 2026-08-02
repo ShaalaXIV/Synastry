@@ -49,6 +49,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private long pendingCommandTime;
     private PoseTarget? pendingPose;
     private readonly Dictionary<string, PoseTarget> optionPoses = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IReadOnlyList<PoseTarget>> modPoses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> optionGroupMulti = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> modSyncKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> modCatalogKeys = new(StringComparer.OrdinalIgnoreCase);
@@ -125,6 +126,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var animationMods = new List<(string Directory, string Name)>();
         optionGroups.Clear();
         optionPoses.Clear();
+        modPoses.Clear();
         optionGroupMulti.Clear();
         modSyncKeys.Clear();
         modCatalogKeys.Clear();
@@ -337,25 +339,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public PoseTarget? GetOptionPose(string directory, string group, string option)
     {
-        var key = OptionPoseKey(directory, group, option);
-        if (configuration.ManualPoseAssignments.TryGetValue(key, out var manual))
-            return new PoseTarget(manual.Kind, PoseService.ClampIndex(manual.Index));
-        return optionPoses.TryGetValue(key, out var pose) ? pose : null;
+        return optionPoses.TryGetValue(OptionPoseKey(directory, group, option), out var pose) ? pose : null;
     }
 
-    public bool HasManualPose(string directory, string group, string option) =>
-        configuration.ManualPoseAssignments.ContainsKey(OptionPoseKey(directory, group, option));
+    public IReadOnlyList<PoseTarget> GetDetectedPoses(string directory) =>
+        modPoses.TryGetValue(directory, out var poses) ? poses : [];
 
-    public void SetManualPose(string directory, string group, string option, PoseTarget? pose)
+    public void ActivateDetectedPose(string directory, string name, PoseTarget pose) =>
+        ActivateInternal(directory, name, pose);
+
+    public void ActivateDetectedPoseSolo(string directory, string name, PoseTarget pose)
     {
-        var key = OptionPoseKey(directory, group, option);
-        if (pose is null) configuration.ManualPoseAssignments.Remove(key);
-        else configuration.ManualPoseAssignments[key] = new ManualPoseAssignment
-        {
-            Kind = pose.Kind,
-            Index = PoseService.ClampIndex(pose.Index)
-        };
-        SaveOrganization();
+        CancelGroupReadinessForSolo();
+        ActivateInternal(directory, name, pose, false);
     }
 
     private void NormalizeSelections(string directory, IReadOnlyList<ModOptionGroup> groups)
@@ -388,7 +384,20 @@ public sealed unsafe class Plugin : IDalamudPlugin
             ? configuration.UncategorizedOrder
             : configuration.Categories.FirstOrDefault(folder => folder.Id == categoryId)?.ModDirectories ?? [];
         var byDirectory = Mods.ToDictionary(mod => mod.Directory, StringComparer.OrdinalIgnoreCase);
-        return order.Where(byDirectory.ContainsKey).Select(directory => byDirectory[directory]).ToList();
+        return order.Where(byDirectory.ContainsKey)
+            .Select(directory => byDirectory[directory])
+            // LINQ's stable ordering preserves the user's manual order inside each
+            // match tier while promoting green, then orange, within every folder.
+            .OrderBy(mod => GetMatchSortTier(mod.Directory))
+            .ToList();
+    }
+
+    private int GetMatchSortTier(string directory)
+    {
+        var (matches, members) = GetModMatch(directory);
+        if (members > 1 && matches >= members) return 0; // Green: everyone has it.
+        if (members > 1 && matches > 1) return 1;        // Orange: some members have it.
+        return 2;                                        // White: no shared match.
     }
 
     public void CreateCategory(string name)
@@ -464,6 +473,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         PoseTarget? requestedPose,
         bool allowGroupPlay = true)
     {
+        if (requestedPose is null && modPoses.TryGetValue(directory, out var detected) && detected.Count == 1)
+            requestedPose = detected[0];
         ClearTemporaryAssignmentsInternal(false);
         var collection = penumbra.GetPlayerCollection();
         var selections = configuration.ModOptionSelections.TryGetValue(directory, out var savedOptions)
@@ -576,14 +587,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void IndexPoseOptions(string modPath, string directory)
     {
+        var modPapPaths = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in Directory.EnumerateFiles(modPath, "*.json", SearchOption.TopDirectoryOnly))
         {
-            if (file.EndsWith("meta.json", StringComparison.OrdinalIgnoreCase) ||
-                file.EndsWith("default_mod.json", StringComparison.OrdinalIgnoreCase)) continue;
+            if (file.EndsWith("meta.json", StringComparison.OrdinalIgnoreCase)) continue;
             try
             {
                 using var document = JsonDocument.Parse(File.ReadAllText(file));
                 var root = document.RootElement;
+                CollectPapGamePaths(root, modPapPaths);
+                if (file.EndsWith("default_mod.json", StringComparison.OrdinalIgnoreCase)) continue;
                 if (!root.TryGetProperty("Name", out var groupNameElement) ||
                     !root.TryGetProperty("Options", out var optionsElement)) continue;
                 var groupName = groupNameElement.GetString();
@@ -608,10 +621,15 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 Log.Debug(ex, "Could not inspect pose options in {File}.", file);
             }
         }
+        modPoses[directory] = DetectPoseTargets(modPapPaths);
     }
 
     private static PoseTarget? DetectPoseTarget(IReadOnlyList<string> paths, string optionName)
+        => DetectPoseTargets(paths, optionName).FirstOrDefault();
+
+    private static IReadOnlyList<PoseTarget> DetectPoseTargets(IEnumerable<string> paths, string optionName = "")
     {
+        var poses = new List<PoseTarget>();
         foreach (var rawPath in paths.Where(path => path.EndsWith(".pap", StringComparison.OrdinalIgnoreCase)))
         {
             var path = rawPath.Replace('\\', '/').ToLowerInvariant();
@@ -627,9 +645,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 var match = Regex.Match(path, candidate.Pattern, RegexOptions.IgnoreCase);
                 if (match.Success && byte.TryParse(match.Groups[1].Value, out var index) &&
                     index <= PoseService.MaxPoseIndex)
-                    return new PoseTarget(candidate.Kind, index);
+                {
+                    var pose = new PoseTarget(candidate.Kind, index);
+                    if (!poses.Contains(pose)) poses.Add(pose);
+                    break;
+                }
             }
-            if (path.Contains("/resident/idle.pap")) return new PoseTarget(PoseKind.Idle, 0);
+            if (path.Contains("/resident/idle.pap") && !poses.Contains(new PoseTarget(PoseKind.Idle, 0)))
+                poses.Add(new PoseTarget(PoseKind.Idle, 0));
 
             PoseKind? kind = path.Contains("/jmn/") ? PoseKind.GroundSit
                 : path.Contains("/sit/") ? PoseKind.Sit
@@ -638,13 +661,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (kind is not null)
             {
                 var labelIndex = Regex.Match(optionName, @"(\d+)(?!.*\d)");
-                return new PoseTarget(kind.Value,
+                var pose = new PoseTarget(kind.Value,
                     labelIndex.Success && byte.TryParse(labelIndex.Value, out var index)
                         ? PoseService.ClampIndex(index)
                         : (byte)0);
+                if (!poses.Contains(pose)) poses.Add(pose);
             }
         }
-        return null;
+        return poses
+            .OrderBy(pose => pose.Kind)
+            .ThenBy(pose => pose.Index)
+            .ToList();
     }
 
     private static string OptionPoseKey(string directory, string group, string option) =>
@@ -848,13 +875,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var alreadyInPose = poses.CurrentKind() == pose.Kind;
         if (alreadyInPose)
         {
+            // Match Encore's active-pose path: redraw to apply the new mod files, but do
+            // not write SelectedPoses first. Writing it also changes CPoseState, which
+            // would make the cycling code believe the actor is already on that variant.
             ExecuteCommand("/penumbra redraw self");
             BeginPoseCycling(pose, 150);
             return;
         }
 
+        // Match Encore's initial-pose path. Select the Sit/GroundSit/Doze slot before
+        // entering the state and do not redraw afterward; a redraw between these two
+        // operations can reset/reapply actor state and cause the game to enter a
+        // different pose variant than the PAP slot replaced by the mod.
         poses.SetIndex(pose);
-        ExecuteCommand("/penumbra redraw self");
         switch (pose.Kind)
         {
             case PoseKind.GroundSit: ExecuteCommand("/groundsit"); break;
