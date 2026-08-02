@@ -82,6 +82,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly ConcurrentDictionary<string, OptionSelectionDto> remoteOptionSelections = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> seenAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> declinedAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, AnimationSuggestion> activeAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<AnimationSuggestion> animationSuggestions = new();
     private readonly Dictionary<uint, DalamudLinkPayload> inviteLinks = [];
     private string? remoteSelectionRoom;
@@ -250,7 +251,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         if (!modSyncKeys.TryGetValue(directory, out var modKey)) return null;
         return remoteOptionSelections.Values.FirstOrDefault(value =>
-            value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase))?.MemberName;
+                   value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase))?.MemberName ??
+               activeAnimationSuggestions.Values.FirstOrDefault(value =>
+                   value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase))?.SuggestedBy;
     }
 
     public bool TryTakeAnimationSuggestion(out AnimationSuggestion suggestion) =>
@@ -260,6 +263,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         var key = SuggestionKey(suggestion.SuggestedBy, suggestion.ModKey);
         declinedAnimationSuggestions[key] = 0;
+        activeAnimationSuggestions.TryRemove(key, out _);
         foreach (var pair in remoteOptionSelections.Where(pair =>
                      pair.Value.MemberName.Equals(suggestion.SuggestedBy, StringComparison.OrdinalIgnoreCase) &&
                      pair.Value.ModKey.Equals(suggestion.ModKey, StringComparison.OrdinalIgnoreCase)))
@@ -1057,7 +1061,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var mod = Mods.FirstOrDefault(candidate => modSyncKeys.TryGetValue(candidate.Directory, out var key) &&
             key.Equals(modKey, StringComparison.OrdinalIgnoreCase));
         if (string.IsNullOrWhiteSpace(mod.Directory)) return;
-        animationSuggestions.Enqueue(new AnimationSuggestion(memberName, modKey, mod.Directory, mod.Name));
+        var suggestion = new AnimationSuggestion(memberName, modKey, mod.Directory, mod.Name);
+        activeAnimationSuggestions[suggestionKey] = suggestion;
+        animationSuggestions.Enqueue(suggestion);
         Log.Information("Queued animation suggestion from {MemberName}: {ModName}.", memberName, mod.Name);
     }
 
@@ -1078,21 +1084,29 @@ public sealed unsafe class Plugin : IDalamudPlugin
             remoteOptionSelections.Clear();
             seenAnimationSuggestions.Clear();
             declinedAnimationSuggestions.Clear();
+            activeAnimationSuggestions.Clear();
             while (animationSuggestions.TryDequeue(out _)) { }
             return;
+        }
+        var roomChanged = !roomCode.Equals(remoteSelectionRoom, StringComparison.OrdinalIgnoreCase);
+        if (roomChanged)
+        {
+            remoteSelectionRoom = roomCode;
+            remoteOptionSelections.Clear();
+            seenAnimationSuggestions.Clear();
+            declinedAnimationSuggestions.Clear();
+            activeAnimationSuggestions.Clear();
+            while (animationSuggestions.TryDequeue(out _)) { }
         }
         var currentMembers = sync.Room!.Members.Select(member => member.DisplayName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in remoteOptionSelections.Where(pair => !currentMembers.Contains(pair.Value.MemberName)))
             remoteOptionSelections.TryRemove(pair.Key, out _);
+        foreach (var pair in activeAnimationSuggestions.Where(pair => !currentMembers.Contains(pair.Value.SuggestedBy)))
+            activeAnimationSuggestions.TryRemove(pair.Key, out _);
         foreach (var member in sync.Room.Members.Where(member =>
                      !sync.IsCurrentMember(member.ConnectionId) && member.Ready && !string.IsNullOrWhiteSpace(member.ModKey)))
             QueueAnimationSuggestion(member.DisplayName, member.ModKey);
-        if (roomCode.Equals(remoteSelectionRoom, StringComparison.OrdinalIgnoreCase)) return;
-        remoteSelectionRoom = roomCode;
-        remoteOptionSelections.Clear();
-        seenAnimationSuggestions.Clear();
-        declinedAnimationSuggestions.Clear();
-        while (animationSuggestions.TryDequeue(out _)) { }
+        if (!roomChanged) return;
         _ = sync.GetOptionSelectionsAsync().ContinueWith(task =>
         {
             if (!task.IsCompletedSuccessfully) return;
@@ -1176,6 +1190,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
             seenAnimationSuggestions.TryRemove(key, out _);
         foreach (var key in declinedAnimationSuggestions.Keys.Where(key => key.EndsWith("\n" + modKey, StringComparison.OrdinalIgnoreCase)))
             declinedAnimationSuggestions.TryRemove(key, out _);
+        foreach (var pair in activeAnimationSuggestions.Where(pair =>
+                     pair.Value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase)))
+            activeAnimationSuggestions.TryRemove(pair.Key, out _);
     }
 
     private void RefreshLobbyEmotes()

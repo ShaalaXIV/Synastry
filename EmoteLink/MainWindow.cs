@@ -172,13 +172,19 @@ public sealed class MainWindow : Window
         if (!ImGui.BeginPopupModal("Animation suggestion", ImGuiWindowFlags.NoCollapse)) return;
         ImGui.TextWrapped($"{active.SuggestedBy} suggested:");
         ImGui.TextColored(ClaimedColor, active.ModName);
+        if (ImGui.Button(plugin.Sync.IsInRoom ? "Ready" : "Activate", new Vector2(100, 0)))
+            plugin.Activate(active.Directory, active.ModName);
+        if (plugin.Sync.IsInRoom)
+        {
+            ImGui.SameLine();
+            if (ImGui.Button("Solo", new Vector2(80, 0)))
+                plugin.ActivateSolo(active.Directory, active.ModName);
+        }
         ImGui.Separator();
         if (ImGui.BeginChild("suggestionOptions", new Vector2(0, -42), false))
-        {
             DrawOptions((active.Directory, active.ModName), plugin.GetOptionGroups(active.Directory),
                 plugin.GetDetectedPoses(active.Directory));
-            ImGui.EndChild();
-        }
+        ImGui.EndChild();
         ImGui.Separator();
         if (ImGui.Button("Decline suggestion", new Vector2(150, 0)))
         {
