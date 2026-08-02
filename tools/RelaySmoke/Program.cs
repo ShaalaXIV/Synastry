@@ -1,8 +1,11 @@
 using Microsoft.AspNetCore.SignalR.Client;
+using Microsoft.AspNetCore.Http.Connections;
 
 var baseUrl = args.Length > 0 ? args[0].TrimEnd('/') : "http://127.0.0.1:25080";
-await using var first = new HubConnectionBuilder().WithUrl(baseUrl + "/animation").Build();
-await using var second = new HubConnectionBuilder().WithUrl(baseUrl + "/animation").Build();
+await using var first = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
+    options.Transports = HttpTransportType.LongPolling).Build();
+await using var second = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
+    options.Transports = HttpTransportType.LongPolling).Build();
 var firstPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
 var secondPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
 first.On<PlaySignalDto>("AnimationPlay", signal => firstPlay.TrySetResult(signal));
@@ -22,6 +25,13 @@ if (firstMatches.Count != 2 || firstMatches[sharedFingerprint] != 2 || firstMatc
     firstMatches.ContainsKey(secondOnlyFingerprint))
     throw new InvalidOperationException("Private catalog match counts were incorrect.");
 const string modKey = "deep plaps:0123456789ABCDEF";
+var suggestionDeclined = new TaskCompletionSource<AnimationSuggestionDeclinedDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+first.On<AnimationSuggestionDeclinedDto>("AnimationSuggestionDeclined", decline => suggestionDeclined.TrySetResult(decline));
+await first.InvokeAsync("SetOptionSelection", modKey, "Actor", "Chair Sit 1");
+await second.InvokeAsync("DeclineAnimationSuggestion", modKey, "Top");
+var decline = await suggestionDeclined.Task.WaitAsync(TimeSpan.FromSeconds(5));
+if (decline.DeclinedBy != "Bottom" || decline.SuggestedBy != "Top" || decline.ModKey != modKey)
+    throw new InvalidOperationException("Animation suggestion decline was not broadcast correctly.");
 await first.InvokeAsync<RoomStateDto>("SetReady", modKey);
 try
 {
@@ -67,7 +77,8 @@ catch (Microsoft.AspNetCore.SignalR.HubException)
 }
 await first.StopAsync();
 await second.StopAsync();
-await using var recovered = new HubConnectionBuilder().WithUrl(baseUrl + "/animation").Build();
+await using var recovered = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
+    options.Transports = HttpTransportType.LongPolling).Build();
 await recovered.StartAsync();
 var recoveredRoom = await recovered.InvokeAsync<RoomStateDto>("JoinRoom", room.RoomCode, "Top");
 if (recoveredRoom.Members.Count != 1 || !recoveredRoom.Members[0].IsLeader)
@@ -81,3 +92,4 @@ public sealed record PlaySignalDto(
     long StartUnixMilliseconds,
     string SequenceId,
     int DelayMilliseconds = 0);
+public sealed record AnimationSuggestionDeclinedDto(string DeclinedBy, string SuggestedBy, string ModKey);

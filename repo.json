@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "EmoteLink",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.18.0",
+    "AssemblyVersion": "1.0.19.0",
     "Description": "A plain Penumbra animation launcher with temporary activation, target alignment, and synchronized group play.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -12,9 +12,9 @@
     "Tags": [ "penumbra", "animation", "emote" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.18/EmoteLink-1.0.18.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.18/EmoteLink-1.0.18.zip",
-    "Changelog": "Waits five seconds after synchronized playback, verifies each visible lobby actor is in a looping emote state, then performs a lobby-only SimpleHeels-style animation-time reset.",
-    "LastUpdate": "1785705598"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.19/EmoteLink-1.0.19.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.19/EmoteLink-1.0.19.zip",
+    "Changelog": "Automatically opens a compact animation-suggestion window when another lobby member selects a mod, showing detected roles, all options, and Notes. Recipients can dismiss locally or decline and notify the suggesting actor.",
+    "LastUpdate": "1785706356"
   }
 ]

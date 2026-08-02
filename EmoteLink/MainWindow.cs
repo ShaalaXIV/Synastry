@@ -15,6 +15,7 @@ public sealed class MainWindow : Window
     private string newFolderName = "";
     private string roomCode = "";
     private ModTransferOfferDto? activeTransferOffer;
+    private AnimationSuggestion? activeAnimationSuggestion;
     private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
     private const string ModPayload = "EMOTELINK_MOD";
     private const string FolderPayload = "EMOTELINK_FOLDER";
@@ -47,6 +48,7 @@ public sealed class MainWindow : Window
         ImGui.SetNextItemWidth(-1);
         ImGui.InputTextWithHint("##search", "Search Penumbra mods...", ref search, 128);
         DrawTransferOfferPopup();
+        DrawAnimationSuggestionWindow();
 
         if (ImGui.BeginChild("mods", new Vector2(0, 0), true))
         {
@@ -152,6 +154,35 @@ public sealed class MainWindow : Window
             ImGui.CloseCurrentPopup();
         }
         ImGui.EndPopup();
+    }
+
+    private void DrawAnimationSuggestionWindow()
+    {
+        if (activeAnimationSuggestion is null && plugin.TryTakeAnimationSuggestion(out var suggestion))
+            activeAnimationSuggestion = suggestion;
+        var active = activeAnimationSuggestion;
+        if (active is null) return;
+
+        ImGui.SetNextWindowSize(new Vector2(470, 360), ImGuiCond.FirstUseEver);
+        var open = true;
+        if (ImGui.Begin("Animation suggestion###EmoteLinkSuggestion", ref open, ImGuiWindowFlags.NoCollapse))
+        {
+            ImGui.TextWrapped($"{active.SuggestedBy} suggested:");
+            ImGui.TextColored(ClaimedColor, active.ModName);
+            ImGui.Separator();
+            DrawOptions((active.Directory, active.ModName), plugin.GetOptionGroups(active.Directory),
+                plugin.GetDetectedPoses(active.Directory));
+            ImGui.Separator();
+            if (ImGui.Button("Decline suggestion", new Vector2(150, 0)))
+            {
+                plugin.DeclineAnimationSuggestion(active);
+                activeAnimationSuggestion = null;
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Dismiss", new Vector2(100, 0))) activeAnimationSuggestion = null;
+        }
+        ImGui.End();
+        if (!open) activeAnimationSuggestion = null;
     }
 
     private void DrawCreateFolderPopup()

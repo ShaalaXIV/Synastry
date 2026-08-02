@@ -126,6 +126,25 @@ public sealed class AnimationHub : Hub
                 .SelectMany(pair => pair.Value.OptionSelections.Values).ToList();
     }
 
+    public async Task DeclineAnimationSuggestion(string modKey, string suggestedBy)
+    {
+        var room = GetCurrentRoom();
+        AnimationSuggestionDeclinedDto decline;
+        lock (room.Gate)
+        {
+            var member = room.Members[Context.ConnectionId];
+            var cleanModKey = CleanModKey(modKey);
+            var cleanSuggestedBy = CleanLabel(suggestedBy);
+            var suggestionExists = room.Members.Values.Any(candidate =>
+                candidate.DisplayName.Equals(cleanSuggestedBy, StringComparison.OrdinalIgnoreCase) &&
+                candidate.OptionSelections.Values.Any(selection =>
+                    selection.ModKey.Equals(cleanModKey, StringComparison.OrdinalIgnoreCase)));
+            if (!suggestionExists) throw new HubException("That animation suggestion is no longer active.");
+            decline = new AnimationSuggestionDeclinedDto(member.DisplayName, cleanSuggestedBy, cleanModKey);
+        }
+        await Clients.Group(room.Code).SendAsync("AnimationSuggestionDeclined", decline);
+    }
+
     public async Task LeaveRoom()
     {
         if (!ConnectionRooms.TryRemove(Context.ConnectionId, out var code)) return;
@@ -328,3 +347,4 @@ public sealed record PlaySignalDto(
     string SequenceId,
     int DelayMilliseconds = 0);
 public sealed record OptionSelectionDto(string MemberName, string ModKey, string Group, string Option);
+public sealed record AnimationSuggestionDeclinedDto(string DeclinedBy, string SuggestedBy, string ModKey);

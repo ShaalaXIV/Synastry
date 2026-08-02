@@ -21,6 +21,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public event Action<string, Exception?>? Diagnostic;
     public event Action<ModTransferOfferDto>? ModTransferOffered;
     public event Action<OptionSelectionDto>? OptionSelectionChanged;
+    public event Action<AnimationSuggestionDeclinedDto>? AnimationSuggestionDeclined;
     public string Status { get; private set; } = "Disconnected";
     public bool IsConnected => connection?.State == HubConnectionState.Connected;
     public bool IsRoomLeader => Room?.Members.Any(member =>
@@ -48,6 +49,8 @@ public sealed class AnimationSyncService : IAsyncDisposable
         hub.On("CatalogChanged", () => _ = RefreshMatchCountsAsync());
         hub.On<ModTransferOfferDto>("ModTransferOffered", offer => ModTransferOffered?.Invoke(offer));
         hub.On<OptionSelectionDto>("OptionSelectionChanged", selection => OptionSelectionChanged?.Invoke(selection));
+        hub.On<AnimationSuggestionDeclinedDto>("AnimationSuggestionDeclined",
+            decline => AnimationSuggestionDeclined?.Invoke(decline));
         hub.On<string>("RemovedFromRoom", reason =>
         {
             lock (gate)
@@ -186,6 +189,9 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public async Task<IReadOnlyList<OptionSelectionDto>> GetOptionSelectionsAsync() =>
         await RequireConnection().InvokeAsync<IReadOnlyList<OptionSelectionDto>>("GetOptionSelections");
 
+    public Task DeclineAnimationSuggestionAsync(string modKey, string suggestedBy) =>
+        RequireConnection().InvokeAsync("DeclineAnimationSuggestion", modKey, suggestedBy);
+
     private async Task RefreshMatchCountsAsync()
     {
         try
@@ -319,6 +325,7 @@ public sealed record TransferUploadDto(string TransferId, string UploadToken);
 public sealed record ModTransferOfferDto(string TransferId, string ModName, string SenderName, long Size,
     string Sha256, string DownloadToken, DateTimeOffset ExpiresAt);
 public sealed record OptionSelectionDto(string MemberName, string ModKey, string Group, string Option);
+public sealed record AnimationSuggestionDeclinedDto(string DeclinedBy, string SuggestedBy, string ModKey);
 public sealed record PlaySignalDto(
     string ModKey,
     long StartUnixMilliseconds,
