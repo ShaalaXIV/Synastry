@@ -222,19 +222,15 @@ public sealed class MainWindow : Window
             ImGui.PushStyleColor(ImGuiCol.Text,
                 match.Matches >= match.Members ? EveryoneColor : SomeColor);
         var hasDetails = groups.Count > 0 || detectedPoses.Count > 1;
+        var sendWidth = plugin.Sync.IsInRoom
+            ? ImGui.CalcTextSize("Send").X + ImGui.GetStyle().FramePadding.X * 2
+            : 0;
+        var labelWidth = MathF.Max(1, ImGui.GetContentRegionAvail().X - sendWidth -
+            (plugin.Sync.IsInRoom ? ImGui.GetStyle().ItemSpacing.X : 0));
         var open = hasDetails
-            ? ImGui.TreeNodeEx(mod.Name, ImGuiTreeNodeFlags.SpanAvailWidth)
-            : ImGui.Selectable(mod.Name, false, ImGuiSelectableFlags.AllowDoubleClick);
+            ? ImGui.TreeNodeEx(mod.Name, ImGuiTreeNodeFlags.None)
+            : ImGui.Selectable(mod.Name, false, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(labelWidth, 0));
         if (hasMatchColor) ImGui.PopStyleColor();
-
-        if (plugin.Sync.IsInRoom)
-        {
-            var width = ImGui.CalcTextSize("Send").X + ImGui.GetStyle().FramePadding.X * 2;
-            ImGui.SameLine();
-            ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMax().X - width);
-            if (ImGui.SmallButton("Send")) plugin.SendMod(mod.Directory, mod.Name);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Offer this mod to everyone else in the room (75 MB maximum).");
-        }
 
         if (ImGui.BeginDragDropSource())
         {
@@ -249,6 +245,13 @@ public sealed class MainWindow : Window
             if (source is not null && source != mod.Directory)
                 plugin.MoveMod(source, categoryId, mod.Directory);
             ImGui.EndDragDropTarget();
+        }
+        if (plugin.Sync.IsInRoom)
+        {
+            ImGui.SameLine();
+            ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMax().X - sendWidth);
+            if (ImGui.SmallButton("Send")) plugin.SendMod(mod.Directory, mod.Name);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Offer this mod to everyone else in the room (75 MB maximum).");
         }
         if (hasDetails && open)
         {

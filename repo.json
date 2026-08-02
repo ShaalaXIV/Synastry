@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "EmoteLink",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.11.0",
+    "AssemblyVersion": "1.0.12.0",
     "Description": "A plain Penumbra animation launcher with temporary activation, target alignment, and synchronized group play.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -12,9 +12,9 @@
     "Tags": [ "penumbra", "animation", "emote" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.11/EmoteLink-1.0.11.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.11/EmoteLink-1.0.11.zip",
-    "Changelog": "Adds secure room mod transfers with Penumbra installation, clickable room invites, shared option claims, option notes, improved Group Play layout, HTTPS relay access, and facing-aware alignment.",
-    "LastUpdate": "1785679484"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.12/EmoteLink-1.0.12.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.12/EmoteLink-1.0.12.zip",
+    "Changelog": "Fixes the Send button hitbox so it packages and uploads the selected mod instead of expanding the animation row.",
+    "LastUpdate": "1785684495"
   }
 ]
