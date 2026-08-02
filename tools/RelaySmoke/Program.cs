@@ -23,6 +23,24 @@ if (firstMatches.Count != 2 || firstMatches[sharedFingerprint] != 2 || firstMatc
     throw new InvalidOperationException("Private catalog match counts were incorrect.");
 const string modKey = "deep plaps:0123456789ABCDEF";
 await first.InvokeAsync<RoomStateDto>("SetReady", modKey);
+try
+{
+    await second.InvokeAsync<RoomStateDto>("ForceStart");
+    throw new InvalidOperationException("A non-host member was allowed to force playback.");
+}
+catch (Microsoft.AspNetCore.SignalR.HubException)
+{
+    // Expected: only the room host can force playback.
+}
+await first.InvokeAsync<RoomStateDto>("ForceStart");
+var forcedPlays = await Task.WhenAll(firstPlay.Task.WaitAsync(TimeSpan.FromSeconds(5)),
+    secondPlay.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+if (forcedPlays[0].SequenceId != forcedPlays[1].SequenceId || forcedPlays[0].ModKey != modKey)
+    throw new InvalidOperationException("Forced playback did not reach the room consistently.");
+
+firstPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+secondPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+await first.InvokeAsync<RoomStateDto>("SetReady", modKey);
 await second.InvokeAsync<RoomStateDto>("SetReady", modKey);
 var plays = await Task.WhenAll(firstPlay.Task.WaitAsync(TimeSpan.FromSeconds(5)),
     secondPlay.Task.WaitAsync(TimeSpan.FromSeconds(5)));
@@ -32,6 +50,21 @@ if (plays[0].SequenceId != plays[1].SequenceId ||
     throw new InvalidOperationException("Clients received different play signals.");
 if (plays[0].DelayMilliseconds <= 0)
     throw new InvalidOperationException("Relay did not provide a relative play countdown.");
+var removed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+second.On<string>("RemovedFromRoom", reason => removed.TrySetResult(reason));
+var afterRemoval = await first.InvokeAsync<RoomStateDto>("RemoveMember", second.ConnectionId!);
+await removed.Task.WaitAsync(TimeSpan.FromSeconds(5));
+if (afterRemoval.Members.Count != 1 || !afterRemoval.Members[0].IsLeader)
+    throw new InvalidOperationException("Host removal did not update the room correctly.");
+try
+{
+    await second.InvokeAsync<RoomStateDto>("SetReady", modKey);
+    throw new InvalidOperationException("A removed member could still ready in the room.");
+}
+catch (Microsoft.AspNetCore.SignalR.HubException)
+{
+    // Expected: the removed connection is no longer associated with the room.
+}
 await first.StopAsync();
 await second.StopAsync();
 await using var recovered = new HubConnectionBuilder().WithUrl(baseUrl + "/animation").Build();

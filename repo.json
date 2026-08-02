@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "EmoteLink",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.13.0",
+    "AssemblyVersion": "1.0.14.0",
     "Description": "A plain Penumbra animation launcher with temporary activation, target alignment, and synchronized group play.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -12,9 +12,9 @@
     "Tags": [ "penumbra", "animation", "emote" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.13/EmoteLink-1.0.13.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.13/EmoteLink-1.0.13.zip",
-    "Changelog": "Fixes accepted mod installation by using Penumbra's current InstallMod.V5 IPC and reports detailed installation failures.",
-    "LastUpdate": "1785685021"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.14/EmoteLink-1.0.14.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.14/EmoteLink-1.0.14.zip",
+    "Changelog": "Adds host force-start and member removal, remote mod selection highlighting, animation-only action buttons, and relay transfer cleanup with unlimited transfer count, 10-minute expiration, and a 25 GB oldest-first storage budget.",
+    "LastUpdate": "1785701373"
   }
 ]

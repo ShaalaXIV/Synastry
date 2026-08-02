@@ -1,6 +1,6 @@
 # EmoteLink Relay
 
-A minimal, in-memory SignalR relay for synchronized animation starts. It does not transfer mods, files, character data, appearance data, chat, or arbitrary game commands.
+A SignalR relay for synchronized animation starts and explicit room-member animation-mod transfers. Transfers are limited to 75 MB each, expire after 10 minutes, and share a 25 GB storage budget. When storage is needed, the oldest pending transfers are removed first. The relay does not transfer character data, appearance data, chat, or arbitrary game commands.
 
 ## Run directly on Linux
 

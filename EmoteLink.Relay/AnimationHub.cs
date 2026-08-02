@@ -209,6 +209,50 @@ public sealed class AnimationHub : Hub
         return state;
     }
 
+    public async Task<RoomStateDto> ForceStart()
+    {
+        var room = GetCurrentRoom();
+        PlaySignalDto play;
+        RoomStateDto state;
+        lock (room.Gate)
+        {
+            var member = room.Members[Context.ConnectionId];
+            if (!member.IsLeader) throw new HubException("Only the room host can force playback.");
+            if (!member.Ready || string.IsNullOrWhiteSpace(member.ModKey))
+                throw new HubException("Select an animation and ready it before forcing playback.");
+            play = new PlaySignalDto(
+                member.ModKey,
+                DateTimeOffset.UtcNow.AddMilliseconds(PlayDelayMilliseconds).ToUnixTimeMilliseconds(),
+                Guid.NewGuid().ToString("N"),
+                PlayDelayMilliseconds);
+            ResetReady(room);
+            state = Snapshot(room);
+        }
+        await Clients.Group(room.Code).SendAsync("AnimationPlay", play);
+        await Clients.Group(room.Code).SendAsync("RoomStateChanged", state);
+        return state;
+    }
+
+    public async Task<RoomStateDto> RemoveMember(string connectionId)
+    {
+        var room = GetCurrentRoom();
+        lock (room.Gate)
+        {
+            var requester = room.Members[Context.ConnectionId];
+            if (!requester.IsLeader) throw new HubException("Only the room host can remove members.");
+            if (connectionId == Context.ConnectionId) throw new HubException("The host cannot remove themselves.");
+            if (!room.Members.Remove(connectionId)) throw new HubException("That member is no longer in the room.");
+            ConnectionRooms.TryRemove(connectionId, out _);
+            ResetReady(room);
+        }
+        await Groups.RemoveFromGroupAsync(connectionId, room.Code);
+        await Clients.Client(connectionId).SendAsync("RemovedFromRoom", "The host removed you from the room.");
+        var state = Snapshot(room);
+        await Clients.Group(room.Code).SendAsync("RoomStateChanged", state);
+        await Clients.Group(room.Code).SendAsync("CatalogChanged");
+        return state;
+    }
+
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
         await LeaveRoom();

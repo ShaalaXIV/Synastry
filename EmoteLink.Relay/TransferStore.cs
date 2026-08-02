@@ -6,7 +6,9 @@ namespace EmoteLink.Relay;
 public sealed class TransferStore : BackgroundService
 {
     public const long MaximumBytes = 75L * 1024 * 1024;
-    private static readonly TimeSpan Lifetime = TimeSpan.FromHours(1);
+    public const long MaximumStorageBytes = 25L * 1024 * 1024 * 1024;
+    private static readonly TimeSpan Lifetime = TimeSpan.FromMinutes(10);
+    private static readonly TimeSpan CleanupInterval = TimeSpan.FromSeconds(15);
     private readonly ConcurrentDictionary<string, Transfer> transfers = new();
     private readonly object reservationGate = new();
     private readonly string root = Path.Combine(Path.GetTempPath(), "emotelink-transfers");
@@ -28,10 +30,12 @@ public sealed class TransferStore : BackgroundService
 
         lock (reservationGate)
         {
-            if (transfers.Values.Count(value => value.RoomCode.Equals(roomCode, StringComparison.OrdinalIgnoreCase)) >= 16)
-                throw new InvalidOperationException("This room already has too many active transfers.");
-            if (transfers.Values.Sum(value => value.Size) + size > 1024L * 1024 * 1024)
-                throw new InvalidOperationException("The relay transfer storage is currently full.");
+            while (transfers.Values.Sum(value => value.Size) + size > MaximumStorageBytes)
+            {
+                var oldest = transfers.Values.OrderBy(value => value.ExpiresAt).FirstOrDefault();
+                if (oldest is null) throw new InvalidOperationException("The relay transfer storage is currently full.");
+                Remove(oldest.Id);
+            }
             var id = RandomToken(18);
             var uploadToken = RandomToken(32);
             var recipientTokens = recipients.Distinct().ToDictionary(value => value, _ => RandomToken(32));
@@ -97,7 +101,7 @@ public sealed class TransferStore : BackgroundService
     {
         while (!stoppingToken.IsCancellationRequested)
         {
-            try { await Task.Delay(TimeSpan.FromMinutes(1), stoppingToken); }
+            try { await Task.Delay(CleanupInterval, stoppingToken); }
             catch (OperationCanceledException) { break; }
             foreach (var transfer in transfers.Values.Where(value => value.ExpiresAt <= DateTimeOffset.UtcNow))
                 Remove(transfer.Id);

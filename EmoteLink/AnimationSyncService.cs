@@ -23,6 +23,9 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public event Action<OptionSelectionDto>? OptionSelectionChanged;
     public string Status { get; private set; } = "Disconnected";
     public bool IsConnected => connection?.State == HubConnectionState.Connected;
+    public bool IsRoomLeader => Room?.Members.Any(member =>
+        member.ConnectionId == connection?.ConnectionId && member.IsLeader) == true;
+    public bool IsCurrentMember(string connectionId) => connection?.ConnectionId == connectionId;
     public RoomStateDto? Room { get { lock (gate) return room; } }
     public IReadOnlyDictionary<string, int> MatchCounts { get { lock (gate) return new Dictionary<string, int>(matchCounts); } }
     public bool IsInRoom => Room is not null;
@@ -45,6 +48,17 @@ public sealed class AnimationSyncService : IAsyncDisposable
         hub.On("CatalogChanged", () => _ = RefreshMatchCountsAsync());
         hub.On<ModTransferOfferDto>("ModTransferOffered", offer => ModTransferOffered?.Invoke(offer));
         hub.On<OptionSelectionDto>("OptionSelectionChanged", selection => OptionSelectionChanged?.Invoke(selection));
+        hub.On<string>("RemovedFromRoom", reason =>
+        {
+            lock (gate)
+            {
+                room = null;
+                desiredRoomCode = null;
+                matchCounts.Clear();
+            }
+            Status = reason;
+            Notify();
+        });
         hub.Reconnecting += exception =>
         {
             if (!ReferenceEquals(connection, hub)) return Task.CompletedTask;
@@ -206,6 +220,18 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public async Task CancelReadyAsync()
     {
         var state = await RequireConnection().InvokeAsync<RoomStateDto>("CancelReady");
+        UpdateRoom(state);
+    }
+
+    public async Task ForceStartAsync()
+    {
+        var state = await RequireConnection().InvokeAsync<RoomStateDto>("ForceStart");
+        UpdateRoom(state);
+    }
+
+    public async Task RemoveMemberAsync(string connectionId)
+    {
+        var state = await RequireConnection().InvokeAsync<RoomStateDto>("RemoveMember", connectionId);
         UpdateRoom(state);
     }
 

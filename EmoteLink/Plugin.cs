@@ -236,6 +236,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
             value.Option.Equals(option, StringComparison.OrdinalIgnoreCase))?.MemberName;
     }
 
+    public string? GetRemoteModSelector(string directory)
+    {
+        if (!modSyncKeys.TryGetValue(directory, out var modKey)) return null;
+        return remoteOptionSelections.Values.FirstOrDefault(value =>
+            value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase))?.MemberName;
+    }
+
     public string GetOptionNote(string directory, string group, string option) =>
         configuration.OptionNotes.TryGetValue(OptionNoteKey(directory, group, option), out var note) ? note : "";
 
@@ -378,6 +385,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
         preparedPose = null;
         RunSync(sync.CancelReadyAsync(), "Group-play readiness cancelled.");
     }
+
+    public void ForceSyncStart() =>
+        RunSync(sync.ForceStartAsync(), "Forced the prepared animation to start for matching room members.");
+
+    public void RemoveSyncMember(RoomMemberDto member) =>
+        RunSync(sync.RemoveMemberAsync(member.ConnectionId), $"Removed {member.DisplayName} from the room.");
 
     private void CancelGroupReadinessForSolo()
     {

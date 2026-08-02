@@ -99,10 +99,24 @@ public sealed class MainWindow : Window
         if (ImGui.SmallButton("Leave")) plugin.LeaveSyncRoom();
         ImGui.SameLine();
         if (ImGui.SmallButton("Cancel ready")) plugin.CancelSyncReady();
+        if (plugin.Sync.IsRoomLeader)
+        {
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Force start")) plugin.ForceSyncStart();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Start the host's prepared animation now. Only members prepared on the same mod will join.");
+        }
         foreach (var member in room.Members)
         {
             var marker = member.Ready ? "Ready" : "Waiting";
             ImGui.BulletText($"{member.DisplayName}{(member.IsLeader ? " (host)" : "")} — {marker}");
+            if (plugin.Sync.IsRoomLeader && !plugin.Sync.IsCurrentMember(member.ConnectionId))
+            {
+                ImGui.SameLine();
+                ImGui.PushID(member.ConnectionId);
+                if (ImGui.SmallButton("Remove")) plugin.RemoveSyncMember(member);
+                ImGui.PopID();
+            }
         }
         ImGui.TextColored(EveryoneColor, "● Everyone has it");
         ImGui.SameLine();
@@ -217,8 +231,11 @@ public sealed class MainWindow : Window
         var groups = plugin.GetOptionGroups(mod.Directory);
         var detectedPoses = plugin.GetDetectedPoses(mod.Directory);
         var match = plugin.GetModMatch(mod.Directory);
+        var selectedBy = plugin.GetRemoteModSelector(mod.Directory);
         var hasMatchColor = match.Members > 1 && match.Matches > 1;
-        if (hasMatchColor)
+        if (selectedBy is not null)
+            ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
+        else if (hasMatchColor)
             ImGui.PushStyleColor(ImGuiCol.Text,
                 match.Matches >= match.Members ? EveryoneColor : SomeColor);
         var hasDetails = groups.Count > 0 || detectedPoses.Count > 1;
@@ -230,7 +247,9 @@ public sealed class MainWindow : Window
         var open = hasDetails
             ? ImGui.TreeNodeEx(mod.Name, ImGuiTreeNodeFlags.None)
             : ImGui.Selectable(mod.Name, false, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(labelWidth, 0));
-        if (hasMatchColor) ImGui.PopStyleColor();
+        if (selectedBy is not null || hasMatchColor) ImGui.PopStyleColor();
+        if (selectedBy is not null && ImGui.IsItemHovered())
+            ImGui.SetTooltip($"{selectedBy} selected an option in this mod.");
 
         if (ImGui.BeginDragDropSource())
         {
@@ -313,15 +332,15 @@ public sealed class MainWindow : Window
                 {
                     ImGui.SameLine();
                     ImGui.TextDisabled(PoseDisplayName(pose));
-                }
-                ImGui.SameLine();
-                if (ImGui.SmallButton($"{(plugin.Sync.IsInRoom ? "Ready" : "Activate")}##option"))
-                    plugin.ActivateOption(mod.Directory, mod.Name, group.Name, option, group.IsMultiSelect);
-                if (plugin.Sync.IsInRoom)
-                {
                     ImGui.SameLine();
-                    if (ImGui.SmallButton("Solo##option"))
-                        plugin.ActivateOptionSolo(mod.Directory, mod.Name, group.Name, option, group.IsMultiSelect);
+                    if (ImGui.SmallButton($"{(plugin.Sync.IsInRoom ? "Ready" : "Activate")}##option"))
+                        plugin.ActivateOption(mod.Directory, mod.Name, group.Name, option, group.IsMultiSelect);
+                    if (plugin.Sync.IsInRoom)
+                    {
+                        ImGui.SameLine();
+                        if (ImGui.SmallButton("Solo##option"))
+                            plugin.ActivateOptionSolo(mod.Directory, mod.Name, group.Name, option, group.IsMultiSelect);
+                    }
                 }
                 ImGui.SameLine();
                 if (ImGui.SmallButton("Notes"))
