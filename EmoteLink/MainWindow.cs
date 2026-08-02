@@ -117,11 +117,13 @@ public sealed class MainWindow : Window
                 ImGui.PopID();
             }
         }
-        ImGui.TextColored(EveryoneColor, "● Everyone has it");
+        ImGui.TextColored(EveryoneColor, "Green: Everyone has it");
         ImGui.SameLine();
-        ImGui.TextColored(SomeColor, "● Some members");
+        ImGui.TextColored(SomeColor, "Orange: Some members");
         ImGui.SameLine();
-        ImGui.TextDisabled("○ No match");
+        ImGui.TextColored(ClaimedColor, "Purple: Suggested");
+        ImGui.SameLine();
+        ImGui.TextDisabled("White: No match");
         ImGui.TextDisabled("Choose an animation below to ready up. Playback begins when everyone is ready on the same mod.");
         ImGui.Separator();
     }
@@ -159,30 +161,38 @@ public sealed class MainWindow : Window
     private void DrawAnimationSuggestionWindow()
     {
         if (activeAnimationSuggestion is null && plugin.TryTakeAnimationSuggestion(out var suggestion))
+        {
             activeAnimationSuggestion = suggestion;
+            ImGui.OpenPopup("Animation suggestion");
+        }
         var active = activeAnimationSuggestion;
         if (active is null) return;
 
-        ImGui.SetNextWindowSize(new Vector2(470, 360), ImGuiCond.FirstUseEver);
-        var open = true;
-        if (ImGui.Begin("Animation suggestion###EmoteLinkSuggestion", ref open, ImGuiWindowFlags.NoCollapse))
+        ImGui.SetNextWindowSize(new Vector2(500, 420), ImGuiCond.Appearing);
+        if (!ImGui.BeginPopupModal("Animation suggestion", ImGuiWindowFlags.NoCollapse)) return;
+        ImGui.TextWrapped($"{active.SuggestedBy} suggested:");
+        ImGui.TextColored(ClaimedColor, active.ModName);
+        ImGui.Separator();
+        if (ImGui.BeginChild("suggestionOptions", new Vector2(0, -42), false))
         {
-            ImGui.TextWrapped($"{active.SuggestedBy} suggested:");
-            ImGui.TextColored(ClaimedColor, active.ModName);
-            ImGui.Separator();
             DrawOptions((active.Directory, active.ModName), plugin.GetOptionGroups(active.Directory),
                 plugin.GetDetectedPoses(active.Directory));
-            ImGui.Separator();
-            if (ImGui.Button("Decline suggestion", new Vector2(150, 0)))
-            {
-                plugin.DeclineAnimationSuggestion(active);
-                activeAnimationSuggestion = null;
-            }
-            ImGui.SameLine();
-            if (ImGui.Button("Dismiss", new Vector2(100, 0))) activeAnimationSuggestion = null;
+            ImGui.EndChild();
         }
-        ImGui.End();
-        if (!open) activeAnimationSuggestion = null;
+        ImGui.Separator();
+        if (ImGui.Button("Decline suggestion", new Vector2(150, 0)))
+        {
+            plugin.DeclineAnimationSuggestion(active);
+            activeAnimationSuggestion = null;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Dismiss", new Vector2(100, 0)))
+        {
+            activeAnimationSuggestion = null;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndPopup();
     }
 
     private void DrawCreateFolderPopup()

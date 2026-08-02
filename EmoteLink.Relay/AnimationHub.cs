@@ -137,8 +137,9 @@ public sealed class AnimationHub : Hub
             var cleanSuggestedBy = CleanLabel(suggestedBy);
             var suggestionExists = room.Members.Values.Any(candidate =>
                 candidate.DisplayName.Equals(cleanSuggestedBy, StringComparison.OrdinalIgnoreCase) &&
-                candidate.OptionSelections.Values.Any(selection =>
-                    selection.ModKey.Equals(cleanModKey, StringComparison.OrdinalIgnoreCase)));
+                ((candidate.Ready && candidate.ModKey.Equals(cleanModKey, StringComparison.OrdinalIgnoreCase)) ||
+                 candidate.OptionSelections.Values.Any(selection =>
+                     selection.ModKey.Equals(cleanModKey, StringComparison.OrdinalIgnoreCase))));
             if (!suggestionExists) throw new HubException("That animation suggestion is no longer active.");
             decline = new AnimationSuggestionDeclinedDto(member.DisplayName, cleanSuggestedBy, cleanModKey);
         }

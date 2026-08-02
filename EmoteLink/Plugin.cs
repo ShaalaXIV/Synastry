@@ -1046,13 +1046,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void RememberOptionSelection(OptionSelectionDto selection)
     {
         remoteOptionSelections[selection.MemberName + "\n" + selection.ModKey + "\n" + selection.Group] = selection;
-        var suggestionKey = SuggestionKey(selection.MemberName, selection.ModKey);
+        QueueAnimationSuggestion(selection.MemberName, selection.ModKey);
+    }
+
+    private void QueueAnimationSuggestion(string memberName, string modKey)
+    {
+        var suggestionKey = SuggestionKey(memberName, modKey);
         if (declinedAnimationSuggestions.ContainsKey(suggestionKey) ||
             !seenAnimationSuggestions.TryAdd(suggestionKey, 0)) return;
         var mod = Mods.FirstOrDefault(candidate => modSyncKeys.TryGetValue(candidate.Directory, out var key) &&
-            key.Equals(selection.ModKey, StringComparison.OrdinalIgnoreCase));
+            key.Equals(modKey, StringComparison.OrdinalIgnoreCase));
         if (string.IsNullOrWhiteSpace(mod.Directory)) return;
-        animationSuggestions.Enqueue(new AnimationSuggestion(selection.MemberName, selection.ModKey, mod.Directory, mod.Name));
+        animationSuggestions.Enqueue(new AnimationSuggestion(memberName, modKey, mod.Directory, mod.Name));
+        Log.Information("Queued animation suggestion from {MemberName}: {ModName}.", memberName, mod.Name);
     }
 
     private void OnAnimationSuggestionDeclined(AnimationSuggestionDeclinedDto decline)
@@ -1078,6 +1084,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var currentMembers = sync.Room!.Members.Select(member => member.DisplayName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in remoteOptionSelections.Where(pair => !currentMembers.Contains(pair.Value.MemberName)))
             remoteOptionSelections.TryRemove(pair.Key, out _);
+        foreach (var member in sync.Room.Members.Where(member =>
+                     !sync.IsCurrentMember(member.ConnectionId) && member.Ready && !string.IsNullOrWhiteSpace(member.ModKey)))
+            QueueAnimationSuggestion(member.DisplayName, member.ModKey);
         if (roomCode.Equals(remoteSelectionRoom, StringComparison.OrdinalIgnoreCase)) return;
         remoteSelectionRoom = roomCode;
         remoteOptionSelections.Clear();
