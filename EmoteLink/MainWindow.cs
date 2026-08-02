@@ -172,29 +172,44 @@ public sealed class MainWindow : Window
         if (!ImGui.BeginPopupModal("Animation suggestion", ImGuiWindowFlags.NoCollapse)) return;
         ImGui.TextWrapped($"{active.SuggestedBy} suggested:");
         ImGui.TextColored(ClaimedColor, active.ModName);
+        var accepted = false;
         if (ImGui.Button(plugin.Sync.IsInRoom ? "Ready" : "Activate", new Vector2(100, 0)))
+        {
             plugin.Activate(active.Directory, active.ModName);
+            accepted = true;
+        }
         if (plugin.Sync.IsInRoom)
         {
             ImGui.SameLine();
             if (ImGui.Button("Solo", new Vector2(80, 0)))
+            {
                 plugin.ActivateSolo(active.Directory, active.ModName);
+                accepted = true;
+            }
+        }
+        if (accepted)
+        {
+            activeAnimationSuggestion = null;
+            ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+            return;
         }
         ImGui.Separator();
         if (ImGui.BeginChild("suggestionOptions", new Vector2(0, -42), false))
-            DrawOptions((active.Directory, active.ModName), plugin.GetOptionGroups(active.Directory),
+            accepted = DrawOptions((active.Directory, active.ModName), plugin.GetOptionGroups(active.Directory),
                 plugin.GetDetectedPoses(active.Directory));
         ImGui.EndChild();
+        if (accepted)
+        {
+            activeAnimationSuggestion = null;
+            ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+            return;
+        }
         ImGui.Separator();
         if (ImGui.Button("Decline suggestion", new Vector2(150, 0)))
         {
             plugin.DeclineAnimationSuggestion(active);
-            activeAnimationSuggestion = null;
-            ImGui.CloseCurrentPopup();
-        }
-        ImGui.SameLine();
-        if (ImGui.Button("Dismiss", new Vector2(100, 0)))
-        {
             activeAnimationSuggestion = null;
             ImGui.CloseCurrentPopup();
         }
@@ -324,9 +339,10 @@ public sealed class MainWindow : Window
         ImGui.PopID();
     }
 
-    private void DrawOptions((string Directory, string Name) mod, IReadOnlyList<ModOptionGroup> groups,
+    private bool DrawOptions((string Directory, string Name) mod, IReadOnlyList<ModOptionGroup> groups,
         IReadOnlyList<PoseTarget> detectedPoses)
     {
+        var activated = false;
         if (detectedPoses.Count > 1)
         {
             ImGui.TextDisabled("Detected actor roles");
@@ -336,12 +352,18 @@ public sealed class MainWindow : Window
                 ImGui.TextUnformatted(PoseDisplayName(pose));
                 ImGui.SameLine();
                 if (ImGui.SmallButton(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
+                {
                     plugin.ActivateDetectedPose(mod.Directory, mod.Name, pose);
+                    activated = true;
+                }
                 if (plugin.Sync.IsInRoom)
                 {
                     ImGui.SameLine();
                     if (ImGui.SmallButton("Solo"))
+                    {
                         plugin.ActivateDetectedPoseSolo(mod.Directory, mod.Name, pose);
+                        activated = true;
+                    }
                 }
                 ImGui.PopID();
             }
@@ -389,6 +411,7 @@ public sealed class MainWindow : Window
             }
             ImGui.PopID();
         }
+        return activated;
     }
 
     private void DrawOptionNotesPopup(string directory, string group, string option)
