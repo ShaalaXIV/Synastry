@@ -219,14 +219,6 @@ public sealed class MainWindow : Window
     private void DrawModRow((string Directory, string Name) mod, string? categoryId)
     {
         ImGui.PushID(mod.Directory);
-        if (ImGui.Button(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
-            plugin.Activate(mod.Directory, mod.Name);
-        if (plugin.Sync.IsInRoom)
-        {
-            ImGui.SameLine();
-            if (ImGui.Button("Solo")) plugin.ActivateSolo(mod.Directory, mod.Name);
-        }
-        ImGui.SameLine();
         var groups = plugin.GetOptionGroups(mod.Directory);
         var detectedPoses = plugin.GetDetectedPoses(mod.Directory);
         var detectedEmotes = plugin.GetDetectedEmotes(mod.Directory);
@@ -238,7 +230,7 @@ public sealed class MainWindow : Window
         else if (hasMatchColor)
             ImGui.PushStyleColor(ImGuiCol.Text,
                 match.Matches >= match.Members ? EveryoneColor : SomeColor);
-        var hasDetails = groups.Count > 0 || detectedPoses.Count > 1 || detectedEmotes.Count > 0;
+        var hasDetails = groups.Count > 0 || detectedPoses.Count > 0 || detectedEmotes.Count > 0;
         var sendWidth = plugin.Sync.IsInRoom
             ? ImGui.CalcTextSize("Send").X + ImGui.GetStyle().FramePadding.X * 2
             : 0;
@@ -283,7 +275,7 @@ public sealed class MainWindow : Window
     private void DrawOptions((string Directory, string Name) mod, IReadOnlyList<ModOptionGroup> groups,
         IReadOnlyList<PoseTarget> detectedPoses, IReadOnlyList<EmoteTarget> detectedEmotes)
     {
-        if (detectedPoses.Count > 1 || detectedEmotes.Count > 0)
+        if (detectedPoses.Count > 0 || detectedEmotes.Count > 0)
         {
             ImGui.TextDisabled("Detected animation triggers");
             foreach (var pose in detectedPoses)
