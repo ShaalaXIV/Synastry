@@ -229,6 +229,7 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         var groups = plugin.GetOptionGroups(mod.Directory);
         var detectedPoses = plugin.GetDetectedPoses(mod.Directory);
+        var detectedEmotes = plugin.GetDetectedEmotes(mod.Directory);
         var match = plugin.GetModMatch(mod.Directory);
         var selectedBy = plugin.GetRemoteModSelector(mod.Directory);
         var hasMatchColor = match.Members > 1 && match.Matches > 1;
@@ -237,7 +238,7 @@ public sealed class MainWindow : Window
         else if (hasMatchColor)
             ImGui.PushStyleColor(ImGuiCol.Text,
                 match.Matches >= match.Members ? EveryoneColor : SomeColor);
-        var hasDetails = groups.Count > 0 || detectedPoses.Count > 1;
+        var hasDetails = groups.Count > 0 || detectedPoses.Count > 1 || detectedEmotes.Count > 0;
         var sendWidth = plugin.Sync.IsInRoom
             ? ImGui.CalcTextSize("Send").X + ImGui.GetStyle().FramePadding.X * 2
             : 0;
@@ -273,18 +274,18 @@ public sealed class MainWindow : Window
         }
         if (hasDetails && open)
         {
-            DrawOptions(mod, groups, detectedPoses);
+            DrawOptions(mod, groups, detectedPoses, detectedEmotes);
             ImGui.TreePop();
         }
         ImGui.PopID();
     }
 
     private void DrawOptions((string Directory, string Name) mod, IReadOnlyList<ModOptionGroup> groups,
-        IReadOnlyList<PoseTarget> detectedPoses)
+        IReadOnlyList<PoseTarget> detectedPoses, IReadOnlyList<EmoteTarget> detectedEmotes)
     {
-        if (detectedPoses.Count > 1)
+        if (detectedPoses.Count > 1 || detectedEmotes.Count > 0)
         {
-            ImGui.TextDisabled("Detected actor roles");
+            ImGui.TextDisabled("Detected animation triggers");
             foreach (var pose in detectedPoses)
             {
                 ImGui.PushID($"detected-{pose.Kind}-{pose.Index}");
@@ -301,6 +302,21 @@ public sealed class MainWindow : Window
                     {
                         plugin.ActivateDetectedPoseSolo(mod.Directory, mod.Name, pose);
                     }
+                }
+                ImGui.PopID();
+            }
+            foreach (var emote in detectedEmotes)
+            {
+                ImGui.PushID($"emote-{emote.Id}");
+                ImGui.TextUnformatted($"{emote.Name} (ID {emote.Id})");
+                ImGui.SameLine();
+                if (ImGui.SmallButton(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
+                    plugin.ActivateDetectedEmote(mod.Directory, mod.Name, emote);
+                if (plugin.Sync.IsInRoom)
+                {
+                    ImGui.SameLine();
+                    if (ImGui.SmallButton("Solo"))
+                        plugin.ActivateDetectedEmoteSolo(mod.Directory, mod.Name, emote);
                 }
                 ImGui.PopID();
             }

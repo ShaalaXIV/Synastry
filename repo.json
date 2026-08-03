@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "EmoteLink",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.23.0",
+    "AssemblyVersion": "1.0.24.0",
     "Description": "A plain Penumbra animation launcher with temporary activation, target alignment, and synchronized group play.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -12,9 +12,9 @@
     "Tags": [ "penumbra", "animation", "emote" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.23/EmoteLink-1.0.23.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.23/EmoteLink-1.0.23.zip",
-    "Changelog": "Removes the animation suggestion popup, keeps suggested mods and options purple, sorts purple mods to the top of their current folder, and forces option-specific idle, sit, doze, or emote state when selected.",
-    "LastUpdate": "1785709089"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.24/EmoteLink-1.0.24.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.24/EmoteLink-1.0.24.zip",
+    "Changelog": "Indexes all Penumbra changed-item emotes against the game emote sheet and exposes every recognized trigger with its name, ID, Ready/Activate control, and Solo control alongside detected pose roles.",
+    "LastUpdate": "1785716290"
   }
 ]

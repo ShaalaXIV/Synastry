@@ -51,6 +51,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private bool waitingForAnimation;
     private long activationTime;
     private readonly Dictionary<string, string> emoteCommandsByName = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, EmoteTarget> emoteTargetsByName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<ModOptionGroup>> optionGroups =
         new(StringComparer.OrdinalIgnoreCase);
     private string? pendingCommand;
@@ -60,6 +61,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private long lobbyEmoteRefreshTime;
     private readonly Dictionary<string, PoseTarget> optionPoses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<PoseTarget>> modPoses = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IReadOnlyList<EmoteTarget>> modEmotes = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> optionGroupMulti = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> modSyncKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> modCatalogKeys = new(StringComparer.OrdinalIgnoreCase);
@@ -156,6 +158,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         optionGroups.Clear();
         optionPoses.Clear();
         modPoses.Clear();
+        modEmotes.Clear();
         optionGroupMulti.Clear();
         modSyncKeys.Clear();
         modCatalogKeys.Clear();
@@ -178,6 +181,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             modSyncKeys[mod.Directory] = BuildModSyncKey(path, mod.Name);
             modCatalogKeys[mod.Directory] = CatalogFingerprint(modSyncKeys[mod.Directory]);
             IndexPoseOptions(path, mod.Directory);
+            IndexDetectedEmotes(mod.Directory, mod.Name);
             var groups = penumbra.GetOptionGroups(mod.Directory, mod.Name)
                 .Select(group => optionGroupMulti.TryGetValue(OptionGroupKey(mod.Directory, group.Name), out var multi)
                     ? group with { IsMultiSelect = multi }
@@ -520,6 +524,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public IReadOnlyList<PoseTarget> GetDetectedPoses(string directory) =>
         modPoses.TryGetValue(directory, out var poses) ? poses : [];
 
+    public IReadOnlyList<EmoteTarget> GetDetectedEmotes(string directory) =>
+        modEmotes.TryGetValue(directory, out var emotes) ? emotes : [];
+
     public void ActivateDetectedPose(string directory, string name, PoseTarget pose) =>
         ActivateInternal(directory, name, pose);
 
@@ -527,6 +534,15 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         CancelGroupReadinessForSolo();
         ActivateInternal(directory, name, pose, false);
+    }
+
+    public void ActivateDetectedEmote(string directory, string name, EmoteTarget emote) =>
+        ActivateInternal(directory, name, null, requestedCommand: emote.Command);
+
+    public void ActivateDetectedEmoteSolo(string directory, string name, EmoteTarget emote)
+    {
+        CancelGroupReadinessForSolo();
+        ActivateInternal(directory, name, null, false, emote.Command);
     }
 
     private void NormalizeSelections(string directory, IReadOnlyList<ModOptionGroup> groups)
@@ -875,17 +891,47 @@ public sealed unsafe class Plugin : IDalamudPlugin
             var command = textCommand.Value.Command.ToString();
             var name = row.Name.ExtractText();
             if (command.Length == 0 || name.Length == 0) continue;
-            AddEmoteName(name, command);
+            AddEmoteName(row.RowId, name, command);
         }
         Log.Information("Loaded {Count} emote names for automatic playback.", emoteCommandsByName.Count);
     }
 
-    private void AddEmoteName(string name, string command)
+    private void AddEmoteName(uint id, string name, string command)
     {
         var normalized = NormalizeEmoteName(name);
         if (normalized.Length == 0) return;
+        var target = new EmoteTarget(id, name, command);
         emoteCommandsByName.TryAdd(normalized, command);
         emoteCommandsByName.TryAdd(normalized.Replace("-", ""), command);
+        emoteTargetsByName.TryAdd(normalized, target);
+        emoteTargetsByName.TryAdd(normalized.Replace("-", ""), target);
+    }
+
+    private void IndexDetectedEmotes(string directory, string name)
+    {
+        modEmotes[directory] = penumbra.GetChangedItemNames(directory, name)
+            .Select(FindEmoteTarget)
+            .Where(target => target is not null)
+            .Select(target => target!)
+            .DistinctBy(target => target.Id)
+            .OrderBy(target => target.Name, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private EmoteTarget? FindEmoteTarget(string changedItem)
+    {
+        var item = changedItem.Trim();
+        if ((item.Contains('/') || item.Contains('\\')) && item.Contains('.')) return null;
+        var colon = item.IndexOf(':');
+        if (colon >= 0) item = item[(colon + 1)..];
+        var normalized = NormalizeEmoteName(item);
+        if (emoteTargetsByName.TryGetValue(normalized, out var direct)) return direct;
+        if (emoteTargetsByName.TryGetValue(normalized.Replace("-", ""), out direct)) return direct;
+        var partial = emoteTargetsByName
+            .Where(pair => pair.Key.Length > 3 && normalized.Contains(pair.Key, StringComparison.OrdinalIgnoreCase))
+            .OrderByDescending(pair => pair.Key.Length)
+            .FirstOrDefault();
+        return partial.Value;
     }
 
     private string? DetectEmoteCommand(string directory, string name)
@@ -915,6 +961,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private string? DetectEmoteCommandFromLabel(string option)
     {
+        var target = FindEmoteTarget(option);
+        if (target is not null) return target.Command;
         var normalized = NormalizeEmoteName(option);
         if (emoteCommandsByName.TryGetValue(normalized, out var direct)) return direct;
         if (emoteCommandsByName.TryGetValue(normalized.Replace("-", ""), out direct)) return direct;
@@ -1325,3 +1373,4 @@ public sealed unsafe class Plugin : IDalamudPlugin
 }
 
 public sealed record AnimationSuggestion(string SuggestedBy, string ModKey, string Directory, string ModName);
+public sealed record EmoteTarget(uint Id, string Name, string Command);
