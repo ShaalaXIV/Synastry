@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "EmoteLink",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.25.0",
+    "AssemblyVersion": "1.0.26.0",
     "Description": "A plain Penumbra animation launcher with temporary activation, target alignment, and synchronized group play.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -12,9 +12,9 @@
     "Tags": [ "penumbra", "animation", "emote" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.25/EmoteLink-1.0.25.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.25/EmoteLink-1.0.25.zip",
-    "Changelog": "Removes redundant Ready/Activate and Solo buttons beside mod names, keeping activation controls inside expanded mod menus and exposing single detected poses there as well.",
-    "LastUpdate": "1785717852"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.26/EmoteLink-1.0.26.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.26/EmoteLink-1.0.26.zip",
+    "Changelog": "Adds collapsible option groups with selection highlighting, inline actor-role notes for animation entries, and a private-mod toggle that prevents group advertisement and transfers.",
+    "LastUpdate": "1785810420"
   }
 ]
