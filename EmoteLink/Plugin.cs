@@ -248,6 +248,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
             value.Option.Equals(option, StringComparison.OrdinalIgnoreCase))?.MemberName;
     }
 
+    public string? GetRemoteGroupSelector(string directory, string group)
+    {
+        if (!modSyncKeys.TryGetValue(directory, out var modKey)) return null;
+        return remoteOptionSelections.Values.FirstOrDefault(value =>
+            value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase) &&
+            value.Group.Equals(group, StringComparison.OrdinalIgnoreCase))?.MemberName;
+    }
+
     public string? GetRemoteModSelector(string directory)
     {
         if (!modSyncKeys.TryGetValue(directory, out var modKey)) return null;
@@ -266,6 +274,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (string.IsNullOrWhiteSpace(note)) configuration.OptionNotes.Remove(key);
         else configuration.OptionNotes[key] = note.Trim();
         configuration.Save(PluginInterface);
+    }
+
+    public bool IsModPrivate(string directory) => configuration.PrivateMods.Contains(directory);
+
+    public void SetModPrivate(string directory, bool isPrivate)
+    {
+        if (isPrivate) configuration.PrivateMods.Add(directory);
+        else configuration.PrivateMods.Remove(directory);
+        configuration.Save(PluginInterface);
+        if (sync.IsInRoom) _ = sync.SetCatalogAsync(GetCatalogFingerprints());
+        Status = isPrivate
+            ? "Mod marked private. It will not be advertised or sent in group play."
+            : "Mod is available to group play again.";
     }
 
     public void ApplyOption(string directory, string name, string group, string option, bool selected)
@@ -337,6 +358,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void SendMod(string directory, string name)
     {
+        if (IsModPrivate(directory))
+        {
+            Status = $"{name} is private and cannot be sent.";
+            return;
+        }
         if (!sync.IsInRoom)
         {
             Status = "Join a room before sending a mod.";
@@ -735,7 +761,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private static string NormalizeModKey(string modName) =>
         string.Join(' ', modName.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries));
 
-    private IReadOnlyList<string> GetCatalogFingerprints() => modCatalogKeys.Values.Distinct().ToList();
+    private IReadOnlyList<string> GetCatalogFingerprints() => modCatalogKeys
+        .Where(pair => !IsModPrivate(pair.Key))
+        .Select(pair => pair.Value)
+        .Distinct()
+        .ToList();
 
     private static string CatalogFingerprint(string modSyncKey) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(modSyncKey)));
