@@ -258,6 +258,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
             value.Option.Equals(option, StringComparison.OrdinalIgnoreCase))?.MemberName;
     }
 
+    public string? GetRemoteDetectedTriggerSelector(string directory, string group, string option)
+    {
+        var trigger = group.Equals("$detected-pose", StringComparison.OrdinalIgnoreCase)
+            ? "pose:" + option
+            : group.Equals("$detected-emote", StringComparison.OrdinalIgnoreCase)
+                ? "emote:" + option
+                : "";
+        return trigger.Length == 0 ? null : GetRemoteOptionSelector(directory, "$detected-trigger", trigger);
+    }
+
     public string? GetRemoteGroupSelector(string directory, string group)
     {
         if (!modSyncKeys.TryGetValue(directory, out var modKey)) return null;
@@ -578,8 +588,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public IReadOnlyList<EmoteTarget> GetDetectedEmotes(string directory) =>
         modEmotes.TryGetValue(directory, out var emotes) ? emotes : [];
 
-    public void ActivateDetectedPose(string directory, string name, PoseTarget pose) =>
+    public void ActivateDetectedPose(string directory, string name, PoseTarget pose)
+    {
+        PublishDetectedTriggerSelection(directory, $"pose:{pose.Kind}:{pose.Index}");
         ActivateInternal(directory, name, pose);
+    }
 
     public void ActivateDetectedPoseSolo(string directory, string name, PoseTarget pose)
     {
@@ -587,13 +600,23 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ActivateInternal(directory, name, pose, false);
     }
 
-    public void ActivateDetectedEmote(string directory, string name, EmoteTarget emote) =>
+    public void ActivateDetectedEmote(string directory, string name, EmoteTarget emote)
+    {
+        PublishDetectedTriggerSelection(directory, $"emote:{emote.Id}");
         ActivateInternal(directory, name, null, requestedCommand: emote.Command);
+    }
 
     public void ActivateDetectedEmoteSolo(string directory, string name, EmoteTarget emote)
     {
         CancelGroupReadinessForSolo();
         ActivateInternal(directory, name, null, false, emote.Command);
+    }
+
+    private void PublishDetectedTriggerSelection(string directory, string trigger)
+    {
+        if (sync.IsInRoom && modSyncKeys.TryGetValue(directory, out var modKey))
+            RunSync(sync.SetOptionSelectionAsync(modKey, "$detected-trigger", trigger),
+                "Shared your selected animation role with the room.");
     }
 
     private void NormalizeSelections(string directory, IReadOnlyList<ModOptionGroup> groups)

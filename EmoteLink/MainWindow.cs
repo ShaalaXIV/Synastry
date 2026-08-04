@@ -416,8 +416,19 @@ public sealed class MainWindow : Window
         var label = hasRole
             ? plugin.Sync.IsInRoom ? $"{note} - Ready" : note
             : plugin.Sync.IsInRoom ? "Ready" : "Activate";
+        var selectedBy = plugin.GetRemoteDetectedTriggerSelector(directory, group, option);
+        if (selectedBy is not null)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Button, ClaimedColor);
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.82f, 0.58f, 1f, 1f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.6f, 0.3f, 0.88f, 1f));
+        }
         var clicked = ImGui.SmallButton(label);
-        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{animationName}\nRight-click to edit the role label.");
+        if (selectedBy is not null) ImGui.PopStyleColor(3);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(selectedBy is null
+                ? $"{animationName}\nRight-click to edit the role label."
+                : $"{animationName}\nSelected by {selectedBy}.\nRight-click to edit the role label.");
 
         if (ImGui.BeginPopupContextItem("editRole"))
         {
