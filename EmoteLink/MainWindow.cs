@@ -33,6 +33,8 @@ public sealed class MainWindow : Window
         ImGui.Text(plugin.PenumbraAvailable ? "Penumbra: connected" : "Penumbra: unavailable");
         ImGui.SameLine();
         if (ImGui.Button("Refresh")) plugin.RefreshMods();
+        ImGui.SameLine();
+        if (ImGui.Button("How To")) plugin.OpenHowTo();
 
         if (ImGui.Button(plugin.IsAligning ? "Cancel alignment" : "Align / teleport to target"))
             plugin.ToggleAlignment();

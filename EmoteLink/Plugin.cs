@@ -40,6 +40,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] private static IDataManager DataManager { get; set; } = null!;
     [PluginService] private static IChatGui Chat { get; set; } = null!;
     [PluginService] private static IContextMenu ContextMenu { get; set; } = null!;
+    [PluginService] private static ITextureProvider TextureProvider { get; set; } = null!;
 
     private readonly Configuration configuration;
     private readonly PenumbraService penumbra;
@@ -48,6 +49,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly AnimationSyncService sync;
     private readonly WindowSystem windows = new("EmoteLink");
     private readonly MainWindow mainWindow;
+    private readonly HowToWindow howToWindow;
     private bool waitingForAnimation;
     private long activationTime;
     private readonly Dictionary<string, string> emoteCommandsByName = new(StringComparer.OrdinalIgnoreCase);
@@ -122,8 +124,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
             else Log.Warning(exception, "{Message}", message);
         };
         mainWindow = new MainWindow(this);
+        howToWindow = new HowToWindow(TextureProvider);
         BuildEmoteLookup();
         windows.AddWindow(mainWindow);
+        windows.AddWindow(howToWindow);
+
+        if (!configuration.HasSeenHowTo)
+        {
+            configuration.HasSeenHowTo = true;
+            configuration.Save(PluginInterface);
+            howToWindow.IsOpen = true;
+        }
 
         PluginInterface.UiBuilder.Draw += windows.Draw;
         PluginInterface.UiBuilder.OpenMainUi += ToggleWindow;
@@ -1538,6 +1549,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     }
 
     private void ToggleWindow() => mainWindow.Toggle();
+
+    public void OpenHowTo() => howToWindow.IsOpen = true;
 
     public void Dispose()
     {

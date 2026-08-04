@@ -5,7 +5,8 @@ namespace EmoteLink;
 
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 4;
+    public int Version { get; set; } = 5;
+    public bool HasSeenHowTo { get; set; }
     public List<TemporaryAssignment> ActiveAssignments { get; set; } = [];
     public List<ModCategory> Categories { get; set; } = [];
     public List<string> UncategorizedOrder { get; set; } = [];
