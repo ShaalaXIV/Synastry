@@ -82,9 +82,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly ConcurrentQueue<ModTransferOfferDto> transferOffers = new();
     private readonly ConcurrentQueue<(ModTransferOfferDto Offer, string Path, Exception? Error)> completedDownloads = new();
     private readonly ConcurrentDictionary<string, OptionSelectionDto> remoteOptionSelections = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentQueue<RoleLabelDto> receivedRoleLabels = new();
     private readonly ConcurrentDictionary<string, AnimationSuggestion> activeAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, DalamudLinkPayload> inviteLinks = [];
     private string? remoteSelectionRoom;
+    private bool roleSyncPending;
 
     public IReadOnlyList<(string Directory, string Name)> Mods { get; private set; } = [];
     public IReadOnlyList<ModCategory> Categories => configuration.Categories;
@@ -104,6 +106,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
         sync.ModTransferOffered += offer => transferOffers.Enqueue(offer);
         sync.OptionSelectionChanged += RememberOptionSelection;
+        sync.RoleLabelChanged += label => receivedRoleLabels.Enqueue(label);
         sync.AnimationSuggestionDeclined += OnAnimationSuggestionDeclined;
         sync.StateChanged += OnSyncStateChanged;
         sync.Diagnostic += (message, exception) =>
@@ -271,9 +274,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public void SaveOptionNote(string directory, string group, string option, string note)
     {
         var key = OptionNoteKey(directory, group, option);
-        if (string.IsNullOrWhiteSpace(note)) configuration.OptionNotes.Remove(key);
-        else configuration.OptionNotes[key] = note.Trim();
+        var clean = note.Trim();
+        if (clean.Length == 0) configuration.OptionNotes.Remove(key);
+        else configuration.OptionNotes[key] = clean;
         configuration.Save(PluginInterface);
+        if (sync.IsInRoom && IsSynchronizedRoleGroup(group) && !IsModPrivate(directory) &&
+            modSyncKeys.TryGetValue(directory, out var modKey))
+            _ = sync.SetRoleLabelAsync(modKey, group, option, clean);
     }
 
     public bool IsModPrivate(string directory) => configuration.PrivateMods.Contains(directory);
@@ -1071,6 +1078,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void OnUpdate(IFramework _)
     {
+        ProcessReceivedRoleLabels();
+        if (roleSyncPending) StartRoleLabelSync();
         UpdateAlignment();
         ProcessCompletedDownloads();
         ProcessSyncPlaySignals();
@@ -1159,6 +1168,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             remoteSelectionRoom = null;
             remoteOptionSelections.Clear();
             activeAnimationSuggestions.Clear();
+            roleSyncPending = false;
+            while (receivedRoleLabels.TryDequeue(out _)) { }
             return;
         }
         var roomChanged = !roomCode.Equals(remoteSelectionRoom, StringComparison.OrdinalIgnoreCase);
@@ -1167,6 +1178,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             remoteSelectionRoom = roomCode;
             remoteOptionSelections.Clear();
             activeAnimationSuggestions.Clear();
+            roleSyncPending = true;
         }
         var currentMembers = sync.Room!.Members.Select(member => member.DisplayName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in remoteOptionSelections.Where(pair => !currentMembers.Contains(pair.Value.MemberName)))
@@ -1183,6 +1195,48 @@ public sealed unsafe class Plugin : IDalamudPlugin
             foreach (var selection in task.Result) RememberOptionSelection(selection);
         }, TaskScheduler.Default);
     }
+
+    private void StartRoleLabelSync()
+    {
+        roleSyncPending = false;
+        if (!sync.IsInRoom) return;
+        foreach (var (key, label) in configuration.OptionNotes.ToList())
+        {
+            var parts = key.Split('\n', 3);
+            if (parts.Length != 3 || !IsSynchronizedRoleGroup(parts[1]) || IsModPrivate(parts[0]) ||
+                !modSyncKeys.TryGetValue(parts[0], out var modKey)) continue;
+            _ = sync.SetRoleLabelAsync(modKey, parts[1], parts[2], label);
+        }
+        _ = sync.GetRoleLabelsAsync().ContinueWith(task =>
+        {
+            if (!task.IsCompletedSuccessfully) return;
+            foreach (var label in task.Result) receivedRoleLabels.Enqueue(label);
+        }, TaskScheduler.Default);
+    }
+
+    private void ProcessReceivedRoleLabels()
+    {
+        var changed = false;
+        while (receivedRoleLabels.TryDequeue(out var shared))
+        {
+            if (!sync.IsInRoom || string.IsNullOrWhiteSpace(shared.Label) ||
+                !IsSynchronizedRoleGroup(shared.Group)) continue;
+            var mod = Mods.FirstOrDefault(candidate => modSyncKeys.TryGetValue(candidate.Directory, out var modKey) &&
+                modKey.Equals(shared.ModKey, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrWhiteSpace(mod.Directory)) continue;
+            var key = OptionNoteKey(mod.Directory, shared.Group, shared.Option);
+            if (configuration.OptionNotes.TryGetValue(key, out var existing) && !string.IsNullOrWhiteSpace(existing))
+                continue;
+            configuration.OptionNotes[key] = shared.Label.Trim()[..Math.Min(20, shared.Label.Trim().Length)];
+            changed = true;
+            Log.Information("Received role label for {ModName} from {MemberName}.", mod.Name, shared.MemberName);
+        }
+        if (changed) configuration.Save(PluginInterface);
+    }
+
+    private static bool IsSynchronizedRoleGroup(string group) =>
+        group.Equals("$detected-pose", StringComparison.OrdinalIgnoreCase) ||
+        group.Equals("$detected-emote", StringComparison.OrdinalIgnoreCase);
 
     private static string OptionNoteKey(string directory, string group, string option) =>
         directory + "\n" + group + "\n" + option;

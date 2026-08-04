@@ -4,6 +4,8 @@ A SignalR relay for synchronized animation starts and explicit room-member anima
 
 Room option selections can be offered as animation suggestions. Recipients may explicitly decline a suggestion, and the relay returns the named decline to the suggesting room member.
 
+Animation role labels are shared within a room so clients with an empty local label can adopt one from another member. Clients retain their own existing labels, and private mods are not advertised by the plugin.
+
 ## Run directly on Linux
 
 Install the .NET 10 ASP.NET Core Runtime, extract the `linux-x64` bundle, then:

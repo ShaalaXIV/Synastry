@@ -297,20 +297,18 @@ public sealed class MainWindow : Window
         {
             ImGui.PushID($"inline-pose-{pose.Kind}-{pose.Index}");
             ImGui.SameLine();
-            if (ImGui.SmallButton(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
+            if (DrawRoleActionButton(mod.Directory, "$detected-pose", $"{pose.Kind}:{pose.Index}",
+                    PoseDisplayName(pose)))
                 plugin.ActivateDetectedPose(mod.Directory, mod.Name, pose);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip(PoseDisplayName(pose));
-            DrawRoleNote(mod.Directory, "$detected-pose", $"{pose.Kind}:{pose.Index}");
             ImGui.PopID();
         }
         foreach (var emote in detectedEmotes)
         {
             ImGui.PushID($"inline-emote-{emote.Id}");
             ImGui.SameLine();
-            if (ImGui.SmallButton(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
+            if (DrawRoleActionButton(mod.Directory, "$detected-emote", emote.Id.ToString(),
+                    $"{emote.Name} (ID {emote.Id})"))
                 plugin.ActivateDetectedEmote(mod.Directory, mod.Name, emote);
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{emote.Name} (ID {emote.Id})");
-            DrawRoleNote(mod.Directory, "$detected-emote", emote.Id.ToString());
             ImGui.PopID();
         }
     }
@@ -326,7 +324,8 @@ public sealed class MainWindow : Window
                 ImGui.PushID($"detected-{pose.Kind}-{pose.Index}");
                 ImGui.TextUnformatted(PoseDisplayName(pose));
                 ImGui.SameLine();
-                if (ImGui.SmallButton(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
+                if (DrawRoleActionButton(mod.Directory, "$detected-pose", $"{pose.Kind}:{pose.Index}",
+                        PoseDisplayName(pose)))
                 {
                     plugin.ActivateDetectedPose(mod.Directory, mod.Name, pose);
                 }
@@ -338,7 +337,6 @@ public sealed class MainWindow : Window
                         plugin.ActivateDetectedPoseSolo(mod.Directory, mod.Name, pose);
                     }
                 }
-                DrawRoleNote(mod.Directory, "$detected-pose", $"{pose.Kind}:{pose.Index}");
                 ImGui.PopID();
             }
             foreach (var emote in detectedEmotes)
@@ -346,7 +344,8 @@ public sealed class MainWindow : Window
                 ImGui.PushID($"emote-{emote.Id}");
                 ImGui.TextUnformatted($"{emote.Name} (ID {emote.Id})");
                 ImGui.SameLine();
-                if (ImGui.SmallButton(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
+                if (DrawRoleActionButton(mod.Directory, "$detected-emote", emote.Id.ToString(),
+                        $"{emote.Name} (ID {emote.Id})"))
                     plugin.ActivateDetectedEmote(mod.Directory, mod.Name, emote);
                 if (plugin.Sync.IsInRoom)
                 {
@@ -354,7 +353,6 @@ public sealed class MainWindow : Window
                     if (ImGui.SmallButton("Solo"))
                         plugin.ActivateDetectedEmoteSolo(mod.Directory, mod.Name, emote);
                 }
-                DrawRoleNote(mod.Directory, "$detected-emote", emote.Id.ToString());
                 ImGui.PopID();
             }
         }
@@ -397,7 +395,6 @@ public sealed class MainWindow : Window
                     {
                         ImGui.SameLine();
                         ImGui.TextDisabled(PoseDisplayName(pose));
-                        DrawRoleNote(mod.Directory, group.Name, option);
                     }
                     ImGui.PopID();
                 }
@@ -407,15 +404,49 @@ public sealed class MainWindow : Window
         }
     }
 
-    private void DrawRoleNote(string directory, string group, string option)
+    private bool DrawRoleActionButton(string directory, string group, string option, string animationName)
     {
         var key = NoteKey(directory, group, option);
-        if (!noteBuffers.TryGetValue(key, out var note)) note = plugin.GetOptionNote(directory, group, option);
-        ImGui.SameLine();
-        ImGui.SetNextItemWidth(160);
-        ImGui.InputTextWithHint("##role", "Actor role...", ref note, 64);
+        var savedNote = plugin.GetOptionNote(directory, group, option);
+        if (!noteBuffers.TryGetValue(key, out var note) ||
+            (string.IsNullOrWhiteSpace(note) && !string.IsNullOrWhiteSpace(savedNote))) note = savedNote;
         noteBuffers[key] = note;
-        if (ImGui.IsItemDeactivatedAfterEdit()) plugin.SaveOptionNote(directory, group, option, note);
+        var hasRole = !string.IsNullOrWhiteSpace(note);
+        var label = hasRole
+            ? plugin.Sync.IsInRoom ? $"{note} - Ready" : note
+            : plugin.Sync.IsInRoom ? "Ready" : "Activate";
+        var clicked = ImGui.SmallButton(label);
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{animationName}\nRight-click to edit the role label.");
+
+        if (ImGui.BeginPopupContextItem("editRole"))
+        {
+            ImGui.TextUnformatted(animationName);
+            ImGui.SetNextItemWidth(220);
+            var submit = ImGui.InputTextWithHint("##role", "Actor role...", ref note, 21,
+                ImGuiInputTextFlags.EnterReturnsTrue);
+            noteBuffers[key] = note;
+            if (ImGui.Button("Save") || submit)
+            {
+                plugin.SaveOptionNote(directory, group, option, note);
+                noteBuffers[key] = plugin.GetOptionNote(directory, group, option);
+                ImGui.CloseCurrentPopup();
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Clear"))
+            {
+                plugin.SaveOptionNote(directory, group, option, "");
+                noteBuffers[key] = "";
+                ImGui.CloseCurrentPopup();
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Cancel"))
+            {
+                noteBuffers[key] = plugin.GetOptionNote(directory, group, option);
+                ImGui.CloseCurrentPopup();
+            }
+            ImGui.EndPopup();
+        }
+        return clicked;
     }
 
     private static string NoteKey(string directory, string group, string option) =>

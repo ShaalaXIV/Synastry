@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "EmoteLink",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.27.0",
+    "AssemblyVersion": "1.0.28.0",
     "Description": "A plain Penumbra animation launcher with temporary activation, target alignment, and synchronized group play.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -12,9 +12,9 @@
     "Tags": [ "penumbra", "animation", "emote" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.27/EmoteLink-1.0.27.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.27/EmoteLink-1.0.27.zip",
-    "Changelog": "Shows private mods in cyan and sorts them above unmatched mods, while restoring compact activation and actor-role controls beside each mod name without removing expanded options.",
-    "LastUpdate": "1785812309"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.28/EmoteLink-1.0.28.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.28/EmoteLink-1.0.28.zip",
+    "Changelog": "Makes animation role buttons directly editable and synchronizes role labels through group-play rooms, filling only empty local labels and never overwriting existing choices.",
+    "LastUpdate": "1785813288"
   }
 ]

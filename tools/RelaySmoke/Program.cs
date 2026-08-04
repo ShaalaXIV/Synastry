@@ -28,6 +28,17 @@ const string modKey = "deep plaps:0123456789ABCDEF";
 var suggestionDeclined = new TaskCompletionSource<AnimationSuggestionDeclinedDto>(TaskCreationOptions.RunContinuationsAsynchronously);
 first.On<AnimationSuggestionDeclinedDto>("AnimationSuggestionDeclined", decline => suggestionDeclined.TrySetResult(decline));
 await first.InvokeAsync("SetOptionSelection", modKey, "Actor", "Chair Sit 1");
+var receivedRole = new TaskCompletionSource<RoleLabelDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+second.On<RoleLabelDto>("RoleLabelChanged", label => receivedRole.TrySetResult(label));
+await first.InvokeAsync("SetRoleLabel", modKey, "$detected-pose", "GroundSit:1", "Driver");
+var sharedRole = await receivedRole.Task.WaitAsync(TimeSpan.FromSeconds(5));
+if (sharedRole.MemberName != "Top" || sharedRole.ModKey != modKey || sharedRole.Group != "$detected-pose" ||
+    sharedRole.Option != "GroundSit:1" || sharedRole.Label != "Driver")
+    throw new InvalidOperationException("Role label was not broadcast correctly.");
+var storedRoles = await second.InvokeAsync<IReadOnlyList<RoleLabelDto>>("GetRoleLabels");
+if (storedRoles.Count != 1 || storedRoles[0] != sharedRole)
+    throw new InvalidOperationException("Role label was not retained for room members.");
+Console.WriteLine("PASS role-label broadcast and retrieval");
 await second.InvokeAsync("DeclineAnimationSuggestion", modKey, "Top");
 var decline = await suggestionDeclined.Task.WaitAsync(TimeSpan.FromSeconds(5));
 if (decline.DeclinedBy != "Bottom" || decline.SuggestedBy != "Top" || decline.ModKey != modKey)
@@ -93,3 +104,4 @@ public sealed record PlaySignalDto(
     string SequenceId,
     int DelayMilliseconds = 0);
 public sealed record AnimationSuggestionDeclinedDto(string DeclinedBy, string SuggestedBy, string ModKey);
+public sealed record RoleLabelDto(string MemberName, string ModKey, string Group, string Option, string Label);

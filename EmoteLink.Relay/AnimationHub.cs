@@ -126,6 +126,40 @@ public sealed class AnimationHub : Hub
                 .SelectMany(pair => pair.Value.OptionSelections.Values).ToList();
     }
 
+    public async Task SetRoleLabel(string modKey, string group, string option, string label)
+    {
+        var room = GetCurrentRoom();
+        RoleLabelDto? shared = null;
+        lock (room.Gate)
+        {
+            var member = room.Members[Context.ConnectionId];
+            var cleanModKey = CleanModKey(modKey);
+            var cleanGroup = CleanLabel(group);
+            var cleanOption = CleanLabel(option);
+            var cleanRole = CleanRoleLabel(label);
+            var key = cleanModKey + "\n" + cleanGroup + "\n" + cleanOption;
+            if (cleanRole.Length == 0)
+                member.RoleLabels.Remove(key);
+            else
+            {
+                if (!member.RoleLabels.ContainsKey(key) && member.RoleLabels.Count >= 1000)
+                    throw new HubException("Too many role labels are being shared.");
+                shared = new RoleLabelDto(member.DisplayName, cleanModKey, cleanGroup, cleanOption, cleanRole);
+                member.RoleLabels[key] = shared;
+            }
+        }
+        if (shared is not null)
+            await Clients.OthersInGroup(room.Code).SendAsync("RoleLabelChanged", shared);
+    }
+
+    public IReadOnlyList<RoleLabelDto> GetRoleLabels()
+    {
+        var room = GetCurrentRoom();
+        lock (room.Gate)
+            return room.Members.Where(pair => pair.Key != Context.ConnectionId)
+                .SelectMany(pair => pair.Value.RoleLabels.Values).ToList();
+    }
+
     public async Task DeclineAnimationSuggestion(string modKey, string suggestedBy)
     {
         var room = GetCurrentRoom();
@@ -318,6 +352,11 @@ public sealed class AnimationHub : Hub
         var clean = value.Trim();
         return clean[..Math.Min(120, clean.Length)];
     }
+    private static string CleanRoleLabel(string value)
+    {
+        var clean = new string(value.Where(character => !char.IsControl(character)).ToArray()).Trim();
+        return clean[..Math.Min(20, clean.Length)];
+    }
     private static string CleanFingerprint(string value) =>
         new(value.Where(Uri.IsHexDigit).Take(64).Select(char.ToUpperInvariant).ToArray());
 
@@ -337,6 +376,7 @@ public sealed class AnimationHub : Hub
         public string ModKey { get; set; } = "";
         public HashSet<string> Catalog { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, OptionSelectionDto> OptionSelections { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public Dictionary<string, RoleLabelDto> RoleLabels { get; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }
 
@@ -348,4 +388,5 @@ public sealed record PlaySignalDto(
     string SequenceId,
     int DelayMilliseconds = 0);
 public sealed record OptionSelectionDto(string MemberName, string ModKey, string Group, string Option);
+public sealed record RoleLabelDto(string MemberName, string ModKey, string Group, string Option, string Label);
 public sealed record AnimationSuggestionDeclinedDto(string DeclinedBy, string SuggestedBy, string ModKey);
