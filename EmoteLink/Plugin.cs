@@ -83,10 +83,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly ConcurrentQueue<(ModTransferOfferDto Offer, string Path, Exception? Error)> completedDownloads = new();
     private readonly ConcurrentDictionary<string, OptionSelectionDto> remoteOptionSelections = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<RoleLabelDto> receivedRoleLabels = new();
+    private readonly ConcurrentQueue<CommunityRoleLabelDto> receivedCommunityRoleLabels = new();
     private readonly ConcurrentDictionary<string, AnimationSuggestion> activeAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<uint, DalamudLinkPayload> inviteLinks = [];
     private string? remoteSelectionRoom;
     private bool roleSyncPending;
+    private bool communityRoleSyncPending;
+    private bool communityRelayConnected;
 
     public IReadOnlyList<(string Directory, string Name)> Mods { get; private set; } = [];
     public IReadOnlyList<ModCategory> Categories => configuration.Categories;
@@ -99,6 +102,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public Plugin()
     {
         configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        if (configuration.CommunityReporterId.Length != 32 ||
+            configuration.CommunityReporterId.Any(character => !Uri.IsHexDigit(character)))
+            configuration.CommunityReporterId = Guid.NewGuid().ToString("N");
         penumbra = new PenumbraService(PluginInterface, Log);
         movement = new MovementService(Interop, Objects);
         poses = new PoseService(Objects);
@@ -107,6 +113,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         sync.ModTransferOffered += offer => transferOffers.Enqueue(offer);
         sync.OptionSelectionChanged += RememberOptionSelection;
         sync.RoleLabelChanged += label => receivedRoleLabels.Enqueue(label);
+        sync.CommunityRoleLabelChanged += label => receivedCommunityRoleLabels.Enqueue(label);
         sync.AnimationSuggestionDeclined += OnAnimationSuggestionDeclined;
         sync.StateChanged += OnSyncStateChanged;
         sync.Diagnostic += (message, exception) =>
@@ -275,12 +282,23 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         var key = OptionNoteKey(directory, group, option);
         var clean = note.Trim();
+        configuration.CommunityRoleKeys.Remove(key);
         if (clean.Length == 0) configuration.OptionNotes.Remove(key);
         else configuration.OptionNotes[key] = clean;
         configuration.Save(PluginInterface);
         if (sync.IsInRoom && IsSynchronizedRoleGroup(group) && !IsModPrivate(directory) &&
             modSyncKeys.TryGetValue(directory, out var modKey))
             _ = sync.SetRoleLabelAsync(modKey, group, option, clean);
+        if (sync.IsConnected && clean.Length > 0 && IsSynchronizedRoleGroup(group) && !IsModPrivate(directory) &&
+            modCatalogKeys.TryGetValue(directory, out var fingerprint))
+            _ = sync.SubmitCommunityRoleLabelAsync(
+                fingerprint, group, option, clean, configuration.CommunityReporterId);
+    }
+
+    public void ReportBadRoleLabel(string directory, string group, string option, string correction)
+    {
+        SaveOptionNote(directory, group, option, correction);
+        Status = "Your correction was applied locally and submitted to the community database.";
     }
 
     public bool IsModPrivate(string directory) => configuration.PrivateMods.Contains(directory);
@@ -1079,7 +1097,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void OnUpdate(IFramework _)
     {
         ProcessReceivedRoleLabels();
+        ProcessReceivedCommunityRoleLabels();
         if (roleSyncPending) StartRoleLabelSync();
+        if (communityRoleSyncPending) StartCommunityRoleLabelSync();
         UpdateAlignment();
         ProcessCompletedDownloads();
         ProcessSyncPlaySignals();
@@ -1162,6 +1182,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void OnSyncStateChanged()
     {
+        if (!sync.IsConnected)
+        {
+            communityRelayConnected = false;
+            communityRoleSyncPending = false;
+        }
+        else if (!communityRelayConnected)
+        {
+            communityRelayConnected = true;
+            communityRoleSyncPending = true;
+        }
         var roomCode = sync.Room?.RoomCode;
         if (roomCode is null)
         {
@@ -1230,6 +1260,52 @@ public sealed unsafe class Plugin : IDalamudPlugin
             configuration.OptionNotes[key] = shared.Label.Trim()[..Math.Min(20, shared.Label.Trim().Length)];
             changed = true;
             Log.Information("Received role label for {ModName} from {MemberName}.", mod.Name, shared.MemberName);
+        }
+        if (changed) configuration.Save(PluginInterface);
+    }
+
+    private void StartCommunityRoleLabelSync()
+    {
+        communityRoleSyncPending = false;
+        if (!sync.IsConnected) return;
+        foreach (var (key, label) in configuration.OptionNotes.ToList())
+        {
+            var parts = key.Split('\n', 3);
+            if (parts.Length != 3 || !IsSynchronizedRoleGroup(parts[1]) || IsModPrivate(parts[0]) ||
+                configuration.CommunityRoleKeys.Contains(key) ||
+                !modCatalogKeys.TryGetValue(parts[0], out var fingerprint)) continue;
+            _ = sync.SubmitCommunityRoleLabelAsync(
+                fingerprint, parts[1], parts[2], label, configuration.CommunityReporterId);
+        }
+        var fingerprints = modCatalogKeys
+            .Where(pair => !IsModPrivate(pair.Key))
+            .Select(pair => pair.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        _ = sync.GetCommunityRoleLabelsAsync(fingerprints).ContinueWith(task =>
+        {
+            if (!task.IsCompletedSuccessfully) return;
+            foreach (var label in task.Result) receivedCommunityRoleLabels.Enqueue(label);
+        }, TaskScheduler.Default);
+    }
+
+    private void ProcessReceivedCommunityRoleLabels()
+    {
+        var changed = false;
+        while (receivedCommunityRoleLabels.TryDequeue(out var shared))
+        {
+            if (!sync.IsConnected || string.IsNullOrWhiteSpace(shared.Label) ||
+                !IsSynchronizedRoleGroup(shared.Group)) continue;
+            var mod = Mods.FirstOrDefault(candidate => modCatalogKeys.TryGetValue(candidate.Directory, out var fingerprint) &&
+                fingerprint.Equals(shared.Fingerprint, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrWhiteSpace(mod.Directory) || IsModPrivate(mod.Directory)) continue;
+            var key = OptionNoteKey(mod.Directory, shared.Group, shared.Option);
+            var isCommunityManaged = configuration.CommunityRoleKeys.Contains(key);
+            if (!isCommunityManaged && configuration.OptionNotes.TryGetValue(key, out var existing) &&
+                !string.IsNullOrWhiteSpace(existing)) continue;
+            configuration.OptionNotes[key] = shared.Label.Trim()[..Math.Min(20, shared.Label.Trim().Length)];
+            configuration.CommunityRoleKeys.Add(key);
+            changed = true;
         }
         if (changed) configuration.Save(PluginInterface);
     }

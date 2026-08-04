@@ -22,6 +22,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public event Action<ModTransferOfferDto>? ModTransferOffered;
     public event Action<OptionSelectionDto>? OptionSelectionChanged;
     public event Action<RoleLabelDto>? RoleLabelChanged;
+    public event Action<CommunityRoleLabelDto>? CommunityRoleLabelChanged;
     public event Action<AnimationSuggestionDeclinedDto>? AnimationSuggestionDeclined;
     public string Status { get; private set; } = "Disconnected";
     public bool IsConnected => connection?.State == HubConnectionState.Connected;
@@ -51,6 +52,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         hub.On<ModTransferOfferDto>("ModTransferOffered", offer => ModTransferOffered?.Invoke(offer));
         hub.On<OptionSelectionDto>("OptionSelectionChanged", selection => OptionSelectionChanged?.Invoke(selection));
         hub.On<RoleLabelDto>("RoleLabelChanged", label => RoleLabelChanged?.Invoke(label));
+        hub.On<CommunityRoleLabelDto>("CommunityRoleLabelChanged", label => CommunityRoleLabelChanged?.Invoke(label));
         hub.On<AnimationSuggestionDeclinedDto>("AnimationSuggestionDeclined",
             decline => AnimationSuggestionDeclined?.Invoke(decline));
         hub.On<string>("RemovedFromRoom", reason =>
@@ -203,6 +205,28 @@ public sealed class AnimationSyncService : IAsyncDisposable
         catch { return []; }
     }
 
+    public async Task<IReadOnlyList<CommunityRoleLabelDto>> GetCommunityRoleLabelsAsync(
+        IReadOnlyList<string> fingerprints)
+    {
+        try
+        {
+            return await RequireConnection().InvokeAsync<IReadOnlyList<CommunityRoleLabelDto>>(
+                "GetCommunityRoleLabels", fingerprints);
+        }
+        catch { return []; }
+    }
+
+    public async Task SubmitCommunityRoleLabelAsync(
+        string fingerprint, string group, string option, string label, string reporterId)
+    {
+        try
+        {
+            await RequireConnection().InvokeAsync<CommunityRoleLabelDto?>(
+                "SubmitCommunityRoleLabel", fingerprint, group, option, label, reporterId);
+        }
+        catch { /* Community labels are optional when connected to an older relay. */ }
+    }
+
     public Task DeclineAnimationSuggestionAsync(string modKey, string suggestedBy) =>
         RequireConnection().InvokeAsync("DeclineAnimationSuggestion", modKey, suggestedBy);
 
@@ -340,6 +364,7 @@ public sealed record ModTransferOfferDto(string TransferId, string ModName, stri
     string Sha256, string DownloadToken, DateTimeOffset ExpiresAt);
 public sealed record OptionSelectionDto(string MemberName, string ModKey, string Group, string Option);
 public sealed record RoleLabelDto(string MemberName, string ModKey, string Group, string Option, string Label);
+public sealed record CommunityRoleLabelDto(string Fingerprint, string Group, string Option, string Label);
 public sealed record AnimationSuggestionDeclinedDto(string DeclinedBy, string SuggestedBy, string ModKey);
 public sealed record PlaySignalDto(
     string ModKey,

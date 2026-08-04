@@ -17,6 +17,7 @@ public sealed class MainWindow : Window
     private string roomCode = "";
     private ModTransferOfferDto? activeTransferOffer;
     private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> correctionBuffers = new(StringComparer.OrdinalIgnoreCase);
     private const string ModPayload = "EMOTELINK_MOD";
     private const string FolderPayload = "EMOTELINK_FOLDER";
 
@@ -443,6 +444,24 @@ public sealed class MainWindow : Window
             {
                 noteBuffers[key] = plugin.GetOptionNote(directory, group, option);
                 ImGui.CloseCurrentPopup();
+            }
+            if (hasRole)
+            {
+                ImGui.Separator();
+                ImGui.TextDisabled("Report a bad shared label");
+                if (!correctionBuffers.TryGetValue(key, out var correction)) correction = "";
+                ImGui.SetNextItemWidth(220);
+                ImGui.InputTextWithHint("##correction", "Suggested correction...", ref correction, 21);
+                correctionBuffers[key] = correction;
+                if (ImGui.Button("Report correction") && !string.IsNullOrWhiteSpace(correction))
+                {
+                    plugin.ReportBadRoleLabel(directory, group, option, correction);
+                    noteBuffers[key] = plugin.GetOptionNote(directory, group, option);
+                    correctionBuffers[key] = "";
+                    ImGui.CloseCurrentPopup();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Applies immediately for you. Three matching reports update the community label.");
             }
             ImGui.EndPopup();
         }

@@ -5,7 +5,7 @@ namespace EmoteLink;
 
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 3;
+    public int Version { get; set; } = 4;
     public List<TemporaryAssignment> ActiveAssignments { get; set; } = [];
     public List<ModCategory> Categories { get; set; } = [];
     public List<string> UncategorizedOrder { get; set; } = [];
@@ -15,6 +15,8 @@ public sealed class Configuration : IPluginConfiguration
         new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> OptionNotes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> PrivateMods { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public HashSet<string> CommunityRoleKeys { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public string CommunityReporterId { get; set; } = Guid.NewGuid().ToString("N");
 
     public void Save(IDalamudPluginInterface pluginInterface) => pluginInterface.SavePluginConfig(this);
 }

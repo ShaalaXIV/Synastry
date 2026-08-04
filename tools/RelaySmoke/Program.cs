@@ -6,12 +6,15 @@ await using var first = new HubConnectionBuilder().WithUrl(baseUrl + "/animation
     options.Transports = HttpTransportType.LongPolling).Build();
 await using var second = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
     options.Transports = HttpTransportType.LongPolling).Build();
+await using var third = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
+    options.Transports = HttpTransportType.LongPolling).Build();
 var firstPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
 var secondPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
 first.On<PlaySignalDto>("AnimationPlay", signal => firstPlay.TrySetResult(signal));
 second.On<PlaySignalDto>("AnimationPlay", signal => secondPlay.TrySetResult(signal));
 await first.StartAsync();
 await second.StartAsync();
+await third.StartAsync();
 var room = await first.InvokeAsync<RoomStateDto>("CreateRoom", "Top");
 await second.InvokeAsync<RoomStateDto>("JoinRoom", room.RoomCode, "Bottom");
 var sharedFingerprint = new string('A', 64);
@@ -39,6 +42,38 @@ var storedRoles = await second.InvokeAsync<IReadOnlyList<RoleLabelDto>>("GetRole
 if (storedRoles.Count != 1 || storedRoles[0] != sharedRole)
     throw new InvalidOperationException("Role label was not retained for room members.");
 Console.WriteLine("PASS role-label broadcast and retrieval");
+var communityChanged = new TaskCompletionSource<CommunityRoleLabelDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+second.On<CommunityRoleLabelDto>("CommunityRoleLabelChanged", label => communityChanged.TrySetResult(label));
+var communityFingerprint = Convert.ToHexString(System.Security.Cryptography.RandomNumberGenerator.GetBytes(32));
+var firstReporter = Guid.NewGuid().ToString("N");
+var secondReporter = Guid.NewGuid().ToString("N");
+var thirdReporter = Guid.NewGuid().ToString("N");
+await first.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", communityFingerprint,
+    "$detected-pose", "GroundSit:1", "Passenger", firstReporter);
+await second.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", communityFingerprint,
+    "$detected-pose", "GroundSit:1", "Passenger", secondReporter);
+await third.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", communityFingerprint,
+    "$detected-pose", "GroundSit:1", "Passenger", thirdReporter);
+var acceptedCommunityRole = await communityChanged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+if (acceptedCommunityRole.Fingerprint != communityFingerprint || acceptedCommunityRole.Label != "Passenger")
+    throw new InvalidOperationException("Community role label was not accepted after three matching reports.");
+var communityRoles = await second.InvokeAsync<IReadOnlyList<CommunityRoleLabelDto>>(
+    "GetCommunityRoleLabels", new[] { communityFingerprint });
+if (communityRoles.Count != 1 || communityRoles[0] != acceptedCommunityRole)
+    throw new InvalidOperationException("Accepted community role label was not persisted.");
+var correctionChanged = new TaskCompletionSource<CommunityRoleLabelDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+second.On<CommunityRoleLabelDto>("CommunityRoleLabelChanged", label =>
+{
+    if (label.Fingerprint == communityFingerprint && label.Label == "Camera") correctionChanged.TrySetResult(label);
+});
+await first.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", communityFingerprint,
+    "$detected-pose", "GroundSit:1", "Camera", firstReporter);
+await second.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", communityFingerprint,
+    "$detected-pose", "GroundSit:1", "Camera", secondReporter);
+await third.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", communityFingerprint,
+    "$detected-pose", "GroundSit:1", "Camera", thirdReporter);
+await correctionChanged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+Console.WriteLine("PASS community role-label consensus and retrieval");
 await second.InvokeAsync("DeclineAnimationSuggestion", modKey, "Top");
 var decline = await suggestionDeclined.Task.WaitAsync(TimeSpan.FromSeconds(5));
 if (decline.DeclinedBy != "Bottom" || decline.SuggestedBy != "Top" || decline.ModKey != modKey)
@@ -105,3 +140,4 @@ public sealed record PlaySignalDto(
     int DelayMilliseconds = 0);
 public sealed record AnimationSuggestionDeclinedDto(string DeclinedBy, string SuggestedBy, string ModKey);
 public sealed record RoleLabelDto(string MemberName, string ModKey, string Group, string Option, string Label);
+public sealed record CommunityRoleLabelDto(string Fingerprint, string Group, string Option, string Label);

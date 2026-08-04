@@ -10,10 +10,16 @@ public sealed class AnimationHub : Hub
     private static readonly TimeSpan EmptyRoomGracePeriod = TimeSpan.FromSeconds(30);
     private static readonly ConcurrentDictionary<string, Room> Rooms = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, string> ConnectionRooms = new();
+    private static readonly ConcurrentDictionary<string, string> ConnectionReporterIds = new();
     private const int MaxMembers = 16;
     private readonly TransferStore transfers;
+    private readonly CommunityRoleLabelStore communityRoles;
 
-    public AnimationHub(TransferStore transfers) => this.transfers = transfers;
+    public AnimationHub(TransferStore transfers, CommunityRoleLabelStore communityRoles)
+    {
+        this.transfers = transfers;
+        this.communityRoles = communityRoles;
+    }
 
     public async Task<RoomStateDto> CreateRoom(string displayName)
     {
@@ -158,6 +164,35 @@ public sealed class AnimationHub : Hub
         lock (room.Gate)
             return room.Members.Where(pair => pair.Key != Context.ConnectionId)
                 .SelectMany(pair => pair.Value.RoleLabels.Values).ToList();
+    }
+
+    public IReadOnlyList<CommunityRoleLabelDto> GetCommunityRoleLabels(IReadOnlyList<string> fingerprints) =>
+        communityRoles.Get(fingerprints.Select(CleanFingerprint)
+            .Where(value => value.Length == 64)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Take(1000)
+            .ToList());
+
+    public async Task<CommunityRoleLabelDto?> SubmitCommunityRoleLabel(
+        string fingerprint, string group, string option, string label, string reporterId)
+    {
+        var cleanFingerprint = CleanFingerprint(fingerprint);
+        var cleanGroup = CleanLabel(group);
+        var cleanOption = CleanLabel(option);
+        var cleanRole = CleanRoleLabel(label);
+        var cleanReporter = new string(reporterId.Where(Uri.IsHexDigit).Take(32).ToArray());
+        if (cleanFingerprint.Length != 64 || cleanRole.Length == 0 || cleanReporter.Length != 32 ||
+            (cleanGroup != "$detected-pose" && cleanGroup != "$detected-emote"))
+            throw new HubException("Invalid community role-label submission.");
+        if (ConnectionReporterIds.TryGetValue(Context.ConnectionId, out var existingReporter) &&
+            !existingReporter.Equals(cleanReporter, StringComparison.OrdinalIgnoreCase))
+            throw new HubException("A connection cannot submit as multiple installations.");
+        ConnectionReporterIds[Context.ConnectionId] = cleanReporter;
+        var (accepted, changed) = communityRoles.Submit(
+            cleanFingerprint, cleanGroup, cleanOption, cleanRole, cleanReporter);
+        if (changed && accepted is not null)
+            await Clients.All.SendAsync("CommunityRoleLabelChanged", accepted);
+        return accepted;
     }
 
     public async Task DeclineAnimationSuggestion(string modKey, string suggestedBy)
@@ -309,6 +344,7 @@ public sealed class AnimationHub : Hub
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
+        ConnectionReporterIds.TryRemove(Context.ConnectionId, out _);
         await LeaveRoom();
         await base.OnDisconnectedAsync(exception);
     }

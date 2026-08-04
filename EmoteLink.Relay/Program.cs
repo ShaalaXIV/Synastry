@@ -7,6 +7,7 @@ if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URL
     builder.WebHost.UseUrls("http://0.0.0.0:25080");
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = TransferStore.MaximumBytes);
 builder.Services.AddSingleton<TransferStore>();
+builder.Services.AddSingleton<CommunityRoleLabelStore>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<TransferStore>());
 builder.Services.AddSignalR(options =>
 {
