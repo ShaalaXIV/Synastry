@@ -224,6 +224,7 @@ public sealed class MainWindow : Window
         var detectedEmotes = plugin.GetDetectedEmotes(mod.Directory);
         var match = plugin.GetModMatch(mod.Directory);
         var selectedBy = plugin.GetRemoteModSelector(mod.Directory);
+        var isPrivate = plugin.IsModPrivate(mod.Directory);
         var hasMatchColor = match.Members > 1 && match.Matches > 1;
         if (selectedBy is not null)
             ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
@@ -231,17 +232,26 @@ public sealed class MainWindow : Window
             ImGui.PushStyleColor(ImGuiCol.Text,
                 match.Matches >= match.Members ? EveryoneColor : SomeColor);
         var hasDetails = groups.Count > 0 || detectedPoses.Count > 0 || detectedEmotes.Count > 0;
-        var sendWidth = plugin.Sync.IsInRoom
+        var sendWidth = plugin.Sync.IsInRoom && !isPrivate
             ? ImGui.CalcTextSize("Send").X + ImGui.GetStyle().FramePadding.X * 2
             : 0;
         var labelWidth = MathF.Max(1, ImGui.GetContentRegionAvail().X - sendWidth -
-            (plugin.Sync.IsInRoom ? ImGui.GetStyle().ItemSpacing.X : 0));
+            (plugin.Sync.IsInRoom && !isPrivate ? ImGui.GetStyle().ItemSpacing.X : 0));
+        var displayName = isPrivate ? $"{mod.Name} [Private]" : mod.Name;
         var open = hasDetails
-            ? ImGui.TreeNodeEx(mod.Name, ImGuiTreeNodeFlags.None)
-            : ImGui.Selectable(mod.Name, false, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(labelWidth, 0));
+            ? ImGui.TreeNodeEx(displayName, ImGuiTreeNodeFlags.None)
+            : ImGui.Selectable(displayName, false, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(labelWidth, 0));
         if (selectedBy is not null || hasMatchColor) ImGui.PopStyleColor();
         if (selectedBy is not null && ImGui.IsItemHovered())
             ImGui.SetTooltip($"{selectedBy} selected an option in this mod.");
+
+        if (ImGui.BeginPopupContextItem("modMenu"))
+        {
+            if (ImGui.MenuItem("Private", "", isPrivate)) plugin.SetModPrivate(mod.Directory, !isPrivate);
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Private mods are not advertised or transferable in group play.");
+            ImGui.EndPopup();
+        }
 
         if (ImGui.BeginDragDropSource())
         {
@@ -257,7 +267,7 @@ public sealed class MainWindow : Window
                 plugin.MoveMod(source, categoryId, mod.Directory);
             ImGui.EndDragDropTarget();
         }
-        if (plugin.Sync.IsInRoom)
+        if (plugin.Sync.IsInRoom && !isPrivate)
         {
             ImGui.SameLine();
             ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMax().X - sendWidth);
@@ -295,6 +305,7 @@ public sealed class MainWindow : Window
                         plugin.ActivateDetectedPoseSolo(mod.Directory, mod.Name, pose);
                     }
                 }
+                DrawRoleNote(mod.Directory, "$detected-pose", $"{pose.Kind}:{pose.Index}");
                 ImGui.PopID();
             }
             foreach (var emote in detectedEmotes)
@@ -310,71 +321,68 @@ public sealed class MainWindow : Window
                     if (ImGui.SmallButton("Solo"))
                         plugin.ActivateDetectedEmoteSolo(mod.Directory, mod.Name, emote);
                 }
+                DrawRoleNote(mod.Directory, "$detected-emote", emote.Id.ToString());
                 ImGui.PopID();
             }
         }
         foreach (var group in groups)
         {
             ImGui.PushID(group.Name);
-            ImGui.TextDisabled(group.Name);
-            foreach (var option in group.Options)
+            var groupSelectedBy = plugin.GetRemoteGroupSelector(mod.Directory, group.Name);
+            if (groupSelectedBy is not null) ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
+            var groupOpen = ImGui.TreeNodeEx(group.Name, ImGuiTreeNodeFlags.None);
+            if (groupSelectedBy is not null)
             {
-                ImGui.PushID(option);
-                var selected = plugin.IsOptionSelected(mod.Directory, group.Name, option);
-                var selectedBy = plugin.GetRemoteOptionSelector(mod.Directory, group.Name, option);
-                if (selectedBy is not null)
+                ImGui.PopStyleColor();
+                if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{groupSelectedBy} selected an option in this group.");
+            }
+            if (groupOpen)
+            {
+                foreach (var option in group.Options)
                 {
-                    ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
-                    ImGui.PushStyleColor(ImGuiCol.CheckMark, ClaimedColor);
+                    ImGui.PushID(option);
+                    var selected = plugin.IsOptionSelected(mod.Directory, group.Name, option);
+                    var selectedBy = plugin.GetRemoteOptionSelector(mod.Directory, group.Name, option);
+                    if (selectedBy is not null)
+                    {
+                        ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
+                        ImGui.PushStyleColor(ImGuiCol.CheckMark, ClaimedColor);
+                    }
+                    if (ImGui.Checkbox(option, ref selected))
+                    {
+                        plugin.SetOptionSelected(mod.Directory, group.Name, option, selected, group.IsMultiSelect);
+                        var appliedSelection = plugin.IsOptionSelected(mod.Directory, group.Name, option);
+                        plugin.ApplyOption(mod.Directory, mod.Name, group.Name, option, appliedSelection);
+                    }
+                    if (selectedBy is not null)
+                    {
+                        ImGui.PopStyleColor(2);
+                        if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{selectedBy} selected this option.");
+                    }
+                    var pose = plugin.GetOptionPose(mod.Directory, group.Name, option);
+                    if (pose is not null)
+                    {
+                        ImGui.SameLine();
+                        ImGui.TextDisabled(PoseDisplayName(pose));
+                        DrawRoleNote(mod.Directory, group.Name, option);
+                    }
+                    ImGui.PopID();
                 }
-                if (ImGui.Checkbox(option, ref selected))
-                {
-                    plugin.SetOptionSelected(mod.Directory, group.Name, option, selected, group.IsMultiSelect);
-                    var appliedSelection = plugin.IsOptionSelected(mod.Directory, group.Name, option);
-                    plugin.ApplyOption(mod.Directory, mod.Name, group.Name, option, appliedSelection);
-                }
-                if (selectedBy is not null)
-                {
-                    ImGui.PopStyleColor(2);
-                    if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{selectedBy} selected this option.");
-                }
-                var pose = plugin.GetOptionPose(mod.Directory, group.Name, option);
-                if (pose is not null)
-                {
-                    ImGui.SameLine();
-                    ImGui.TextDisabled(PoseDisplayName(pose));
-                }
-                ImGui.SameLine();
-                if (ImGui.SmallButton("Notes"))
-                {
-                    var key = NoteKey(mod.Directory, group.Name, option);
-                    noteBuffers[key] = plugin.GetOptionNote(mod.Directory, group.Name, option);
-                    ImGui.OpenPopup("Option notes");
-                }
-                DrawOptionNotesPopup(mod.Directory, group.Name, option);
-                ImGui.PopID();
+                ImGui.TreePop();
             }
             ImGui.PopID();
         }
     }
 
-    private void DrawOptionNotesPopup(string directory, string group, string option)
+    private void DrawRoleNote(string directory, string group, string option)
     {
-        if (!ImGui.BeginPopup("Option notes")) return;
         var key = NoteKey(directory, group, option);
         if (!noteBuffers.TryGetValue(key, out var note)) note = plugin.GetOptionNote(directory, group, option);
-        ImGui.TextWrapped(option);
-        ImGui.SetNextItemWidth(340);
-        ImGui.InputTextMultiline("##note", ref note, 1000, new Vector2(340, 130));
-        noteBuffers[key] = note;
-        if (ImGui.Button("Save"))
-        {
-            plugin.SaveOptionNote(directory, group, option, note);
-            ImGui.CloseCurrentPopup();
-        }
         ImGui.SameLine();
-        if (ImGui.Button("Cancel")) ImGui.CloseCurrentPopup();
-        ImGui.EndPopup();
+        ImGui.SetNextItemWidth(160);
+        ImGui.InputTextWithHint("##role", "Actor role...", ref note, 64);
+        noteBuffers[key] = note;
+        if (ImGui.IsItemDeactivatedAfterEdit()) plugin.SaveOptionNote(directory, group, option, note);
     }
 
     private static string NoteKey(string directory, string group, string option) =>
