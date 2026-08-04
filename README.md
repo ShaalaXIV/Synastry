@@ -1,6 +1,47 @@
 # EmoteLink
 
-A deliberately small Dalamud plugin for browsing Penumbra mods, temporarily activating one animation mod at a time, and aligning your character to a nearby target.
+EmoteLink is a Dalamud plugin for finding, organizing, sharing, and playing Penumbra animation mods.
+
+It turns large animation collections into a practical launcher: browse mods, organize them into folders, collapse large option groups, label multi-actor roles, and activate animations without manually changing Penumbra settings.
+
+## Community role labels
+
+Multi-actor animation packs are often difficult to understand when their options are only named `Ground Sit 1`, `Ground Sit 2`, and so on. EmoteLink lets those activation buttons carry useful role names such as `Driver`, `Passenger`, `Top`, or `Bottom`.
+
+Role labels are community-driven:
+
+- Right-click an activation button to create or edit its label.
+- Existing local labels are always respected and never overwritten.
+- Non-private labels can be shared with other members of a room.
+- Accepted community labels are available to anyone connected to EmoteLink.
+- If a shared label is wrong, right-click it and submit a correction.
+- Your correction applies locally immediately.
+- Three matching installation reports accept a community label or correction.
+- Private mods never submit labels to the community database.
+
+The goal is simple: once the community identifies the roles in a complicated animation pack, everyone else can use it without solving the same puzzle again.
+
+## Mod sharing
+
+If another room member does not have an animation, EmoteLink can offer the mod directly through the room. The recipient explicitly accepts or declines the transfer, and accepted packages are handed to Penumbra for installation.
+
+This makes coordinated animation sessions much easier: find an animation, share it with the people who need it, assign the roles, and start together from the same room.
+
+- Transfers are limited to 75 MB.
+- Transfer packages expire from relay storage after 10 minutes.
+- Private mods cannot be advertised or sent.
+- Mods are never transferred without the recipient accepting the offer.
+
+## Other features
+
+- Automatically lists Penumbra mods containing animation files.
+- Collapsible option groups support large packs with hundreds of choices.
+- Create folders and drag mods into a preferred order.
+- Mark mods private from their right-click menu.
+- Temporarily activate animations without disturbing unrelated Penumbra settings.
+- Ready a room for synchronized playback or play an animation locally with **Solo**.
+- Align your character with a nearby target before playback.
+- Green, orange, purple, cyan, and white indicators show room availability, suggestions, and privacy state.
 
 ## Install
 
@@ -10,42 +51,28 @@ Add this URL under **Dalamud Settings → Experimental → Custom Plugin Reposit
 https://shaalaxiv.github.io/EmoteLink/repo.json
 ```
 
-Save the settings, open the Plugin Installer, search for **EmoteLink**, and install it.
+Save the settings, open the Plugin Installer, and search for **EmoteLink**.
 
-## Behavior
+Use `/emotelink` to open the plugin. To join a room directly, use:
 
-- `/emotelink` opens a plain window containing the Penumbra mod list.
-- Only mods containing at least one physical `.pap` animation file are listed.
-- Mods with Penumbra option groups can be expanded; selected options are saved and applied during temporary activation.
-- Every expanded option has its own **Activate** button. It selects that option, reapplies the temporary assignment, and starts its detected animation or pose.
-- Pose options are detected from their PAP paths. Clicking an idle, chair-sit, ground-sit, or doze option immediately applies it, enters the correct state, and cycles to the matching pose index.
-- Each option shows its detected pose beside it. Click that pose label to manually choose Idle, Sit, GroundSit, Doze, and the pose index when a mod's metadata is unusual.
-- Create and delete folders, reorder folders, and drag mods between or within folders. Organization is saved automatically. Deleting a folder moves its mods to **Uncategorized**.
-- **Activate** clears this plugin's previous temporary assignments, enables the chosen mod temporarily with its existing options and at least priority 100, detects its affected emote through Penumbra, and starts that emote automatically.
-- The temporary assignment remains active through the animation and is removed only after several consecutive frames of actual character translation. Turning in place, redraws, and pose-entry snaps do not clear it.
-- **Clear temporary animations** immediately removes every assignment created and tracked by this plugin.
-- **Align / teleport to target** walks to a target within 2 yalms, then snaps to its exact position and rotation. Player input cancels the walk.
+```text
+/emotelink join ROOMCODE
+```
 
-The plugin intentionally does not remove temporary settings created by other plugins. Doing so would unexpectedly break unrelated tools.
+## Privacy
 
-## Group play
+Room matching uses animation fingerprints instead of local file paths. Community labels are keyed by opaque mod fingerprints and animation trigger IDs. The community database does not require character names, mod names, or local paths.
 
-The built-in Linux relay provides Snowcloak-style persistent client/server callbacks, limited to animation synchronization. The client uses the official EmoteLink relay; users cannot select an alternate relay. Connect both plugins, create or join a short-code room, then select local options from the same mod. Options may differ between participants. Once at least two room members are ready with the same mod fingerprint, the relay sends every member the same 1.5-second relative countdown. Relative timing prevents differences between players' system clocks from causing multi-second playback skew.
-
-Click the displayed room code to copy it. While in a room, right-click another player and choose **Invite to EmoteLink** to send them the room code in a tell.
-
-While connected to a room, animation rows show **Ready** for synchronized playback and **Solo** for immediate local playback. Solo cancels that client's current ready state without removing them from the room.
-
-Room members privately compare opaque animation fingerprints. A mod name is green when everyone in the room has the same animation, orange when only some members match, and unchanged when nobody else matches. Clients receive counts only for their own fingerprints; mod names, paths, options, and other members' catalogs are not returned.
-
-No mod files, character appearance, chat, or arbitrary commands are sent. The fingerprint contains only the normalized mod name and a hash of its redirected PAP game paths.
+Private mods are excluded from room catalogs, transfers, and community-label submissions.
 
 ## Build
 
-Requires the Dalamud development environment, then:
+Building the plugin requires the Dalamud development environment:
 
 ```powershell
 dotnet build EmoteLink.slnx -c Release
 ```
 
-The alignment implementation is adapted from [IcarusXIV/Encore](https://github.com/IcarusXIV/Encore). This project is therefore licensed under AGPL-3.0-or-later.
+The relay source and deployment notes are in `EmoteLink.Relay`.
+
+EmoteLink is licensed under AGPL-3.0-or-later.
