@@ -301,7 +301,7 @@ public sealed class MainWindow : Window
             ImGui.PushID($"inline-pose-{pose.Kind}-{pose.Index}");
             ImGui.SameLine();
             if (DrawRoleActionButton(mod.Directory, "$detected-pose", $"{pose.Kind}:{pose.Index}",
-                    PoseDisplayName(pose)))
+                    PoseDisplayName(pose), showAssignmentWhenUnlabeled: true))
                 plugin.ActivateDetectedPose(mod.Directory, mod.Name, pose);
             ImGui.PopID();
         }
@@ -310,7 +310,7 @@ public sealed class MainWindow : Window
             ImGui.PushID($"inline-emote-{emote.Id}");
             ImGui.SameLine();
             if (DrawRoleActionButton(mod.Directory, "$detected-emote", emote.Id.ToString(),
-                    $"{emote.Name} (ID {emote.Id})"))
+                    $"{emote.Name} (ID {emote.Id})", showAssignmentWhenUnlabeled: true))
                 plugin.ActivateDetectedEmote(mod.Directory, mod.Name, emote);
             ImGui.PopID();
         }
@@ -407,7 +407,12 @@ public sealed class MainWindow : Window
         }
     }
 
-    private bool DrawRoleActionButton(string directory, string group, string option, string animationName)
+    private bool DrawRoleActionButton(
+        string directory,
+        string group,
+        string option,
+        string animationName,
+        bool showAssignmentWhenUnlabeled = false)
     {
         var key = NoteKey(directory, group, option);
         var savedNote = plugin.GetOptionNote(directory, group, option);
@@ -417,7 +422,9 @@ public sealed class MainWindow : Window
         var hasRole = !string.IsNullOrWhiteSpace(note);
         var label = hasRole
             ? plugin.Sync.IsInRoom ? $"{note} - Ready" : note
-            : plugin.Sync.IsInRoom ? "Ready" : "Activate";
+            : showAssignmentWhenUnlabeled
+                ? plugin.Sync.IsInRoom ? $"{animationName} - Ready" : animationName
+                : plugin.Sync.IsInRoom ? "Ready" : "Activate";
         var selectedBy = plugin.GetRemoteDetectedTriggerSelector(directory, group, option);
         if (selectedBy is not null)
         {
