@@ -46,6 +46,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly PenumbraService penumbra;
     private readonly MovementService movement;
     private readonly PoseService poses;
+    private readonly AnywherePoseService? anywherePoses;
     private readonly AnimationSyncService sync;
     private readonly WindowSystem windows = new("EmoteLink");
     private readonly MainWindow mainWindow;
@@ -110,6 +111,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
         penumbra = new PenumbraService(PluginInterface, Log);
         movement = new MovementService(Interop, Objects);
         poses = new PoseService(Objects);
+        try
+        {
+            anywherePoses = new AnywherePoseService(Interop, Objects);
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "Anywhere pose hooks could not be initialized; normal-pose fallbacks remain available.");
+        }
         sync = new AnimationSyncService();
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
         sync.ModTransferOffered += offer => transferOffers.Enqueue(offer);
@@ -1515,8 +1524,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
         switch (pose.Kind)
         {
             case PoseKind.GroundSit: ExecuteCommand("/groundsit"); break;
-            case PoseKind.Sit: ExecuteCommand("/sit"); break;
-            case PoseKind.Doze: ExecuteCommand("/doze"); break;
+            case PoseKind.Sit:
+                if (anywherePoses is not null) anywherePoses.EnterChairPose();
+                else ExecuteCommand("/sit");
+                break;
+            case PoseKind.Doze:
+                if (anywherePoses is not null) anywherePoses.EnterDozePose();
+                else ExecuteCommand("/doze");
+                break;
             case PoseKind.Idle: BeginPoseCycling(pose, 150); break;
         }
         if (pose.Kind != PoseKind.Idle) BeginPoseCycling(pose, 500);
@@ -1564,6 +1579,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleWindow;
         Commands.RemoveHandler(Command);
         movement.Dispose();
+        anywherePoses?.Dispose();
         sync.DisposeAsync().AsTask().GetAwaiter().GetResult();
         windows.RemoveAllWindows();
     }
