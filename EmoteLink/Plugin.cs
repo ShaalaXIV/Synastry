@@ -612,10 +612,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private int GetMatchSortTier(string directory)
     {
         if (GetRemoteModSelector(directory) is not null) return 0; // Purple: suggested.
+        if (IsModPrivate(directory)) return 3;                    // Cyan: private.
         var (matches, members) = GetModMatch(directory);
         if (members > 1 && matches >= members) return 1; // Green: everyone has it.
         if (members > 1 && matches > 1) return 2;        // Orange: some members have it.
-        return 3;                                        // White: no shared match.
+        return 4;                                        // White: no shared match.
     }
 
     public void CreateCategory(string name)

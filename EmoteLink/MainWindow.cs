@@ -10,6 +10,7 @@ public sealed class MainWindow : Window
     private static readonly Vector4 EveryoneColor = new(0.35f, 0.9f, 0.45f, 1f);
     private static readonly Vector4 SomeColor = new(1f, 0.62f, 0.2f, 1f);
     private static readonly Vector4 ClaimedColor = new(0.72f, 0.42f, 1f, 1f);
+    private static readonly Vector4 PrivateColor = new(0.2f, 0.85f, 0.9f, 1f);
     private readonly Plugin plugin;
     private string search = "";
     private string newFolderName = "";
@@ -121,6 +122,8 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         ImGui.TextColored(ClaimedColor, "Purple: Suggested");
         ImGui.SameLine();
+        ImGui.TextColored(PrivateColor, "Cyan: Private");
+        ImGui.SameLine();
         ImGui.TextDisabled("White: No match");
         ImGui.TextDisabled("Choose an animation below to ready up. Playback begins when everyone is ready on the same mod.");
         ImGui.Separator();
@@ -228,6 +231,8 @@ public sealed class MainWindow : Window
         var hasMatchColor = match.Members > 1 && match.Matches > 1;
         if (selectedBy is not null)
             ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
+        else if (isPrivate)
+            ImGui.PushStyleColor(ImGuiCol.Text, PrivateColor);
         else if (hasMatchColor)
             ImGui.PushStyleColor(ImGuiCol.Text,
                 match.Matches >= match.Members ? EveryoneColor : SomeColor);
@@ -241,7 +246,7 @@ public sealed class MainWindow : Window
         var open = hasDetails
             ? ImGui.TreeNodeEx(displayName, ImGuiTreeNodeFlags.None)
             : ImGui.Selectable(displayName, false, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(labelWidth, 0));
-        if (selectedBy is not null || hasMatchColor) ImGui.PopStyleColor();
+        if (selectedBy is not null || isPrivate || hasMatchColor) ImGui.PopStyleColor();
         if (selectedBy is not null && ImGui.IsItemHovered())
             ImGui.SetTooltip($"{selectedBy} selected an option in this mod.");
 
@@ -267,9 +272,12 @@ public sealed class MainWindow : Window
                 plugin.MoveMod(source, categoryId, mod.Directory);
             ImGui.EndDragDropTarget();
         }
+        DrawInlineAnimationTriggers(mod, detectedPoses, detectedEmotes);
         if (plugin.Sync.IsInRoom && !isPrivate)
         {
-            ImGui.SameLine();
+            var currentX = ImGui.GetCursorPosX();
+            var rightX = ImGui.GetWindowContentRegionMax().X - sendWidth;
+            if (currentX + ImGui.GetStyle().ItemSpacing.X + sendWidth <= rightX) ImGui.SameLine();
             ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMax().X - sendWidth);
             if (ImGui.SmallButton("Send")) plugin.SendMod(mod.Directory, mod.Name);
             if (ImGui.IsItemHovered()) ImGui.SetTooltip("Offer this mod to everyone else in the room (75 MB maximum).");
@@ -280,6 +288,31 @@ public sealed class MainWindow : Window
             ImGui.TreePop();
         }
         ImGui.PopID();
+    }
+
+    private void DrawInlineAnimationTriggers((string Directory, string Name) mod,
+        IReadOnlyList<PoseTarget> detectedPoses, IReadOnlyList<EmoteTarget> detectedEmotes)
+    {
+        foreach (var pose in detectedPoses)
+        {
+            ImGui.PushID($"inline-pose-{pose.Kind}-{pose.Index}");
+            ImGui.SameLine();
+            if (ImGui.SmallButton(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
+                plugin.ActivateDetectedPose(mod.Directory, mod.Name, pose);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip(PoseDisplayName(pose));
+            DrawRoleNote(mod.Directory, "$detected-pose", $"{pose.Kind}:{pose.Index}");
+            ImGui.PopID();
+        }
+        foreach (var emote in detectedEmotes)
+        {
+            ImGui.PushID($"inline-emote-{emote.Id}");
+            ImGui.SameLine();
+            if (ImGui.SmallButton(plugin.Sync.IsInRoom ? "Ready" : "Activate"))
+                plugin.ActivateDetectedEmote(mod.Directory, mod.Name, emote);
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{emote.Name} (ID {emote.Id})");
+            DrawRoleNote(mod.Directory, "$detected-emote", emote.Id.ToString());
+            ImGui.PopID();
+        }
     }
 
     private void DrawOptions((string Directory, string Name) mod, IReadOnlyList<ModOptionGroup> groups,
