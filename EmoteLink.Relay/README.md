@@ -6,7 +6,7 @@ Room option selections can be offered as animation suggestions. Recipients may e
 
 Animation role labels are shared within a room so clients with an empty local label can adopt one from another member. Clients retain their own existing labels, and private mods are not advertised by the plugin.
 
-Accepted community role labels persist across rooms and relay restarts. Three matching installation submissions accept an initial label or correction. Set `EMOTELINK_DATA_DIR` to place `community-role-labels.json` on durable production storage.
+Accepted community role labels persist across rooms and relay restarts. The first submission accepts an initial label; five matching installation reports accept a later correction. Set `EMOTELINK_DATA_DIR` to place `community-role-labels.json` on durable production storage.
 
 ## Run directly on Linux
 

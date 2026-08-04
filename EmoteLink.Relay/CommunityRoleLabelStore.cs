@@ -6,7 +6,8 @@ namespace EmoteLink.Relay;
 
 public sealed class CommunityRoleLabelStore
 {
-    public const int AcceptanceThreshold = 3;
+    public const int InitialAcceptanceThreshold = 1;
+    public const int CorrectionAcceptanceThreshold = 5;
     private const int MaximumRecords = 100_000;
     private const int MaximumVotesPerRecord = 1_000;
     private readonly object gate = new();
@@ -66,13 +67,16 @@ public sealed class CommunityRoleLabelStore
                 .OrderByDescending(candidate => candidate.Count)
                 .ThenBy(candidate => candidate.Label, StringComparer.OrdinalIgnoreCase)
                 .First();
-            var changed = winner.Count >= AcceptanceThreshold &&
+            var requiredVotes = record.AcceptedLabel.Length == 0
+                ? InitialAcceptanceThreshold
+                : CorrectionAcceptanceThreshold;
+            var changed = winner.Count >= requiredVotes &&
                 !winner.Label.Equals(record.AcceptedLabel, StringComparison.OrdinalIgnoreCase);
             if (changed)
             {
                 record.AcceptedLabel = winner.Label;
                 // A newly accepted value starts a fresh correction round. This lets
-                // three matching corrections replace an old label regardless of how
+                // five matching corrections replace an old label regardless of how
                 // many confirmations the old value accumulated previously.
                 record.Votes.Clear();
             }

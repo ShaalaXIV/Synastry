@@ -8,6 +8,10 @@ await using var second = new HubConnectionBuilder().WithUrl(baseUrl + "/animatio
     options.Transports = HttpTransportType.LongPolling).Build();
 await using var third = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
     options.Transports = HttpTransportType.LongPolling).Build();
+await using var fourth = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
+    options.Transports = HttpTransportType.LongPolling).Build();
+await using var fifth = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
+    options.Transports = HttpTransportType.LongPolling).Build();
 var firstPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
 var secondPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
 first.On<PlaySignalDto>("AnimationPlay", signal => firstPlay.TrySetResult(signal));
@@ -15,6 +19,8 @@ second.On<PlaySignalDto>("AnimationPlay", signal => secondPlay.TrySetResult(sign
 await first.StartAsync();
 await second.StartAsync();
 await third.StartAsync();
+await fourth.StartAsync();
+await fifth.StartAsync();
 var room = await first.InvokeAsync<RoomStateDto>("CreateRoom", "Top");
 await second.InvokeAsync<RoomStateDto>("JoinRoom", room.RoomCode, "Bottom");
 var sharedFingerprint = new string('A', 64);
@@ -48,15 +54,13 @@ var communityFingerprint = Convert.ToHexString(System.Security.Cryptography.Rand
 var firstReporter = Guid.NewGuid().ToString("N");
 var secondReporter = Guid.NewGuid().ToString("N");
 var thirdReporter = Guid.NewGuid().ToString("N");
+var fourthReporter = Guid.NewGuid().ToString("N");
+var fifthReporter = Guid.NewGuid().ToString("N");
 await first.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", communityFingerprint,
     "$detected-pose", "GroundSit:1", "Passenger", firstReporter);
-await second.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", communityFingerprint,
-    "$detected-pose", "GroundSit:1", "Passenger", secondReporter);
-await third.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", communityFingerprint,
-    "$detected-pose", "GroundSit:1", "Passenger", thirdReporter);
 var acceptedCommunityRole = await communityChanged.Task.WaitAsync(TimeSpan.FromSeconds(5));
 if (acceptedCommunityRole.Fingerprint != communityFingerprint || acceptedCommunityRole.Label != "Passenger")
-    throw new InvalidOperationException("Community role label was not accepted after three matching reports.");
+    throw new InvalidOperationException("The first community role label was not accepted immediately.");
 var communityRoles = await second.InvokeAsync<IReadOnlyList<CommunityRoleLabelDto>>(
     "GetCommunityRoleLabels", new[] { communityFingerprint });
 if (communityRoles.Count != 1 || communityRoles[0] != acceptedCommunityRole)
@@ -72,6 +76,10 @@ await second.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", com
     "$detected-pose", "GroundSit:1", "Camera", secondReporter);
 await third.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", communityFingerprint,
     "$detected-pose", "GroundSit:1", "Camera", thirdReporter);
+await fourth.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", communityFingerprint,
+    "$detected-pose", "GroundSit:1", "Camera", fourthReporter);
+await fifth.InvokeAsync<CommunityRoleLabelDto?>("SubmitCommunityRoleLabel", communityFingerprint,
+    "$detected-pose", "GroundSit:1", "Camera", fifthReporter);
 await correctionChanged.Task.WaitAsync(TimeSpan.FromSeconds(5));
 Console.WriteLine("PASS community role-label consensus and retrieval");
 await second.InvokeAsync("DeclineAnimationSuggestion", modKey, "Top");

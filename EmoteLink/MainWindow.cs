@@ -472,7 +472,7 @@ public sealed class MainWindow : Window
                     ImGui.CloseCurrentPopup();
                 }
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Applies immediately for you. Three matching reports update the community label.");
+                    ImGui.SetTooltip("Applies immediately for you. Five matching reports update the community label.");
             }
             ImGui.EndPopup();
         }

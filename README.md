@@ -16,7 +16,8 @@ Role labels are community-driven:
 - Accepted community labels are available to anyone connected to EmoteLink.
 - If a shared label is wrong, right-click it and submit a correction.
 - Your correction applies locally immediately.
-- Three matching installation reports accept a community label or correction.
+- The first submitted label becomes the community default immediately.
+- Five matching installation reports replace an existing community label.
 - Private mods never submit labels to the community database.
 
 The goal is simple: once the community identifies the roles in a complicated animation pack, everyone else can use it without solving the same puzzle again.
