@@ -926,31 +926,24 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var modPapPaths = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in Directory.EnumerateFiles(modPath, "*.json", SearchOption.TopDirectoryOnly))
         {
-            if (file.EndsWith("meta.json", StringComparison.OrdinalIgnoreCase)) continue;
             try
             {
                 using var document = JsonDocument.Parse(File.ReadAllText(file));
                 var root = document.RootElement;
                 CollectPapGamePaths(root, modPapPaths);
                 if (file.EndsWith("default_mod.json", StringComparison.OrdinalIgnoreCase)) continue;
-                if (!root.TryGetProperty("Name", out var groupNameElement) ||
-                    !root.TryGetProperty("Options", out var optionsElement)) continue;
-                var groupName = groupNameElement.GetString();
-                if (string.IsNullOrWhiteSpace(groupName) || optionsElement.ValueKind != JsonValueKind.Array) continue;
-                var isMulti = root.TryGetProperty("Type", out var typeElement) &&
-                    string.Equals(typeElement.GetString(), "Multi", StringComparison.OrdinalIgnoreCase);
-                optionGroupMulti[OptionGroupKey(directory, groupName)] = isMulti;
-
-                foreach (var optionElement in optionsElement.EnumerateArray())
+                if (file.EndsWith("meta.json", StringComparison.OrdinalIgnoreCase))
                 {
-                    if (!optionElement.TryGetProperty("Name", out var optionNameElement) ||
-                        !optionElement.TryGetProperty("Files", out var filesElement)) continue;
-                    var optionName = optionNameElement.GetString();
-                    if (string.IsNullOrWhiteSpace(optionName) || filesElement.ValueKind != JsonValueKind.Object) continue;
-                    var paths = filesElement.EnumerateObject().Select(property => property.Name).ToList();
-                    var pose = DetectPoseTarget(paths, optionName);
-                    if (pose is not null) optionPoses[OptionPoseKey(directory, groupName, optionName)] = pose;
+                    if (root.TryGetProperty("Groups", out var groupsElement) &&
+                        groupsElement.ValueKind == JsonValueKind.Array)
+                    {
+                        foreach (var groupElement in groupsElement.EnumerateArray())
+                            IndexPoseOptionGroup(groupElement, directory);
+                    }
+                    continue;
                 }
+
+                IndexPoseOptionGroup(root, directory);
             }
             catch (Exception ex)
             {
@@ -958,6 +951,29 @@ public sealed unsafe class Plugin : IDalamudPlugin
             }
         }
         modPoses[directory] = DetectPoseTargets(modPapPaths);
+    }
+
+    private void IndexPoseOptionGroup(JsonElement groupElement, string directory)
+    {
+        if (groupElement.ValueKind != JsonValueKind.Object ||
+            !groupElement.TryGetProperty("Name", out var groupNameElement) ||
+            !groupElement.TryGetProperty("Options", out var optionsElement)) return;
+        var groupName = groupNameElement.GetString();
+        if (string.IsNullOrWhiteSpace(groupName) || optionsElement.ValueKind != JsonValueKind.Array) return;
+        var isMulti = groupElement.TryGetProperty("Type", out var typeElement) &&
+            string.Equals(typeElement.GetString(), "Multi", StringComparison.OrdinalIgnoreCase);
+        optionGroupMulti[OptionGroupKey(directory, groupName)] = isMulti;
+
+        foreach (var optionElement in optionsElement.EnumerateArray())
+        {
+            if (!optionElement.TryGetProperty("Name", out var optionNameElement) ||
+                !optionElement.TryGetProperty("Files", out var filesElement)) continue;
+            var optionName = optionNameElement.GetString();
+            if (string.IsNullOrWhiteSpace(optionName) || filesElement.ValueKind != JsonValueKind.Object) continue;
+            var paths = filesElement.EnumerateObject().Select(property => property.Name).ToList();
+            var pose = DetectPoseTarget(paths, optionName);
+            if (pose is not null) optionPoses[OptionPoseKey(directory, groupName, optionName)] = pose;
+        }
     }
 
     private static PoseTarget? DetectPoseTarget(IReadOnlyList<string> paths, string optionName)
