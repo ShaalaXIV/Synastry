@@ -108,10 +108,10 @@ public sealed class MainWindow : Window
     {
         var room = plugin.Sync.Room;
         var height = !plugin.Sync.IsConnected
-            ? 126f
+            ? 168f
             : !plugin.Sync.IsInRoom || room is null
-                ? 154f
-                : MathF.Min(300f, 158f + room.Members.Count * 31f);
+                ? 196f
+                : MathF.Min(340f, 198f + room.Members.Count * 31f);
         ImGui.PushStyleColor(ImGuiCol.ChildBg, PanelColor);
         ImGui.PushStyleColor(ImGuiCol.Border, BorderColor);
         ImGui.BeginChild("group-play-card", new Vector2(0, height), true);
@@ -126,6 +126,7 @@ public sealed class MainWindow : Window
             if (DrawPrimaryButton("Connect", 116f)) plugin.ConnectSync();
             ImGui.SameLine();
             ImGui.TextDisabled("Connect to create or join a synchronized room.");
+            DrawCharacterUtilities();
             ImGui.EndChild();
             ImGui.PopStyleColor(2);
             return;
@@ -150,6 +151,7 @@ public sealed class MainWindow : Window
             if (ImGui.Button("Disconnect")) plugin.DisconnectSync();
             ImGui.Spacing();
             ImGui.TextDisabled("Create a room, or enter a code shared by another player.");
+            DrawCharacterUtilities();
             ImGui.EndChild();
             ImGui.PopStyleColor(2);
             return;
@@ -221,8 +223,22 @@ public sealed class MainWindow : Window
 
         ImGui.Spacing();
         ImGui.TextDisabled("Choose an animation below. Playback starts when everyone is ready on the same mod.");
+        DrawCharacterUtilities();
         ImGui.EndChild();
         ImGui.PopStyleColor(2);
+    }
+
+    private void DrawCharacterUtilities()
+    {
+        ImGui.Spacing();
+        if (ImGui.Button(plugin.IsAligning ? "Cancel alignment" : "Align / teleport to target"))
+            plugin.ToggleAlignment();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Match your character's position and facing direction to the current target.");
+        ImGui.SameLine();
+        if (ImGui.Button("Clear temporary animations")) plugin.ClearTemporaryAssignments();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Clear the temporary animation assignment currently applied by EmoteLink.");
     }
 
     private void DrawLibrary()
@@ -236,17 +252,13 @@ public sealed class MainWindow : Window
         ImGui.TextDisabled($"{plugin.Mods.Count} MODS");
 
         var newFolderWidth = ButtonWidth("New folder");
-        var toolsWidth = ButtonWidth("Tools");
-        var searchWidth = MathF.Max(160f, ImGui.GetContentRegionAvail().X - newFolderWidth - toolsWidth -
-                                          ImGui.GetStyle().ItemSpacing.X * 2);
+        var searchWidth = MathF.Max(160f, ImGui.GetContentRegionAvail().X - newFolderWidth -
+                                          ImGui.GetStyle().ItemSpacing.X);
         ImGui.SetNextItemWidth(searchWidth);
         ImGui.InputTextWithHint("##search", "Search animation mods...", ref search, 128);
         ImGui.SameLine();
         if (ImGui.Button("New folder", new Vector2(newFolderWidth, 0))) ImGui.OpenPopup("Create folder");
         DrawCreateFolderPopup();
-        ImGui.SameLine();
-        if (ImGui.Button("Tools", new Vector2(toolsWidth, 0))) ImGui.OpenPopup("Library tools");
-        DrawLibraryToolsPopup();
 
         ImGui.Spacing();
         ImGui.PushStyleColor(ImGuiCol.ChildBg, NestedPanelColor);
@@ -259,20 +271,6 @@ public sealed class MainWindow : Window
         DrawLegend();
         ImGui.EndChild();
         ImGui.PopStyleColor(2);
-    }
-
-    private void DrawLibraryToolsPopup()
-    {
-        if (!ImGui.BeginPopup("Library tools")) return;
-        if (ImGui.MenuItem(plugin.IsAligning ? "Cancel alignment" : "Align / teleport to target"))
-            plugin.ToggleAlignment();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Match your character's position and facing direction to the current target.");
-        if (ImGui.MenuItem("Clear temporary animations")) plugin.ClearTemporaryAssignments();
-        ImGui.Separator();
-        ImGui.TextDisabled("Activating a mod clears the previous");
-        ImGui.TextDisabled("temporary animation first.");
-        ImGui.EndPopup();
     }
 
     private static void DrawLegend()
