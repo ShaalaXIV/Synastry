@@ -35,6 +35,10 @@ public sealed class MainWindow : Window
         if (ImGui.Button("Refresh")) plugin.RefreshMods();
         ImGui.SameLine();
         if (ImGui.Button("How To")) plugin.OpenHowTo();
+        ImGui.SameLine();
+        if (ImGui.Button("Download community tags")) plugin.DownloadCommunityTags();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Download accepted community role labels now. Your manually entered labels are preserved.");
 
         if (ImGui.Button(plugin.IsAligning ? "Cancel alignment" : "Align / teleport to target"))
             plugin.ToggleAlignment();

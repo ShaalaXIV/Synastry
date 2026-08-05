@@ -385,6 +385,48 @@ public sealed unsafe class Plugin : IDalamudPlugin
     }
 
     public void DisconnectSync() => RunSync(sync.DisconnectAsync(), "Disconnected from animation relay.");
+
+    public void DownloadCommunityTags()
+    {
+        RefreshMods();
+        if (!sync.IsConnected)
+        {
+            Status = "Connect to Group Play before downloading community tags.";
+            return;
+        }
+
+        var fingerprints = modCatalogKeys
+            .Where(pair => !IsModPrivate(pair.Key))
+            .Select(pair => pair.Value)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (fingerprints.Count == 0)
+        {
+            Status = "No public animation fingerprints are available to check.";
+            return;
+        }
+
+        Status = $"Checking community tags for {fingerprints.Count:N0} animation mods...";
+        var downloads = fingerprints.Chunk(1000)
+            .Select(batch => sync.GetCommunityRoleLabelsAsync(batch))
+            .ToArray();
+        _ = Task.WhenAll(downloads).ContinueWith(task =>
+        {
+            if (!task.IsCompletedSuccessfully)
+            {
+                Status = "Community tag download failed.";
+                if (task.Exception is not null)
+                    Log.Warning(task.Exception.GetBaseException(), "Community tag download failed.");
+                return;
+            }
+            var downloaded = task.Result.SelectMany(batch => batch).ToList();
+            foreach (var label in downloaded) receivedCommunityRoleLabels.Enqueue(label);
+            Status = downloaded.Count == 0
+                ? "No accepted community tags matched your installed animation mods."
+                : $"Downloaded {downloaded.Count:N0} community tags.";
+        }, TaskScheduler.Default);
+    }
+
     public void CreateSyncRoom()
     {
         if (!RequireCharacterName(out var characterName)) return;
