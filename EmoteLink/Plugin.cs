@@ -71,6 +71,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private PoseTarget? cyclingPose;
     private long nextPoseCycleTime;
     private int poseCycleAttempts;
+    private PoseKind? pendingAnywhereFallback;
+    private long anywhereFallbackTime;
     private long movementTrackingStart;
     private System.Numerics.Vector3 movementSample;
     private bool hasMovementSample;
@@ -1097,6 +1099,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         pendingCommand = null;
         pendingPose = null;
         cyclingPose = null;
+        pendingAnywhereFallback = null;
         hasMovementSample = false;
         movementFrames = 0;
         if (cancelGroupReady && sync.IsInRoom)
@@ -1173,6 +1176,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             RefreshLobbyEmotes();
         }
         UpdatePoseCycling();
+        UpdateAnywherePoseFallback();
         if (!waitingForAnimation) return;
         UpdateMovementCleanup();
     }
@@ -1505,6 +1509,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void ExecutePose(PoseTarget pose)
     {
+        pendingAnywhereFallback = null;
         var alreadyInPose = poses.CurrentKind() == pose.Kind;
         if (alreadyInPose)
         {
@@ -1525,16 +1530,34 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             case PoseKind.GroundSit: ExecuteCommand("/groundsit"); break;
             case PoseKind.Sit:
-                if (anywherePoses is not null) anywherePoses.EnterChairPose();
-                else ExecuteCommand("/sit");
+                ExecuteCommand("/sit");
+                ScheduleAnywherePoseFallback(PoseKind.Sit);
                 break;
             case PoseKind.Doze:
-                if (anywherePoses is not null) anywherePoses.EnterDozePose();
-                else ExecuteCommand("/doze");
+                ExecuteCommand("/doze");
+                ScheduleAnywherePoseFallback(PoseKind.Doze);
                 break;
             case PoseKind.Idle: BeginPoseCycling(pose, 150); break;
         }
         if (pose.Kind != PoseKind.Idle) BeginPoseCycling(pose, 500);
+    }
+
+    private void ScheduleAnywherePoseFallback(PoseKind kind)
+    {
+        if (anywherePoses is null) return;
+        pendingAnywhereFallback = kind;
+        // Give the normal command time to snap to nearby furniture before using
+        // the hook-backed anywhere behavior. This preserves real sit/bed points.
+        anywhereFallbackTime = Environment.TickCount64 + 1000;
+    }
+
+    private void UpdateAnywherePoseFallback()
+    {
+        if (pendingAnywhereFallback is not { } kind || Environment.TickCount64 < anywhereFallbackTime) return;
+        pendingAnywhereFallback = null;
+        if (poses.CurrentKind() == kind || anywherePoses is null) return;
+        if (kind == PoseKind.Sit) anywherePoses.EnterChairPose();
+        else if (kind == PoseKind.Doze) anywherePoses.EnterDozePose();
     }
 
     private void BeginPoseCycling(PoseTarget pose, int delayMs)

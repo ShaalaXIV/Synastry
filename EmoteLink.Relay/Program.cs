@@ -1,6 +1,7 @@
 using EmoteLink.Relay;
 using Microsoft.AspNetCore.SignalR;
 using System.Security.Cryptography;
+using System.Text;
 
 var builder = WebApplication.CreateBuilder(args);
 if (string.IsNullOrWhiteSpace(Environment.GetEnvironmentVariable("ASPNETCORE_URLS")))
@@ -20,6 +21,34 @@ builder.Services.AddSignalR(options =>
 
 var app = builder.Build();
 app.MapGet("/health", () => Results.Text("emotelink-relay:ok", "text/plain"));
+var admin = app.MapGroup("/admin/community-labels");
+admin.AddEndpointFilter(async (context, next) =>
+{
+    var http = context.HttpContext;
+    var address = http.Connection.RemoteIpAddress;
+    if (address is null || !System.Net.IPAddress.IsLoopback(address)) return Results.NotFound();
+    var expected = Environment.GetEnvironmentVariable("EMOTELINK_ADMIN_TOKEN");
+    var supplied = http.Request.Headers.Authorization.ToString();
+    if (string.IsNullOrWhiteSpace(expected) || !supplied.StartsWith("Bearer ", StringComparison.OrdinalIgnoreCase) ||
+        !CryptographicOperations.FixedTimeEquals(
+            SHA256.HashData(Encoding.UTF8.GetBytes(expected)),
+            SHA256.HashData(Encoding.UTF8.GetBytes(supplied[7..]))))
+        return Results.Unauthorized();
+    return await next(context);
+});
+admin.MapGet("/", (CommunityRoleLabelStore store) => store.GetAll());
+admin.MapPost("/approve", (string key, CommunityRoleLabelStore store) =>
+    store.ApproveLeadingVote(key) is { } record ? Results.Ok(record) : Results.NotFound());
+admin.MapPut("/accepted", (string key, AdminLabelUpdate update, CommunityRoleLabelStore store) =>
+{
+    var label = update.Label.Trim();
+    if (label.Length is < 1 or > 80) return Results.BadRequest("Label must be 1-80 characters.");
+    return store.SetAcceptedLabel(key, label) is { } record ? Results.Ok(record) : Results.NotFound();
+});
+admin.MapDelete("/votes", (string key, CommunityRoleLabelStore store) =>
+    store.ClearVotes(key) ? Results.NoContent() : Results.NotFound());
+admin.MapDelete("/record", (string key, CommunityRoleLabelStore store) =>
+    store.Delete(key) ? Results.NoContent() : Results.NotFound());
 app.MapPut("/transfers/{id}", async (string id, string token, HttpRequest request, TransferStore store,
     IHubContext<AnimationHub> hub, CancellationToken cancellationToken) =>
 {
@@ -71,3 +100,5 @@ app.MapGet("/transfers/{id}", (string id, string token, TransferStore store) =>
 });
 app.MapHub<AnimationHub>("/animation");
 app.Run();
+
+public sealed record AdminLabelUpdate(string Label);

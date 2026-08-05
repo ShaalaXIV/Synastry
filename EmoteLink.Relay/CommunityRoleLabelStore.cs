@@ -34,6 +34,61 @@ public sealed class CommunityRoleLabelStore
                 .ToList();
     }
 
+    public IReadOnlyList<AdminRoleLabelDto> GetAll()
+    {
+        lock (gate)
+            return records.Select(pair => ToAdminDto(pair.Key, pair.Value)).ToList();
+    }
+
+    public AdminRoleLabelDto? ApproveLeadingVote(string key)
+    {
+        lock (gate)
+        {
+            if (!records.TryGetValue(key, out var record) || record.Votes.Count == 0) return null;
+            record.AcceptedLabel = record.Votes.Values
+                .GroupBy(value => value, StringComparer.OrdinalIgnoreCase)
+                .OrderByDescending(grouping => grouping.Count())
+                .ThenBy(grouping => grouping.Key, StringComparer.OrdinalIgnoreCase)
+                .First().First();
+            record.Votes.Clear();
+            Save();
+            return ToAdminDto(key, record);
+        }
+    }
+
+    public AdminRoleLabelDto? SetAcceptedLabel(string key, string label)
+    {
+        lock (gate)
+        {
+            if (!records.TryGetValue(key, out var record)) return null;
+            record.AcceptedLabel = label.Trim();
+            record.Votes.Clear();
+            Save();
+            return ToAdminDto(key, record);
+        }
+    }
+
+    public bool ClearVotes(string key)
+    {
+        lock (gate)
+        {
+            if (!records.TryGetValue(key, out var record)) return false;
+            record.Votes.Clear();
+            Save();
+            return true;
+        }
+    }
+
+    public bool Delete(string key)
+    {
+        lock (gate)
+        {
+            if (!records.Remove(key)) return false;
+            Save();
+            return true;
+        }
+    }
+
     public (CommunityRoleLabelDto? Accepted, bool Changed) Submit(
         string fingerprint, string group, string option, string label, string reporterId)
     {
@@ -88,6 +143,17 @@ public sealed class CommunityRoleLabelStore
     private static CommunityRoleLabelDto ToDto(StoredRoleLabel record) =>
         new(record.Fingerprint, record.Group, record.Option, record.AcceptedLabel);
 
+    private static AdminRoleLabelDto ToAdminDto(string key, StoredRoleLabel record)
+    {
+        var votes = record.Votes.Values
+            .GroupBy(value => value, StringComparer.OrdinalIgnoreCase)
+            .Select(grouping => new AdminVoteDto(grouping.First(), grouping.Count()))
+            .OrderByDescending(vote => vote.Count)
+            .ThenBy(vote => vote.Label, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        return new(key, record.Fingerprint, record.Group, record.Option, record.AcceptedLabel, votes);
+    }
+
     private void Load()
     {
         if (!File.Exists(path)) return;
@@ -117,3 +183,6 @@ public sealed class CommunityRoleLabelStore
 }
 
 public sealed record CommunityRoleLabelDto(string Fingerprint, string Group, string Option, string Label);
+public sealed record AdminVoteDto(string Label, int Count);
+public sealed record AdminRoleLabelDto(string Key, string Fingerprint, string Group, string Option,
+    string AcceptedLabel, IReadOnlyList<AdminVoteDto> Votes);
