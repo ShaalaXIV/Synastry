@@ -2,7 +2,7 @@
   "Author": "ShaalaXIV",
   "Name": "EmoteLink",
   "InternalName": "EmoteLink",
-  "AssemblyVersion": "1.0.37",
+  "AssemblyVersion": "1.0.38",
   "Description": "A plain Penumbra animation launcher with temporary activation, target alignment, and synchronized group play.",
   "ApplicableVersion": "any",
   "Tags": [ "penumbra", "animation", "emote" ],
