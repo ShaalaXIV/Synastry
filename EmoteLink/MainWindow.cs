@@ -236,6 +236,15 @@ public sealed class MainWindow : Window
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Match your character's position and facing direction to the current target.");
         ImGui.SameLine();
+        var anywhere = plugin.SitDozeAnywhereEnabled;
+        if (!plugin.SitDozeAnywhereAvailable) ImGui.BeginDisabled();
+        if (ImGui.Checkbox("Sit/doze anywhere", ref anywhere)) plugin.SetSitDozeAnywhere(anywhere);
+        if (!plugin.SitDozeAnywhereAvailable) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(plugin.SitDozeAnywhereAvailable
+                ? "When enabled, chair-sit and doze animations can start without nearby furniture."
+                : "Unavailable because the required game hooks could not be initialized.");
+        ImGui.SameLine();
         if (ImGui.Button("Clear temporary animations")) plugin.ClearTemporaryAssignments();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Clear the temporary animation assignment currently applied by EmoteLink.");

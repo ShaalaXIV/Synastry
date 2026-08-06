@@ -70,7 +70,9 @@ public sealed class AnimationHub : Hub
                 .Take(1000)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
         }
-        await Clients.Group(room.Code).SendAsync("CatalogChanged");
+        // The sender refreshes its own counts after SetCatalog returns. Notify only
+        // the other members so one catalog action produces one refresh per client.
+        await Clients.OthersInGroup(room.Code).SendAsync("CatalogChanged");
     }
 
     public Dictionary<string, int> GetMatchCounts(IReadOnlyList<string> fingerprints)

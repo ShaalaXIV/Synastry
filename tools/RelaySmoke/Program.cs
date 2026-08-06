@@ -1,17 +1,29 @@
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.Http.Connections;
 
-var baseUrl = args.Length > 0 ? args[0].TrimEnd('/') : "http://127.0.0.1:25080";
+var baseUrl = args.FirstOrDefault(argument => argument.StartsWith("http", StringComparison.OrdinalIgnoreCase))?
+    .TrimEnd('/') ?? "http://127.0.0.1:25080";
+if (args.Contains("--connect-only", StringComparer.OrdinalIgnoreCase))
+{
+    await using var probe = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
+        options.Transports = HttpTransportType.WebSockets).Build();
+    probe.KeepAliveInterval = TimeSpan.FromSeconds(30);
+    probe.ServerTimeout = TimeSpan.FromSeconds(90);
+    await probe.StartAsync();
+    Console.WriteLine($"PASS WebSocket connection to {baseUrl}");
+    await probe.StopAsync();
+    return;
+}
 await using var first = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
-    options.Transports = HttpTransportType.LongPolling).Build();
+    options.Transports = HttpTransportType.WebSockets).Build();
 await using var second = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
-    options.Transports = HttpTransportType.LongPolling).Build();
+    options.Transports = HttpTransportType.WebSockets).Build();
 await using var third = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
-    options.Transports = HttpTransportType.LongPolling).Build();
+    options.Transports = HttpTransportType.WebSockets).Build();
 await using var fourth = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
-    options.Transports = HttpTransportType.LongPolling).Build();
+    options.Transports = HttpTransportType.WebSockets).Build();
 await using var fifth = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
-    options.Transports = HttpTransportType.LongPolling).Build();
+    options.Transports = HttpTransportType.WebSockets).Build();
 var firstPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
 var secondPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
 first.On<PlaySignalDto>("AnimationPlay", signal => firstPlay.TrySetResult(signal));
@@ -132,7 +144,7 @@ catch (Microsoft.AspNetCore.SignalR.HubException)
 await first.StopAsync();
 await second.StopAsync();
 await using var recovered = new HubConnectionBuilder().WithUrl(baseUrl + "/animation", options =>
-    options.Transports = HttpTransportType.LongPolling).Build();
+    options.Transports = HttpTransportType.WebSockets).Build();
 await recovered.StartAsync();
 var recoveredRoom = await recovered.InvokeAsync<RoomStateDto>("JoinRoom", room.RoomCode, "Top");
 if (recoveredRoom.Members.Count != 1 || !recoveredRoom.Members[0].IsLeader)

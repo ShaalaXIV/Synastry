@@ -17,6 +17,10 @@ builder.Services.AddSignalR(options =>
     // SetCatalog was being sent, which appeared in the UI as a reconnect loop.
     options.MaximumReceiveMessageSize = 128 * 1024;
     options.EnableDetailedErrors = false;
+    // Idle rooms only need a lightweight liveness frame every 30 seconds. Any room
+    // action already produces traffic and resets SignalR's idle keepalive timer.
+    options.KeepAliveInterval = TimeSpan.FromSeconds(30);
+    options.ClientTimeoutInterval = TimeSpan.FromSeconds(90);
 });
 
 var app = builder.Build();

@@ -69,7 +69,7 @@ public sealed class HowToWindow : Window
                 Steps(
                     "Confirm Penumbra is connected. Refresh rescans mods, Community labels downloads accepted role names, and How to reopens this guide.",
                     "Create a room, or enter a friend's code and join. Disconnect leaves the animation relay.",
-                    "Align to your current target or clear EmoteLink's temporary animation assignment without opening another menu.",
+                    "Align to your current target, toggle Sit/doze anywhere when furniture-free poses are needed, or clear EmoteLink's temporary animation assignment.",
                     "Search the entire animation library or create a new folder.",
                     "Expand folders to browse your organized animation mods.");
                 Image(0);
@@ -79,7 +79,7 @@ public sealed class HowToWindow : Window
                 Steps(
                     "Check for PENUMBRA CONNECTED and a successful relay status.",
                     "Press Create room to host, or type a code and press Join room. Disconnect leaves the relay.",
-                    "Use Align / teleport to target when actors need the same position and facing direction.",
+                    "Use Align / teleport to target when actors need the same position and facing direction. Sit/doze anywhere is an optional direct-mode toggle, not an automatic fallback.",
                     "Search or create folders while connected; these controls do not affect the room.",
                     "Your complete folder organization stays local and remains available during group play.");
                 Image(1);

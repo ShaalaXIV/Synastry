@@ -68,11 +68,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly Dictionary<string, bool> optionGroupMulti = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> modSyncKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> modCatalogKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, (string Directory, string Name)> modsByDirectory =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, IReadOnlyList<(string Directory, string Name)>> organizedModsCache =
+        new(StringComparer.OrdinalIgnoreCase);
+    private const string UncategorizedCacheKey = "\0";
+    private int libraryOrderRevision;
+    private int cachedLibraryOrderRevision = -1;
     private PoseTarget? cyclingPose;
     private long nextPoseCycleTime;
     private int poseCycleAttempts;
-    private PoseKind? pendingAnywhereFallback;
-    private long anywhereFallbackTime;
     private long movementTrackingStart;
     private System.Numerics.Vector3 movementSample;
     private bool hasMovementSample;
@@ -100,6 +105,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public IReadOnlyList<ModCategory> Categories => configuration.Categories;
     public bool PenumbraAvailable => penumbra.IsAvailable;
     public bool IsAligning => movement.IsWalking || alignmentFramesRemaining > 0;
+    public bool SitDozeAnywhereEnabled => configuration.SitDozeAnywhere;
+    public bool SitDozeAnywhereAvailable => anywherePoses is not null;
     public string Status { get; private set; } = "Ready.";
     public AnimationSyncService Sync => sync;
     public string SyncDisplayName => CurrentCharacterName() ?? "Unavailable";
@@ -224,6 +231,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             InitializeOptionSelections(mod, groups);
         }
         Mods = animationMods;
+        modsByDirectory.Clear();
+        foreach (var mod in animationMods) modsByDirectory[mod.Directory] = mod;
         Status = $"Loaded {Mods.Count} mod(s) containing PAP animations.";
         NormalizeOrganization();
         if (sync.IsInRoom) _ = sync.SetCatalogAsync(GetCatalogFingerprints());
@@ -273,11 +282,15 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public string? GetRemoteOptionSelector(string directory, string group, string option)
     {
-        if (!modSyncKeys.TryGetValue(directory, out var modKey)) return null;
-        return remoteOptionSelections.Values.FirstOrDefault(value =>
-            value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase) &&
-            value.Group.Equals(group, StringComparison.OrdinalIgnoreCase) &&
-            value.Option.Equals(option, StringComparison.OrdinalIgnoreCase))?.MemberName;
+        if (!sync.IsInRoom || !modSyncKeys.TryGetValue(directory, out var modKey)) return null;
+        foreach (var pair in remoteOptionSelections)
+        {
+            var value = pair.Value;
+            if (value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase) &&
+                value.Group.Equals(group, StringComparison.OrdinalIgnoreCase) &&
+                value.Option.Equals(option, StringComparison.OrdinalIgnoreCase)) return value.MemberName;
+        }
+        return null;
     }
 
     public string? GetRemoteDetectedTriggerSelector(string directory, string group, string option)
@@ -292,19 +305,24 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public string? GetRemoteGroupSelector(string directory, string group)
     {
-        if (!modSyncKeys.TryGetValue(directory, out var modKey)) return null;
-        return remoteOptionSelections.Values.FirstOrDefault(value =>
-            value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase) &&
-            value.Group.Equals(group, StringComparison.OrdinalIgnoreCase))?.MemberName;
+        if (!sync.IsInRoom || !modSyncKeys.TryGetValue(directory, out var modKey)) return null;
+        foreach (var pair in remoteOptionSelections)
+        {
+            var value = pair.Value;
+            if (value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase) &&
+                value.Group.Equals(group, StringComparison.OrdinalIgnoreCase)) return value.MemberName;
+        }
+        return null;
     }
 
     public string? GetRemoteModSelector(string directory)
     {
-        if (!modSyncKeys.TryGetValue(directory, out var modKey)) return null;
-        return remoteOptionSelections.Values.FirstOrDefault(value =>
-                   value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase))?.MemberName ??
-               activeAnimationSuggestions.Values.FirstOrDefault(value =>
-                   value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase))?.SuggestedBy;
+        if (!sync.IsInRoom || !modSyncKeys.TryGetValue(directory, out var modKey)) return null;
+        foreach (var pair in remoteOptionSelections)
+            if (pair.Value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase)) return pair.Value.MemberName;
+        foreach (var pair in activeAnimationSuggestions)
+            if (pair.Value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase)) return pair.Value.SuggestedBy;
+        return null;
     }
 
     public string GetOptionNote(string directory, string group, string option) =>
@@ -341,9 +359,24 @@ public sealed unsafe class Plugin : IDalamudPlugin
         else configuration.PrivateMods.Remove(directory);
         configuration.Save(PluginInterface);
         if (sync.IsInRoom) _ = sync.SetCatalogAsync(GetCatalogFingerprints());
+        InvalidateLibraryOrder();
         Status = isPrivate
             ? "Mod marked private. It will not be advertised or sent in group play."
             : "Mod is available to group play again.";
+    }
+
+    public void SetSitDozeAnywhere(bool enabled)
+    {
+        if (enabled && anywherePoses is null)
+        {
+            Status = "Sit/doze anywhere is unavailable because its game hooks could not be initialized.";
+            return;
+        }
+        configuration.SitDozeAnywhere = enabled;
+        configuration.Save(PluginInterface);
+        Status = enabled
+            ? "Sit/doze anywhere enabled. Chair-sit and doze animations will skip furniture checks."
+            : "Sit/doze anywhere disabled. Chair-sit and doze will use normal game placement.";
     }
 
     public void ApplyOption(string directory, string name, string group, string option, bool selected)
@@ -709,16 +742,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public IReadOnlyList<(string Directory, string Name)> GetOrganizedMods(string? categoryId)
     {
+        var revision = Volatile.Read(ref libraryOrderRevision);
+        if (cachedLibraryOrderRevision != revision)
+        {
+            organizedModsCache.Clear();
+            cachedLibraryOrderRevision = revision;
+        }
+        var cacheKey = categoryId ?? UncategorizedCacheKey;
+        if (organizedModsCache.TryGetValue(cacheKey, out var cached)) return cached;
         var order = categoryId is null
             ? configuration.UncategorizedOrder
             : configuration.Categories.FirstOrDefault(folder => folder.Id == categoryId)?.ModDirectories ?? [];
-        var byDirectory = Mods.ToDictionary(mod => mod.Directory, StringComparer.OrdinalIgnoreCase);
-        return order.Where(byDirectory.ContainsKey)
-            .Select(directory => byDirectory[directory])
+        var organized = order.Where(modsByDirectory.ContainsKey)
+            .Select(directory => modsByDirectory[directory])
             // LINQ's stable ordering preserves the user's manual order inside each
             // match tier while promoting purple, green, then orange, within every folder.
             .OrderBy(mod => GetMatchSortTier(mod.Directory))
             .ToList();
+        organizedModsCache[cacheKey] = organized;
+        return organized;
     }
 
     private int GetMatchSortTier(string directory)
@@ -788,7 +830,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
         SaveOrganization();
     }
 
-    private void SaveOrganization() => configuration.Save(PluginInterface);
+    private void SaveOrganization()
+    {
+        InvalidateLibraryOrder();
+        configuration.Save(PluginInterface);
+    }
+
+    private void InvalidateLibraryOrder() => Interlocked.Increment(ref libraryOrderRevision);
 
     public void Activate(string directory, string name) => ActivateInternal(directory, name, null);
 
@@ -1157,7 +1205,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         pendingCommand = null;
         pendingPose = null;
         cyclingPose = null;
-        pendingAnywhereFallback = null;
         hasMovementSample = false;
         movementFrames = 0;
         if (cancelGroupReady && sync.IsInRoom)
@@ -1234,7 +1281,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
             RefreshLobbyEmotes();
         }
         UpdatePoseCycling();
-        UpdateAnywherePoseFallback();
         if (!waitingForAnimation) return;
         UpdateMovementCleanup();
     }
@@ -1263,6 +1309,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void RememberOptionSelection(OptionSelectionDto selection)
     {
         remoteOptionSelections[selection.MemberName + "\n" + selection.ModKey + "\n" + selection.Group] = selection;
+        InvalidateLibraryOrder();
         QueueAnimationSuggestion(selection.MemberName, selection.ModKey);
     }
 
@@ -1287,6 +1334,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void OnSyncStateChanged()
     {
+        InvalidateLibraryOrder();
         if (!sync.IsConnected)
         {
             communityRelayConnected = false;
@@ -1494,6 +1542,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         foreach (var pair in activeAnimationSuggestions.Where(pair =>
                      pair.Value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase)))
             activeAnimationSuggestions.TryRemove(pair.Key, out _);
+        InvalidateLibraryOrder();
     }
 
     private void RefreshLobbyEmotes()
@@ -1567,7 +1616,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void ExecutePose(PoseTarget pose)
     {
-        pendingAnywhereFallback = null;
         var alreadyInPose = poses.CurrentKind() == pose.Kind;
         if (alreadyInPose)
         {
@@ -1588,34 +1636,20 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             case PoseKind.GroundSit: ExecuteCommand("/groundsit"); break;
             case PoseKind.Sit:
-                ExecuteCommand("/sit");
-                ScheduleAnywherePoseFallback(PoseKind.Sit);
+                if (configuration.SitDozeAnywhere && anywherePoses is not null)
+                    anywherePoses.EnterChairPose();
+                else
+                    ExecuteCommand("/sit");
                 break;
             case PoseKind.Doze:
-                ExecuteCommand("/doze");
-                ScheduleAnywherePoseFallback(PoseKind.Doze);
+                if (configuration.SitDozeAnywhere && anywherePoses is not null)
+                    anywherePoses.EnterDozePose();
+                else
+                    ExecuteCommand("/doze");
                 break;
             case PoseKind.Idle: BeginPoseCycling(pose, 150); break;
         }
         if (pose.Kind != PoseKind.Idle) BeginPoseCycling(pose, 500);
-    }
-
-    private void ScheduleAnywherePoseFallback(PoseKind kind)
-    {
-        if (anywherePoses is null) return;
-        pendingAnywhereFallback = kind;
-        // Give the normal command time to snap to nearby furniture before using
-        // the hook-backed anywhere behavior. This preserves real sit/bed points.
-        anywhereFallbackTime = Environment.TickCount64 + 1000;
-    }
-
-    private void UpdateAnywherePoseFallback()
-    {
-        if (pendingAnywhereFallback is not { } kind || Environment.TickCount64 < anywhereFallbackTime) return;
-        pendingAnywhereFallback = null;
-        if (poses.CurrentKind() == kind || anywherePoses is null) return;
-        if (kind == PoseKind.Sit) anywherePoses.EnterChairPose();
-        else if (kind == PoseKind.Doze) anywherePoses.EnterDozePose();
     }
 
     private void BeginPoseCycling(PoseTarget pose, int delayMs)

@@ -42,6 +42,7 @@ This makes coordinated animation sessions much easier: find an animation, share 
 - Temporarily activate animations without disturbing unrelated Penumbra settings.
 - Ready a room for synchronized playback or play an animation locally with **Solo**.
 - Align your character with a nearby target before playback.
+- Optionally enable **Sit/doze anywhere** for furniture-free chair-sit and doze animations.
 - Green, orange, purple, cyan, and white indicators show room availability, suggestions, and privacy state.
 
 ## Install

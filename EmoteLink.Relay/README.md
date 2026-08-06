@@ -31,6 +31,8 @@ ASPNETCORE_URLS=http://0.0.0.0:25080 ./EmoteLink.Relay
 
 Health check: `GET /health`. SignalR endpoint: `/animation`.
 
+Room clients use WebSockets for immediate events. Completely idle connections exchange only a lightweight keepalive every 30 seconds.
+
 ## Docker
 
 From this directory:

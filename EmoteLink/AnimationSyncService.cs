@@ -6,11 +6,15 @@ namespace EmoteLink;
 
 public sealed class AnimationSyncService : IAsyncDisposable
 {
+    private static readonly IReadOnlyDictionary<string, int> EmptyMatchCounts =
+        new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
     private readonly object gate = new();
     private HubConnection? connection;
     private RoomStateDto? room;
     private IReadOnlyList<string> catalog = [];
-    private Dictionary<string, int> matchCounts = new(StringComparer.OrdinalIgnoreCase);
+    // Match-count snapshots are replaced as a unit and never mutated. Returning the
+    // current snapshot avoids copying the entire catalog once per visible mod, per frame.
+    private IReadOnlyDictionary<string, int> matchCounts = EmptyMatchCounts;
     private string? desiredRoomCode;
     private string desiredDisplayName = "Player";
     private string relayBaseUrl = "";
@@ -29,9 +33,9 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public bool IsRoomLeader => Room?.Members.Any(member =>
         member.ConnectionId == connection?.ConnectionId && member.IsLeader) == true;
     public bool IsCurrentMember(string connectionId) => connection?.ConnectionId == connectionId;
-    public RoomStateDto? Room { get { lock (gate) return room; } }
-    public IReadOnlyDictionary<string, int> MatchCounts { get { lock (gate) return new Dictionary<string, int>(matchCounts); } }
-    public bool IsInRoom => Room is not null;
+    public RoomStateDto? Room => Volatile.Read(ref room);
+    public IReadOnlyDictionary<string, int> MatchCounts => Volatile.Read(ref matchCounts);
+    public bool IsInRoom => Volatile.Read(ref room) is not null;
 
     public async Task ConnectAsync(string baseUrl)
     {
@@ -40,12 +44,14 @@ public sealed class AnimationSyncService : IAsyncDisposable
         relayBaseUrl = baseUrl.Trim().TrimEnd('/');
         Notify();
         var hub = new HubConnectionBuilder()
-            // Long polling is less sensitive to VPNs, proxies, and firewalls that accept a
-            // WebSocket upgrade and then repeatedly terminate the upgraded connection.
+            // Keep one quiet WebSocket open for real-time room/play events. Long polling
+            // continuously replaces HTTP requests even when a room is idle.
             .WithUrl(baseUrl.Trim().TrimEnd('/') + "/animation", options =>
-                options.Transports = HttpTransportType.LongPolling)
+                options.Transports = HttpTransportType.WebSockets)
             .WithAutomaticReconnect([TimeSpan.Zero, TimeSpan.FromSeconds(2), TimeSpan.FromSeconds(5), TimeSpan.FromSeconds(10)])
             .Build();
+        hub.KeepAliveInterval = TimeSpan.FromSeconds(30);
+        hub.ServerTimeout = TimeSpan.FromSeconds(90);
         hub.On<RoomStateDto>("RoomStateChanged", UpdateRoom);
         hub.On<PlaySignalDto>("AnimationPlay", signal => PlayReceived?.Invoke(signal));
         hub.On("CatalogChanged", () => _ = RefreshMatchCountsAsync());
@@ -59,9 +65,9 @@ public sealed class AnimationSyncService : IAsyncDisposable
         {
             lock (gate)
             {
-                room = null;
+                Volatile.Write(ref room, null);
                 desiredRoomCode = null;
-                matchCounts.Clear();
+                Volatile.Write(ref matchCounts, EmptyMatchCounts);
             }
             Status = reason;
             Notify();
@@ -84,7 +90,8 @@ public sealed class AnimationSyncService : IAsyncDisposable
         {
             if (!ReferenceEquals(connection, hub)) return Task.CompletedTask;
             Status = ConnectionStatus("Disconnected", exception);
-            lock (gate) { room = null; matchCounts.Clear(); }
+            Volatile.Write(ref room, null);
+            Volatile.Write(ref matchCounts, EmptyMatchCounts);
             Diagnostic?.Invoke("Relay connection closed after reconnect attempts were exhausted.", exception);
             Notify();
             return Task.CompletedTask;
@@ -238,7 +245,8 @@ public sealed class AnimationSyncService : IAsyncDisposable
             lock (gate) requested = catalog;
             if (!IsInRoom || connection?.State != HubConnectionState.Connected) return;
             var counts = await connection.InvokeAsync<Dictionary<string, int>>("GetMatchCounts", requested);
-            lock (gate) matchCounts = new Dictionary<string, int>(counts, StringComparer.OrdinalIgnoreCase);
+            Volatile.Write(ref matchCounts,
+                new Dictionary<string, int>(counts, StringComparer.OrdinalIgnoreCase));
             Notify();
         }
         catch
@@ -251,7 +259,8 @@ public sealed class AnimationSyncService : IAsyncDisposable
     {
         lock (gate) desiredRoomCode = null;
         if (connection?.State == HubConnectionState.Connected) await connection.InvokeAsync("LeaveRoom");
-        lock (gate) { room = null; matchCounts.Clear(); }
+        Volatile.Write(ref room, null);
+        Volatile.Write(ref matchCounts, EmptyMatchCounts);
         Notify();
     }
 
@@ -283,7 +292,9 @@ public sealed class AnimationSyncService : IAsyncDisposable
     {
         var hub = connection;
         connection = null;
-        lock (gate) { room = null; desiredRoomCode = null; }
+        lock (gate) desiredRoomCode = null;
+        Volatile.Write(ref room, null);
+        Volatile.Write(ref matchCounts, EmptyMatchCounts);
         if (hub is not null)
         {
             try { await hub.StopAsync(); } catch { }
@@ -299,10 +310,9 @@ public sealed class AnimationSyncService : IAsyncDisposable
 
     private void UpdateRoom(RoomStateDto state)
     {
-        lock (gate) room = state;
+        Volatile.Write(ref room, state);
         Status = $"Room {state.RoomCode}";
         Notify();
-        _ = RefreshMatchCountsAsync();
     }
 
     private async Task RecoverRoomAsync(HubConnection hub)
@@ -312,8 +322,8 @@ public sealed class AnimationSyncService : IAsyncDisposable
         IReadOnlyList<string> fingerprints;
         lock (gate)
         {
-            room = null;
-            matchCounts.Clear();
+            Volatile.Write(ref room, null);
+            Volatile.Write(ref matchCounts, EmptyMatchCounts);
             code = desiredRoomCode;
             displayName = desiredDisplayName;
             fingerprints = catalog;
