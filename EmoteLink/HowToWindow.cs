@@ -13,14 +13,14 @@ public sealed class HowToWindow : Window
 
     private static readonly string[] Titles =
     [
-        "1. Start with Penumbra",
-        "2. Connect to group play",
-        "3. Create or join a room",
-        "4. Use the room and color guide",
-        "5. Find and ready an animation",
-        "6. Edit and claim actor roles",
-        "7. Community labels and private mods",
-        "8. Share a mod safely"
+        "1. Learn the new interface",
+        "2. Connect and enter a room",
+        "3. Use room controls and readiness",
+        "4. Understand colors and suggestions",
+        "5. Ready, Solo, and Send animations",
+        "6. Label roles and report corrections",
+        "7. Keep a mod private",
+        "8. Send and receive mods safely"
     ];
 
     public HowToWindow(ITextureProvider textures) : base("EmoteLink How To###EmoteLinkHowTo")
@@ -65,87 +65,88 @@ public sealed class HowToWindow : Window
         switch (index)
         {
             case 0:
-                Paragraph("EmoteLink launches Penumbra animation mods temporarily. Follow the numbered highlights from top to bottom.");
+                Paragraph("EmoteLink keeps room controls and animation browsing in two clear panels. Follow the numbered highlights from top to bottom.");
                 Steps(
-                    "Confirm Penumbra is connected; Refresh after installing or changing mods.",
-                    "Align to your current target, or clear EmoteLink's temporary animation assignments.",
-                    "Connect to the group-play relay.",
-                    "Create folders or search your Penumbra animation library.",
-                    "Expand folders to browse organized mods.");
+                    "Confirm Penumbra is connected. Refresh rescans mods, Community labels downloads accepted role names, and How to reopens this guide.",
+                    "Create a room, or enter a friend's code and join. Disconnect leaves the animation relay.",
+                    "Align to your current target or clear EmoteLink's temporary animation assignment without opening another menu.",
+                    "Search the entire animation library or create a new folder.",
+                    "Expand folders to browse your organized animation mods.");
                 Image(0);
                 break;
             case 1:
-                Paragraph("Connecting to the relay and joining a room are two separate steps.");
+                Paragraph("Connecting to the relay and entering a room are separate steps. The status line confirms when the relay connection is ready.");
                 Steps(
-                    "Check that the relay says Connected.",
-                    "Create a new room, or enter a friend's code and press Join. Disconnect leaves the relay.",
-                    "Search or organize mods while connected.",
-                    "Your folders remain available in group play.");
+                    "Check for PENUMBRA CONNECTED and a successful relay status.",
+                    "Press Create room to host, or type a code and press Join room. Disconnect leaves the relay.",
+                    "Use Align / teleport to target when actors need the same position and facing direction.",
+                    "Search or create folders while connected; these controls do not affect the room.",
+                    "Your complete folder organization stays local and remains available during group play.");
                 Image(1);
                 break;
             case 2:
-                Paragraph("After creating a room, click the room-code button to copy it and give that code to the other players. They connect, enter it, and press Join.");
+                Paragraph("After creating a room, give its code to the other players. They connect to the relay, enter the code, and press Join room.");
                 Steps(
-                    "Click the room code to copy it. Leave exits the room; Cancel ready clears your choice; Force start is host-only.",
-                    "Every room member shows as Waiting or Ready.",
-                    "The legend explains mod availability and remote suggestions.",
-                    "Normal playback starts when everyone readies the same mod.",
-                    "Search and folder controls work normally inside a room.",
-                    "Browse a folder to choose an animation.");
+                    "Click the room-code button to copy it.",
+                    "Cancel ready clears your prepared animation, Leave room exits, and Force start is available to the host.",
+                    "Each member row shows HOST when applicable and changes between WAITING and READY.",
+                    "The legend always remains visible below the library; its colors are explained on the next page.");
                 Image(2);
                 break;
             case 3:
-                Paragraph("The room screen tells you who is ready and which mods the group can use together.");
+                Paragraph("Color communicates availability, privacy, and remote suggestions without exposing anyone's complete mod list.");
                 Steps(
-                    "Use the room code and host controls.",
-                    "Read the color guide: green everyone, orange some, purple suggested, cyan private, white no match.",
-                    "Search or make folders without leaving the room.",
-                    "Expand a folder to browse its mods.",
-                    "Ready prepares group playback; Send offers the mod to another member.");
-                Image(3);
+                    "The room code identifies the current group.",
+                    "Host controls manage readiness, membership, and a manual Force start.",
+                    "Orange WAITING changes to green READY after a member prepares an animation.",
+                    "Green means everyone has the mod, orange means only some members have it, purple means another member suggested or selected it, cyan means your mod is private, and white means no shared match.");
+                Image(2);
                 break;
             case 4:
-                Paragraph("Large libraries stay manageable because folders collapse hundreds of choices into short lists.");
+                Paragraph("Expand a folder and then a mod to expose its animation actions. The numbered example includes every important group-play choice.");
                 Steps(
-                    "Room controls remain at the top.",
-                    "Check the availability colors before choosing.",
-                    "Search across the complete mod list.",
-                    "Expand the folder you want.",
-                    "Press Ready beside the correct animation. Solo appears in expanded details and plays only for you.");
+                    "Expand the folder that contains the animation.",
+                    "Expand a mod to see its actions. Send offers a public mod to the room.",
+                    "Press the large Ready button to prepare that emote or pose for synchronized playback.",
+                    "Press Solo to activate the same animation only for yourself.",
+                    "A purple row with Suggested by a member means that member selected an animation in this mod. It is a suggestion, not an automatic download or playback.",
+                    "Expand Mod Options when the pack has variants or Penumbra option groups.");
                 Image(3);
                 break;
             case 5:
-                Paragraph("Expand a mod to see detected pose and emote triggers. Actor-role labels make multi-person animations understandable.");
+                Paragraph("Actor-role labels turn unclear multi-person slots into useful names. Right-click the same Ready button you use for playback.");
                 Steps(
-                    "Left-click an available role button to claim or ready that role.",
-                    "Purple means another room member already claimed that role.",
-                    "Right-click a role button to rename it, such as Driver, Passenger, or Camera.",
-                    "The remaining neutral roles are available to other actors.");
+                    "Left-click the large animation button to ready it; right-click it to open the role editor.",
+                    "Enter a short role such as Lead, Driver, Passenger, or Camera. Save stores it locally; Clear removes it.",
+                    "If a shared label is wrong, enter a correction and press Report correction. Your corrected label applies locally immediately.",
+                    "Solo remains available beside the tagged action and never readies the rest of the room.");
+                Bullets(
+                    "Purple action buttons indicate another room member selected that role or trigger.",
+                    "The first useful public label can become the community default.",
+                    "Five matching installation reports replace an established community label.");
                 Image(4);
                 break;
             case 6:
-                Paragraph("Role labels are community driven. Identifying a confusing animation once can help everyone who owns the same mod.");
-                Bullets(
-                    "The first useful label is distributed through the community database.",
-                    "Right-click a bad shared label, enter the correction, and press Report correction.",
-                    "Your correction applies immediately. Five matching installation reports replace the shared label.");
-                Paragraph("Other room members cannot see or browse your complete mod list. EmoteLink only shows availability for mods you have in common. If you do not want a particular match revealed at all, mark that mod Private.");
+                Paragraph("Mark a mod Private when it should never participate in group matching, community labels, or transfers.");
                 Steps(
-                    "Right-click the mod name.",
-                    "Choose Private from the context menu.",
-                    "Private mods are not advertised or transferable in group play.");
+                    "Public mods show Send while you are in a room.",
+                    "A private mod row appears cyan, says Private, and does not show Send.",
+                    "Right-click the mod name and toggle Private in the context menu.",
+                    "The cyan legend item identifies private rows throughout the library.");
                 Image(5);
                 ImGui.TextColored(new Vector4(0.2f, 0.85f, 0.9f, 1f),
-                    "Private mods appear cyan, sort near the bottom above white entries, never upload labels, and are excluded from room matching and transfers.");
+                    "Private mods are excluded from room matching, transfers, and community-label submissions.");
                 break;
             case 7:
-                Paragraph("Right-click a mod and choose Private when it should never be advertised or transferred through group play.");
+                Paragraph("Send is an explicit offer. No animation mod downloads or installs until the recipient accepts it.");
                 Bullets(
-                    "Press Send beside a non-private mod to offer it to the room.",
-                    "The recipient sees the sender, mod name, and file size before anything is installed.",
-                    "Accept downloads and installs the offered mod; Decline rejects it.",
+                    "Press Send beside a non-private mod to offer it to the other room members.",
+                    "Offers are limited to 75 MB and expire from relay storage after 10 minutes.",
+                    "The recipient sees the sender, mod name, and file size before installation.",
+                    "Accept downloads and hands the package to Penumbra; Decline rejects the offer.",
                     "Only send or accept files that everyone involved is allowed to share.",
                     "Private mods never show a Send button.");
+                Image(5);
                 ImGui.Spacing();
                 if (ImGui.BeginChild("transfer-example", new Vector2(360, 135), true))
                 {
