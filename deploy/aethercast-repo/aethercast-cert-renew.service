@@ -1,0 +1,8 @@
+[Unit]
+Description=Renew the Aethercast apex TLS certificate
+Requires=docker.service
+After=docker.service
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/renew-aethercast-cert

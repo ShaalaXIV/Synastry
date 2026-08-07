@@ -15,7 +15,7 @@
     "IsTestingExclusive": false,
     "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.44/Synastry-1.0.44.zip",
     "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.44/Synastry-1.0.44.zip",
-    "Changelog": "EmoteLink is now Synastry, with the new /synastry command and branding. Right-click room invitations now open an Accept or Decline popup and can connect and join automatically.",
+    "Changelog": "EmoteLink is now Synastry. The repository has moved to https://aethercast.org/repo, and existing settings remain compatible.",
     "LastUpdate": "1786127622"
   }
 ]

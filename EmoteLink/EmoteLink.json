@@ -6,7 +6,7 @@
   "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
   "ApplicableVersion": "any",
   "RepoUrl": "https://github.com/ShaalaXIV/Synastry",
-  "IconUrl": "https://raw.githubusercontent.com/ShaalaXIV/Synastry/main/images/icon.png",
+  "IconUrl": "https://aethercast.org/repo/images/synastry.png",
   "Tags": [ "penumbra", "animation", "emote", "sync" ],
   "DalamudApiLevel": 15,
   "LoadRequiredState": 1,

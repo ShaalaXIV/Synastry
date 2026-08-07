@@ -1,0 +1,39 @@
+[
+  {
+    "Author": "ShaalaXIV",
+    "Name": "AetherPress",
+    "InternalName": "AetherPress",
+    "AssemblyVersion": "1.2.0.0",
+    "Description": "Detects completed Penumbra mod installations and offers configurable Base, Normal, and Mask texture compression. Use /aetherpress to open settings.",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
+    "Punchline": "Automatically compress textures in newly installed Penumbra mods.",
+    "RepoUrl": "https://github.com/ShaalaXIV/AetherPress",
+    "Tags": [ "penumbra", "textures", "compression" ],
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/AetherPress/releases/download/v1.2.0/AetherPress-1.2.0.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/AetherPress/releases/download/v1.2.0/AetherPress-1.2.0.zip",
+    "Changelog": "Initial public release under ShaalaXIV. Adds Penumbra install detection, configurable compression presets, adaptive resolution, protected skin textures, and opt-in automatic optimization.",
+    "LastUpdate": "1786126319"
+  },
+  {
+    "Author": "ShaalaXIV",
+    "Name": "Synastry",
+    "InternalName": "EmoteLink",
+    "AssemblyVersion": "1.0.44.0",
+    "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
+    "Punchline": "Paired animation sync for Penumbra.",
+    "RepoUrl": "https://github.com/ShaalaXIV/Synastry",
+    "IconUrl": "https://aethercast.org/repo/images/synastry.png",
+    "Tags": [ "penumbra", "animation", "emote", "sync" ],
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.44/Synastry-1.0.44.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.44/Synastry-1.0.44.zip",
+    "Changelog": "EmoteLink is now Synastry, with the new /synastry command and branding. Right-click room invitations now open an Accept or Decline popup and can connect and join automatically.",
+    "LastUpdate": "1786127622"
+  }
+]

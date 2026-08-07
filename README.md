@@ -53,10 +53,11 @@ This makes coordinated animation sessions much easier: find an animation, share 
 Add this URL under **Dalamud Settings → Experimental → Custom Plugin Repositories**:
 
 ```text
-https://shaalaxiv.github.io/Synastry/repo.json
+https://aethercast.org/repo
 ```
 
-Save the settings, open the Plugin Installer, and search for **Synastry**.
+This combined repository contains **AetherPress** and **Synastry**. Save the
+settings, open the Plugin Installer, and search for **Synastry**.
 
 Use `/synastry` to open the plugin. To join a room directly, use:
 
