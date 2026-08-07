@@ -1,14 +1,16 @@
 {
   "Author": "ShaalaXIV",
-  "Name": "EmoteLink",
+  "Name": "Synastry",
   "InternalName": "EmoteLink",
-  "AssemblyVersion": "1.0.43",
-  "Description": "A plain Penumbra animation launcher with temporary activation, target alignment, and synchronized group play.",
+  "AssemblyVersion": "1.0.44",
+  "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
   "ApplicableVersion": "any",
-  "Tags": [ "penumbra", "animation", "emote" ],
+  "RepoUrl": "https://github.com/ShaalaXIV/Synastry",
+  "IconUrl": "https://raw.githubusercontent.com/ShaalaXIV/Synastry/main/images/icon.png",
+  "Tags": [ "penumbra", "animation", "emote", "sync" ],
   "DalamudApiLevel": 15,
   "LoadRequiredState": 1,
   "LoadSync": false,
   "CanUnloadAsync": true,
-  "Punchline": "Pick an emote, link up, and play together."
+  "Punchline": "Paired animation sync for Penumbra."
 }

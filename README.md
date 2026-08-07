@@ -1,19 +1,21 @@
-# EmoteLink
+# Synastry
 
-EmoteLink is a Dalamud plugin for finding, organizing, sharing, and playing Penumbra animation mods.
+![Synastry logo](images/icon.png)
+
+Synastry is a Dalamud plugin for finding, organizing, sharing, and playing Penumbra animation mods.
 
 It turns large animation collections into a practical launcher: browse mods, organize them into folders, collapse large option groups, label multi-actor roles, and activate animations without manually changing Penumbra settings.
 
 ## Community role labels
 
-Multi-actor animation packs are often difficult to understand when their options are only named `Ground Sit 1`, `Ground Sit 2`, and so on. EmoteLink lets those activation buttons carry useful role names such as `Driver`, `Passenger`, `Top`, or `Bottom`.
+Multi-actor animation packs are often difficult to understand when their options are only named `Ground Sit 1`, `Ground Sit 2`, and so on. Synastry lets those activation buttons carry useful role names such as `Driver`, `Passenger`, `Top`, or `Bottom`.
 
 Role labels are community-driven:
 
 - Right-click an activation button to create or edit its label.
 - Existing local labels are always respected and never overwritten.
 - Non-private labels can be shared with other members of a room.
-- Accepted community labels are available to anyone connected to EmoteLink.
+- Accepted community labels are available to anyone connected to Synastry.
 - If a shared label is wrong, right-click it and submit a correction.
 - Your correction applies locally immediately.
 - The first submitted label becomes the community default immediately.
@@ -24,7 +26,7 @@ The goal is simple: once the community identifies the roles in a complicated ani
 
 ## Mod sharing
 
-If another room member does not have an animation, EmoteLink can offer the mod directly through the room. The recipient explicitly accepts or declines the transfer, and accepted packages are handed to Penumbra for installation.
+If another room member does not have an animation, Synastry can offer the mod directly through the room. The recipient explicitly accepts or declines the transfer, and accepted packages are handed to Penumbra for installation.
 
 This makes coordinated animation sessions much easier: find an animation, share it with the people who need it, assign the roles, and start together from the same room.
 
@@ -41,6 +43,7 @@ This makes coordinated animation sessions much easier: find an animation, share 
 - Mark mods private from their right-click menu.
 - Temporarily activate animations without disturbing unrelated Penumbra settings.
 - Ready a room for synchronized playback or play an animation locally with **Solo**.
+- Right-click another player to send a room invitation they can accept or decline immediately.
 - Align your character with a nearby target before playback.
 - Optionally enable **Sit/doze anywhere** for furniture-free chair-sit and doze animations.
 - Green, orange, purple, cyan, and white indicators show room availability, suggestions, and privacy state.
@@ -50,15 +53,15 @@ This makes coordinated animation sessions much easier: find an animation, share 
 Add this URL under **Dalamud Settings → Experimental → Custom Plugin Repositories**:
 
 ```text
-https://shaalaxiv.github.io/EmoteLink/repo.json
+https://shaalaxiv.github.io/Synastry/repo.json
 ```
 
-Save the settings, open the Plugin Installer, and search for **EmoteLink**.
+Save the settings, open the Plugin Installer, and search for **Synastry**.
 
-Use `/emotelink` to open the plugin. To join a room directly, use:
+Use `/synastry` to open the plugin. To join a room directly, use:
 
 ```text
-/emotelink join ROOMCODE
+/synastry join ROOMCODE
 ```
 
 ## Privacy
@@ -77,4 +80,4 @@ dotnet build EmoteLink.slnx -c Release
 
 The relay source and deployment notes are in `EmoteLink.Relay`.
 
-EmoteLink is licensed under AGPL-3.0-or-later.
+Synastry is licensed under AGPL-3.0-or-later.

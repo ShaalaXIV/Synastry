@@ -23,7 +23,7 @@ public sealed class HowToWindow : Window
         "8. Send and receive mods safely"
     ];
 
-    public HowToWindow(ITextureProvider textures) : base("EmoteLink How To###EmoteLinkHowTo")
+    public HowToWindow(ITextureProvider textures) : base("Synastry How To###EmoteLinkHowTo")
     {
         Size = new Vector2(900, 720);
         SizeCondition = ImGuiCond.FirstUseEver;
@@ -65,11 +65,11 @@ public sealed class HowToWindow : Window
         switch (index)
         {
             case 0:
-                Paragraph("EmoteLink keeps room controls and animation browsing in two clear panels. Follow the numbered highlights from top to bottom.");
+                Paragraph("Synastry keeps room controls and animation browsing in two clear panels. Follow the numbered highlights from top to bottom.");
                 Steps(
                     "Confirm Penumbra is connected. Refresh rescans mods, Community labels downloads accepted role names, and How to reopens this guide.",
                     "Create a room, or enter a friend's code and join. Disconnect leaves the animation relay.",
-                    "Align to your current target, toggle Sit/doze anywhere when furniture-free poses are needed, or clear EmoteLink's temporary animation assignment.",
+                    "Align to your current target, toggle Sit/doze anywhere when furniture-free poses are needed, or clear Synastry's temporary animation assignment.",
                     "Search the entire animation library or create a new folder.",
                     "Expand folders to browse your organized animation mods.");
                 Image(0);
@@ -85,9 +85,9 @@ public sealed class HowToWindow : Window
                 Image(1);
                 break;
             case 2:
-                Paragraph("After creating a room, give its code to the other players. They connect to the relay, enter the code, and press Join room.");
+                Paragraph("After creating a room, right-click another player and choose Invite to Synastry. They can accept or decline without copying a room code.");
                 Steps(
-                    "Click the room-code button to copy it.",
+                    "Right-click a player and choose Invite to Synastry, or click the room-code button when manual sharing is useful.",
                     "Cancel ready clears your prepared animation, Leave room exits, and Force start is available to the host.",
                     "Each member row shows HOST when applicable and changes between WAITING and READY.",
                     "The legend always remains visible below the library; its colors are explained on the next page.");

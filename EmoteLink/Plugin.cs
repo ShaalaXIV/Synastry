@@ -1,8 +1,6 @@
 using Dalamud.Game.Command;
 using Dalamud.Game.Gui.ContextMenu;
 using Dalamud.Game.Text;
-using Dalamud.Game.Text.SeStringHandling;
-using Dalamud.Game.Text.SeStringHandling.Payloads;
 using Dalamud.Game.Chat;
 using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Interface.Windowing;
@@ -25,7 +23,7 @@ namespace EmoteLink;
 
 public sealed unsafe class Plugin : IDalamudPlugin
 {
-    private const string Command = "/emotelink";
+    private const string Command = "/synastry";
     private const float MaxAlignDistance = 2f;
     private const int LobbyEmoteRefreshDelayMs = 5000;
     private const string RelayUrl = "https://emotelink.aethercast.org";
@@ -48,7 +46,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly PoseService poses;
     private readonly AnywherePoseService? anywherePoses;
     private readonly AnimationSyncService sync;
-    private readonly WindowSystem windows = new("EmoteLink");
+    private readonly WindowSystem windows = new("Synastry");
     private readonly MainWindow mainWindow;
     private readonly HowToWindow howToWindow;
     private bool waitingForAnimation;
@@ -90,12 +88,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private int alignmentFramesRemaining;
     private int alignmentStableFrames;
     private readonly ConcurrentQueue<ModTransferOfferDto> transferOffers = new();
+    private readonly ConcurrentQueue<RoomInvite> roomInvites = new();
     private readonly ConcurrentQueue<(ModTransferOfferDto Offer, string Path, Exception? Error)> completedDownloads = new();
     private readonly ConcurrentDictionary<string, OptionSelectionDto> remoteOptionSelections = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<RoleLabelDto> receivedRoleLabels = new();
     private readonly ConcurrentQueue<CommunityRoleLabelDto> receivedCommunityRoleLabels = new();
     private readonly ConcurrentDictionary<string, AnimationSuggestion> activeAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<uint, DalamudLinkPayload> inviteLinks = [];
     private string? remoteSelectionRoom;
     private bool roleSyncPending;
     private bool communityRoleSyncPending;
@@ -173,7 +171,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             else ToggleWindow();
         })
         {
-            HelpMessage = "Open EmoteLink, or join with /emotelink join ROOMCODE."
+            HelpMessage = "Open Synastry, or join with /synastry join ROOMCODE."
         });
 
         // Recover from an unload/crash that left our tracked overrides behind.
@@ -536,6 +534,23 @@ public sealed unsafe class Plugin : IDalamudPlugin
         RunSync(sync.JoinRoomAsync(code, characterName, GetCatalogFingerprints()), "Joined group-play room.");
     }
 
+    public void AcceptRoomInvite(RoomInvite invite)
+    {
+        if (!RequireCharacterName(out var characterName)) return;
+        Status = $"Accepting {invite.SenderName}'s invitation to room {invite.RoomCode}...";
+        var join = sync.IsConnected
+            ? sync.JoinRoomAsync(invite.RoomCode, characterName, GetCatalogFingerprints())
+            : sync.ConnectAsync(RelayUrl).ContinueWith(task =>
+            {
+                task.GetAwaiter().GetResult();
+                return sync.JoinRoomAsync(invite.RoomCode, characterName, GetCatalogFingerprints());
+            }, TaskScheduler.Default).Unwrap();
+        RunSync(join, $"Joined {invite.SenderName} in room {invite.RoomCode}.");
+    }
+
+    public void DeclineRoomInvite(RoomInvite invite) =>
+        Status = $"Declined {invite.SenderName}'s room invitation.";
+
     private static string? CurrentCharacterName()
     {
         var name = Objects.LocalPlayer?.Name.TextValue.Trim();
@@ -551,6 +566,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     }
 
     public bool TryTakeTransferOffer(out ModTransferOfferDto offer) => transferOffers.TryDequeue(out offer!);
+
+    public bool TryTakeRoomInvite(out RoomInvite invite) => roomInvites.TryDequeue(out invite!);
 
     public void SendMod(string directory, string name)
     {
@@ -679,8 +696,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
         args.AddMenuItem(new MenuItem
         {
-            Name = "Invite to EmoteLink",
-            PrefixChar = 'E',
+            Name = "Invite to Synastry",
+            PrefixChar = 'S',
             OnClicked = _ => SendRoomInvite(targetName, worldName, roomCode)
         });
     }
@@ -691,37 +708,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var cleanWorld = Regex.Replace(worldName, @"[^\p{L}\d\-]", "");
         if (cleanName.Length == 0) return;
         var recipient = cleanWorld.Length == 0 ? cleanName : $"{cleanName}@{cleanWorld}";
-        ExecuteCommand($"/tell {recipient} EmoteLink room code: {roomCode}");
+        ExecuteCommand($"/tell {recipient} Synastry room invitation: {roomCode}");
         Status = $"Invited {cleanName} to room {roomCode}.";
     }
 
     private void OnChatMessage(IHandleableChatMessage chatMessage)
     {
-        var match = Regex.Match(chatMessage.Message.TextValue, @"^EmoteLink room code:\s*([A-Za-z0-9]{4,8})\s*$", RegexOptions.IgnoreCase);
+        if (chatMessage.LogKind != XivChatType.TellIncoming) return;
+        var match = Regex.Match(
+            chatMessage.Message.TextValue,
+            @"^(?:Synastry room invitation|EmoteLink room code):\s*([A-Za-z0-9]{4,8})\s*$",
+            RegexOptions.IgnoreCase);
         if (!match.Success) return;
         var code = match.Groups[1].Value.ToUpperInvariant();
-        var commandId = 0xE1000000u | (uint)(code.GetHashCode(StringComparison.OrdinalIgnoreCase) & 0x00FFFFFF);
-        if (!inviteLinks.TryGetValue(commandId, out var link))
-        {
-            link = Chat.AddChatLinkHandler(commandId, (_, _) =>
-            {
-                if (!sync.IsConnected)
-                {
-                    Status = $"Connect to Group Play, then click the room invite again to join {code}.";
-                    mainWindow.IsOpen = true;
-                    return;
-                }
-                JoinSyncRoom(code);
-                mainWindow.IsOpen = true;
-            });
-            inviteLinks[commandId] = link;
-        }
-        chatMessage.Message = new SeStringBuilder()
-            .AddText("EmoteLink invitation: ")
-            .Add(link)
-            .AddText($"Join room {code}")
-            .Add(RawPayload.LinkTerminator)
-            .Build();
+        var senderName = chatMessage.Sender.TextValue.Trim();
+        if (string.IsNullOrWhiteSpace(senderName)) senderName = "A player";
+        roomInvites.Enqueue(new RoomInvite(senderName, code));
+        Status = $"{senderName} invited you to room {code}.";
+        mainWindow.IsOpen = true;
+        chatMessage.Message = $"Synastry invitation: {senderName} invited you to room {code}.";
     }
 
     private void RunSync(Task operation, string success)
@@ -950,7 +955,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (command is null)
         {
             Status = $"Activated {name}, but no emote command was detected.";
-            Chat.PrintError($"[EmoteLink] {name} was activated, but its emote could not be detected.");
+            Chat.PrintError($"[Synastry] {name} was activated, but its emote could not be detected.");
             return;
         }
 
@@ -1767,3 +1772,4 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
 public sealed record AnimationSuggestion(string SuggestedBy, string ModKey, string Directory, string ModName);
 public sealed record EmoteTarget(uint Id, string Name, string Command);
+public sealed record RoomInvite(string SenderName, string RoomCode);

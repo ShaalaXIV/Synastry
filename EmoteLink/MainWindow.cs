@@ -26,12 +26,13 @@ public sealed class MainWindow : Window
     private string newFolderName = "";
     private string roomCode = "";
     private ModTransferOfferDto? activeTransferOffer;
+    private RoomInvite? activeRoomInvite;
     private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> correctionBuffers = new(StringComparer.OrdinalIgnoreCase);
     private const string ModPayload = "EMOTELINK_MOD";
     private const string FolderPayload = "EMOTELINK_FOLDER";
 
-    public MainWindow(Plugin plugin) : base("EmoteLink###EmoteLink")
+    public MainWindow(Plugin plugin) : base("Synastry###EmoteLink")
     {
         this.plugin = plugin;
         Size = new Vector2(780, 680);
@@ -55,6 +56,7 @@ public sealed class MainWindow : Window
             DrawGroupPlay();
             ImGui.Spacing();
             DrawLibrary();
+            DrawRoomInvitePopup();
             DrawTransferOfferPopup();
         }
         finally
@@ -251,7 +253,7 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         if (ImGui.Button("Clear temporary animations")) plugin.ClearTemporaryAssignments();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Clear the temporary animation assignment currently applied by EmoteLink.");
+            ImGui.SetTooltip("Clear the temporary animation assignment currently applied by Synastry.");
     }
 
     private void DrawLibrary()
@@ -312,6 +314,35 @@ public sealed class MainWindow : Window
         ImGui.TextColored(color, "●");
         ImGui.SameLine();
         ImGui.TextDisabled(label);
+    }
+
+    private void DrawRoomInvitePopup()
+    {
+        if (activeRoomInvite is null && plugin.TryTakeRoomInvite(out var invite))
+        {
+            activeRoomInvite = invite;
+            ImGui.OpenPopup("Synastry room invitation");
+        }
+        if (!ImGui.BeginPopupModal("Synastry room invitation", ImGuiWindowFlags.AlwaysAutoResize)) return;
+        var active = activeRoomInvite;
+        if (active is null) { ImGui.CloseCurrentPopup(); ImGui.EndPopup(); return; }
+        ImGui.TextWrapped($"{active.SenderName} invited you to join a Synastry room.");
+        ImGui.TextDisabled($"Room code: {active.RoomCode}");
+        ImGui.Spacing();
+        if (ImGui.Button("Accept", new Vector2(110, 0)))
+        {
+            plugin.AcceptRoomInvite(active);
+            activeRoomInvite = null;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Decline", new Vector2(110, 0)))
+        {
+            plugin.DeclineRoomInvite(active);
+            activeRoomInvite = null;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndPopup();
     }
 
     private void DrawTransferOfferPopup()
