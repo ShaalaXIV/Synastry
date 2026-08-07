@@ -88,13 +88,13 @@ public sealed class PenumbraService
             if (code != 0 || current is null)
                 return false;
 
-            var (_, priority, options, _) = current.Value;
+            var (_, _, options, _) = current.Value;
             foreach (var (group, selections) in selectedOptions)
                 options[group] = selections.ToList();
             var readonlyOptions = options.ToDictionary(
                 pair => pair.Key,
                 pair => (IReadOnlyList<string>)pair.Value);
-            var settings = (false, true, Math.Max(priority, 100),
+            var settings = (false, true, 9999,
                 (IReadOnlyDictionary<string, IReadOnlyList<string>>)readonlyOptions);
             var result = setTemporary.InvokeFunc(collectionId, directory, name, settings, Source, 0);
             return result is 0 or 1;

@@ -73,7 +73,8 @@ public sealed class MainWindow : Window
                 ? "Penumbra is available and animation mods can be activated."
                 : "Penumbra is not currently available.");
 
-        var refreshWidth = ButtonWidth("Refresh");
+        var refreshLabel = plugin.IsRefreshingMods ? "Refreshing..." : "Refresh";
+        var refreshWidth = ButtonWidth(refreshLabel);
         var communityWidth = ButtonWidth("Community labels");
         var howToWidth = ButtonWidth("How to");
         var totalWidth = refreshWidth + communityWidth + howToWidth + ImGui.GetStyle().ItemSpacing.X * 2;
@@ -88,7 +89,10 @@ public sealed class MainWindow : Window
             ImGui.Spacing();
         }
 
-        if (ImGui.Button("Refresh", new Vector2(refreshWidth, 0))) plugin.RefreshMods();
+        if (plugin.IsRefreshingMods) ImGui.BeginDisabled();
+        if (ImGui.Button(refreshLabel, new Vector2(refreshWidth, 0)))
+            plugin.RefreshMods();
+        if (plugin.IsRefreshingMods) ImGui.EndDisabled();
         ImGui.SameLine();
         if (ImGui.Button("Community labels", new Vector2(communityWidth, 0))) plugin.DownloadCommunityTags();
         if (ImGui.IsItemHovered())
@@ -261,13 +265,20 @@ public sealed class MainWindow : Window
         ImGui.TextDisabled($"{plugin.Mods.Count} MODS");
 
         var newFolderWidth = ButtonWidth("New folder");
-        var searchWidth = MathF.Max(160f, ImGui.GetContentRegionAvail().X - newFolderWidth -
-                                          ImGui.GetStyle().ItemSpacing.X);
+        var privateWidth = ButtonWidth("Mark all private");
+        var searchWidth = MathF.Max(120f, ImGui.GetContentRegionAvail().X - newFolderWidth - privateWidth -
+                                          ImGui.GetStyle().ItemSpacing.X * 2);
         ImGui.SetNextItemWidth(searchWidth);
         ImGui.InputTextWithHint("##search", "Search animation mods...", ref search, 128);
         ImGui.SameLine();
         if (ImGui.Button("New folder", new Vector2(newFolderWidth, 0))) ImGui.OpenPopup("Create folder");
+        ImGui.SameLine();
+        if (ImGui.Button("Mark all private", new Vector2(privateWidth, 0)))
+            ImGui.OpenPopup("Mark every animation private?");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Hide every animation mod from group matching and transfers.");
         DrawCreateFolderPopup();
+        DrawMarkAllPrivatePopup();
 
         ImGui.Spacing();
         ImGui.PushStyleColor(ImGuiCol.ChildBg, NestedPanelColor);
@@ -348,6 +359,22 @@ public sealed class MainWindow : Window
         }
         ImGui.SameLine();
         if (ImGui.Button("Cancel")) ImGui.CloseCurrentPopup();
+        ImGui.EndPopup();
+    }
+
+    private void DrawMarkAllPrivatePopup()
+    {
+        if (!ImGui.BeginPopupModal("Mark every animation private?", ImGuiWindowFlags.AlwaysAutoResize)) return;
+        ImGui.TextWrapped("Every animation mod currently in the library will be private.");
+        ImGui.TextDisabled("You can unhide individual mods from their right-click menu.");
+        ImGui.Spacing();
+        if (ImGui.Button("Mark all private", new Vector2(130f, 0)))
+        {
+            plugin.MarkAllModsPrivate();
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel", new Vector2(90f, 0))) ImGui.CloseCurrentPopup();
         ImGui.EndPopup();
     }
 

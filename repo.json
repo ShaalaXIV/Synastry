@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "EmoteLink",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.42.0",
+    "AssemblyVersion": "1.0.43.0",
     "Description": "A plain Penumbra animation launcher with temporary activation, target alignment, and synchronized group play.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -12,9 +12,9 @@
     "Tags": [ "penumbra", "animation", "emote" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.42/EmoteLink-1.0.42.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.42/EmoteLink-1.0.42.zip",
-    "Changelog": "Reduced connected-room frame-time and idle network overhead with allocation-free match snapshots, cached library ordering, and WebSockets with a 30-second keepalive. Sit/doze anywhere is now an opt-in toggle instead of an automatic fallback.",
-    "LastUpdate": "1785979334"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.43/EmoteLink-1.0.43.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/EmoteLink/releases/download/v1.0.43/EmoteLink-1.0.43.zip",
+    "Changelog": "Temporary animation assignments now use priority 9999. Added a bulk Mark all private action, and refresh now scans incrementally with duplicate-refresh and per-mod failure protection.",
+    "LastUpdate": "1786052937"
   }
 ]

@@ -100,6 +100,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private bool roleSyncPending;
     private bool communityRoleSyncPending;
     private bool communityRelayConnected;
+    private Queue<(string Directory, string Name)>? pendingModRefresh;
+    private List<(string Directory, string Name)>? refreshedMods;
+    private string? refreshModRoot;
+    private int refreshTotalMods;
+    private int refreshProcessedMods;
 
     public IReadOnlyList<(string Directory, string Name)> Mods { get; private set; } = [];
     public IReadOnlyList<ModCategory> Categories => configuration.Categories;
@@ -107,6 +112,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public bool IsAligning => movement.IsWalking || alignmentFramesRemaining > 0;
     public bool SitDozeAnywhereEnabled => configuration.SitDozeAnywhere;
     public bool SitDozeAnywhereAvailable => anywherePoses is not null;
+    public bool IsRefreshingMods => pendingModRefresh is not null;
     public string Status { get; private set; } = "Ready.";
     public AnimationSyncService Sync => sync;
     public string SyncDisplayName => CurrentCharacterName() ?? "Unavailable";
@@ -177,6 +183,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void RefreshMods()
     {
+        if (pendingModRefresh is not null)
+        {
+            Status = "An animation-library refresh is already in progress.";
+            return;
+        }
+
         if (!penumbra.IsAvailable)
         {
             Mods = [];
@@ -193,7 +205,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
 
         var allMods = penumbra.GetMods();
-        var animationMods = new List<(string Directory, string Name)>();
         optionGroups.Clear();
         optionPoses.Clear();
         modPoses.Clear();
@@ -201,22 +212,35 @@ public sealed unsafe class Plugin : IDalamudPlugin
         optionGroupMulti.Clear();
         modSyncKeys.Clear();
         modCatalogKeys.Clear();
-        foreach (var mod in allMods)
-        {
-            var path = Path.Combine(root, mod.Directory);
-            try
-            {
-                if (!Directory.Exists(path) ||
-                    !Directory.EnumerateFiles(path, "*.pap", SearchOption.AllDirectories).Any())
-                    continue;
-            }
-            catch (Exception ex)
-            {
-                Log.Debug(ex, "Could not scan {ModDirectory} for PAP files.", mod.Directory);
-                continue;
-            }
+        Mods = [];
+        modsByDirectory.Clear();
+        InvalidateLibraryOrder();
+        refreshModRoot = root;
+        refreshedMods = [];
+        pendingModRefresh = new Queue<(string Directory, string Name)>(allMods);
+        refreshTotalMods = allMods.Count;
+        refreshProcessedMods = 0;
+        Status = $"Refreshing animation library: 0 of {allMods.Count} mods checked...";
+        if (pendingModRefresh.Count == 0) FinishModRefresh();
+    }
 
-            animationMods.Add(mod);
+    private void ProcessModRefresh()
+    {
+        if (pendingModRefresh is null || refreshedMods is null || refreshModRoot is null) return;
+        if (!pendingModRefresh.TryDequeue(out var mod))
+        {
+            FinishModRefresh();
+            return;
+        }
+
+        try
+        {
+            var path = Path.Combine(refreshModRoot, mod.Directory);
+            if (!Directory.Exists(path) ||
+                !Directory.EnumerateFiles(path, "*.pap", SearchOption.AllDirectories).Any())
+                return;
+
+            refreshedMods.Add(mod);
             modSyncKeys[mod.Directory] = BuildModSyncKey(path, mod.Name);
             modCatalogKeys[mod.Directory] = CatalogFingerprint(modSyncKeys[mod.Directory]);
             IndexPoseOptions(path, mod.Directory);
@@ -230,9 +254,32 @@ public sealed unsafe class Plugin : IDalamudPlugin
             NormalizeSelections(mod.Directory, groups);
             InitializeOptionSelections(mod, groups);
         }
+        catch (Exception ex)
+        {
+            Log.Warning(ex, "Could not refresh animation mod {ModDirectory}; it was skipped.", mod.Directory);
+        }
+        finally
+        {
+            if (pendingModRefresh is not null)
+            {
+                refreshProcessedMods++;
+                Status = $"Refreshing animation library: {refreshProcessedMods} of {refreshTotalMods} mods checked...";
+                if (pendingModRefresh.Count == 0) FinishModRefresh();
+            }
+        }
+    }
+
+    private void FinishModRefresh()
+    {
+        var animationMods = refreshedMods ?? [];
         Mods = animationMods;
         modsByDirectory.Clear();
         foreach (var mod in animationMods) modsByDirectory[mod.Directory] = mod;
+        pendingModRefresh = null;
+        refreshedMods = null;
+        refreshModRoot = null;
+        refreshTotalMods = 0;
+        refreshProcessedMods = 0;
         Status = $"Loaded {Mods.Count} mod(s) containing PAP animations.";
         NormalizeOrganization();
         if (sync.IsInRoom) _ = sync.SetCatalogAsync(GetCatalogFingerprints());
@@ -365,6 +412,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
             : "Mod is available to group play again.";
     }
 
+    public void MarkAllModsPrivate()
+    {
+        var added = 0;
+        foreach (var mod in Mods)
+            if (configuration.PrivateMods.Add(mod.Directory)) added++;
+        configuration.Save(PluginInterface);
+        if (sync.IsInRoom) _ = sync.SetCatalogAsync(GetCatalogFingerprints());
+        InvalidateLibraryOrder();
+        Status = added == 0
+            ? "All animation mods are already private."
+            : $"Marked {added} animation mod(s) private. Unhide individual mods from their right-click menu.";
+    }
+
     public void SetSitDozeAnywhere(bool enabled)
     {
         if (enabled && anywherePoses is null)
@@ -421,7 +481,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void DownloadCommunityTags()
     {
-        RefreshMods();
+        if (IsRefreshingMods)
+        {
+            Status = "Wait for the animation-library refresh to finish before downloading community labels.";
+            return;
+        }
         if (!sync.IsConnected)
         {
             Status = "Connect to Group Play before downloading community tags.";
@@ -1247,6 +1311,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void OnUpdate(IFramework _)
     {
+        ProcessModRefresh();
         ProcessReceivedRoleLabels();
         ProcessReceivedCommunityRoleLabels();
         if (roleSyncPending) StartRoleLabelSync();
