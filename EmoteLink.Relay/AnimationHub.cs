@@ -75,6 +75,25 @@ public sealed class AnimationHub : Hub
         await Clients.OthersInGroup(room.Code).SendAsync("CatalogChanged");
     }
 
+    public async Task<int> AddCatalogFingerprint(string fingerprint)
+    {
+        var room = GetCurrentRoom();
+        var clean = CleanFingerprint(fingerprint);
+        if (clean.Length != 64) throw new HubException("A valid animation fingerprint is required.");
+
+        int matches;
+        lock (room.Gate)
+        {
+            var member = room.Members[Context.ConnectionId];
+            if (!member.Catalog.Contains(clean) && member.Catalog.Count >= 1000)
+                throw new HubException("The animation catalog is full.");
+            member.Catalog.Add(clean);
+            matches = room.Members.Values.Count(candidate => candidate.Catalog.Contains(clean));
+        }
+        await Clients.OthersInGroup(room.Code).SendAsync("CatalogFingerprintChanged", clean);
+        return matches;
+    }
+
     public Dictionary<string, int> GetMatchCounts(IReadOnlyList<string> fingerprints)
     {
         var room = GetCurrentRoom();
@@ -256,7 +275,7 @@ public sealed class AnimationHub : Hub
     public async Task<RoomStateDto> SetReady(string modKey)
     {
         var room = GetCurrentRoom();
-        PlaySignalDto? play = null;
+        List<(string ConnectionId, PlaySignalDto Signal)> plays = [];
         RoomStateDto readyState;
         lock (room.Gate)
         {
@@ -265,22 +284,22 @@ public sealed class AnimationHub : Hub
             member.ModKey = CleanModKey(modKey);
             readyState = Snapshot(room);
 
-            var keys = room.Members.Values.Select(value => value.ModKey).Distinct(StringComparer.OrdinalIgnoreCase).ToList();
             if (room.Members.Count >= 2 && room.Members.Values.All(value => value.Ready) &&
-                keys.Count == 1 && !string.IsNullOrWhiteSpace(keys[0]))
+                room.Members.Values.All(value => !string.IsNullOrWhiteSpace(value.ModKey)))
             {
-                play = new PlaySignalDto(
-                    keys[0],
-                    DateTimeOffset.UtcNow.AddMilliseconds(PlayDelayMilliseconds).ToUnixTimeMilliseconds(),
-                    Guid.NewGuid().ToString("N"),
-                    PlayDelayMilliseconds);
+                var start = DateTimeOffset.UtcNow.AddMilliseconds(PlayDelayMilliseconds).ToUnixTimeMilliseconds();
+                var sequence = Guid.NewGuid().ToString("N");
+                plays = room.Members.Values.Select(value => (
+                    value.ConnectionId,
+                    new PlaySignalDto(value.ModKey, start, sequence, PlayDelayMilliseconds))).ToList();
                 ResetReady(room);
             }
         }
         await Clients.Group(room.Code).SendAsync("RoomStateChanged", readyState);
-        if (play is not null)
+        if (plays.Count > 0)
         {
-            await Clients.Group(room.Code).SendAsync("AnimationPlay", play);
+            await Task.WhenAll(plays.Select(play =>
+                Clients.Client(play.ConnectionId).SendAsync("AnimationPlay", play.Signal)));
             await Clients.Group(room.Code).SendAsync("RoomStateChanged", Snapshot(room));
         }
         return readyState;
@@ -303,7 +322,7 @@ public sealed class AnimationHub : Hub
     public async Task<RoomStateDto> ForceStart()
     {
         var room = GetCurrentRoom();
-        PlaySignalDto play;
+        List<(string ConnectionId, PlaySignalDto Signal)> plays;
         RoomStateDto state;
         lock (room.Gate)
         {
@@ -311,15 +330,19 @@ public sealed class AnimationHub : Hub
             if (!member.IsLeader) throw new HubException("Only the room host can force playback.");
             if (!member.Ready || string.IsNullOrWhiteSpace(member.ModKey))
                 throw new HubException("Select an animation and ready it before forcing playback.");
-            play = new PlaySignalDto(
-                member.ModKey,
-                DateTimeOffset.UtcNow.AddMilliseconds(PlayDelayMilliseconds).ToUnixTimeMilliseconds(),
-                Guid.NewGuid().ToString("N"),
-                PlayDelayMilliseconds);
+            var start = DateTimeOffset.UtcNow.AddMilliseconds(PlayDelayMilliseconds).ToUnixTimeMilliseconds();
+            var sequence = Guid.NewGuid().ToString("N");
+            plays = room.Members.Values
+                .Where(value => value.Ready && !string.IsNullOrWhiteSpace(value.ModKey))
+                .Select(value => (
+                    value.ConnectionId,
+                    new PlaySignalDto(value.ModKey, start, sequence, PlayDelayMilliseconds)))
+                .ToList();
             ResetReady(room);
             state = Snapshot(room);
         }
-        await Clients.Group(room.Code).SendAsync("AnimationPlay", play);
+        await Task.WhenAll(plays.Select(play =>
+            Clients.Client(play.ConnectionId).SendAsync("AnimationPlay", play.Signal)));
         await Clients.Group(room.Code).SendAsync("RoomStateChanged", state);
         return state;
     }

@@ -2,14 +2,11 @@ using Dalamud.Game.Command;
 using Dalamud.Game.Gui.ContextMenu;
 using Dalamud.Game.Text;
 using Dalamud.Game.Chat;
-using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Interface.Windowing;
 using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
-using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
-using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using System.Text.Json;
@@ -25,7 +22,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 {
     private const string Command = "/synastry";
     private const float MaxAlignDistance = 2f;
-    private const int LobbyEmoteRefreshDelayMs = 5000;
+    private const int SecondAnimationTriggerDelayMs = 6000;
     private const string RelayUrl = "https://emotelink.aethercast.org";
 
     [PluginService] private static IDalamudPluginInterface PluginInterface { get; set; } = null!;
@@ -59,7 +56,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private long pendingCommandTime;
     private PoseTarget? pendingPose;
     private string? pendingSelectionModKey;
-    private long lobbyEmoteRefreshTime;
+    private string? secondTriggerCommand;
+    private PoseTarget? secondTriggerPose;
+    private long secondTriggerTime;
     private readonly Dictionary<string, PoseTarget> optionPoses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<PoseTarget>> modPoses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<EmoteTarget>> modEmotes = new(StringComparer.OrdinalIgnoreCase);
@@ -90,6 +89,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly ConcurrentQueue<ModTransferOfferDto> transferOffers = new();
     private readonly ConcurrentQueue<RoomInvite> roomInvites = new();
     private readonly ConcurrentQueue<(ModTransferOfferDto Offer, string Path, Exception? Error)> completedDownloads = new();
+    private readonly ConcurrentQueue<string> addedModDirectories = new();
+    private readonly ConcurrentDictionary<string, byte> queuedAddedModDirectories = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, OptionSelectionDto> remoteOptionSelections = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<RoleLabelDto> receivedRoleLabels = new();
     private readonly ConcurrentQueue<CommunityRoleLabelDto> receivedCommunityRoleLabels = new();
@@ -122,6 +123,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             configuration.CommunityReporterId.Any(character => !Uri.IsHexDigit(character)))
             configuration.CommunityReporterId = Guid.NewGuid().ToString("N");
         penumbra = new PenumbraService(PluginInterface, Log);
+        penumbra.ModAdded += OnPenumbraModAdded;
         movement = new MovementService(Interop, Objects);
         poses = new PoseService(Objects);
         try
@@ -233,24 +235,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         try
         {
-            var path = Path.Combine(refreshModRoot, mod.Directory);
-            if (!Directory.Exists(path) ||
-                !Directory.EnumerateFiles(path, "*.pap", SearchOption.AllDirectories).Any())
-                return;
-
-            refreshedMods.Add(mod);
-            modSyncKeys[mod.Directory] = BuildModSyncKey(path, mod.Name);
-            modCatalogKeys[mod.Directory] = CatalogFingerprint(modSyncKeys[mod.Directory]);
-            IndexPoseOptions(path, mod.Directory);
-            IndexDetectedEmotes(mod.Directory, mod.Name);
-            var groups = penumbra.GetOptionGroups(mod.Directory, mod.Name)
-                .Select(group => optionGroupMulti.TryGetValue(OptionGroupKey(mod.Directory, group.Name), out var multi)
-                    ? group with { IsMultiSelect = multi }
-                    : group)
-                .ToList();
-            optionGroups[mod.Directory] = groups;
-            NormalizeSelections(mod.Directory, groups);
-            InitializeOptionSelections(mod, groups);
+            if (IndexAnimationMod(refreshModRoot, mod)) refreshedMods.Add(mod);
         }
         catch (Exception ex)
         {
@@ -281,6 +266,106 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = $"Loaded {Mods.Count} mod(s) containing PAP animations.";
         NormalizeOrganization();
         if (sync.IsInRoom) _ = sync.SetCatalogAsync(GetCatalogFingerprints());
+    }
+
+    private bool IndexAnimationMod(string root, (string Directory, string Name) mod)
+    {
+        var path = Path.Combine(root, mod.Directory);
+        if (!Directory.Exists(path) ||
+            !Directory.EnumerateFiles(path, "*.pap", SearchOption.AllDirectories).Any())
+            return false;
+
+        modSyncKeys[mod.Directory] = BuildModSyncKey(path, mod.Name);
+        modCatalogKeys[mod.Directory] = CatalogFingerprint(modSyncKeys[mod.Directory]);
+        IndexPoseOptions(path, mod.Directory);
+        IndexDetectedEmotes(mod.Directory, mod.Name);
+        var groups = penumbra.GetOptionGroups(mod.Directory, mod.Name)
+            .Select(group => optionGroupMulti.TryGetValue(OptionGroupKey(mod.Directory, group.Name), out var multi)
+                ? group with { IsMultiSelect = multi }
+                : group)
+            .ToList();
+        optionGroups[mod.Directory] = groups;
+        NormalizeSelections(mod.Directory, groups);
+        InitializeOptionSelections(mod, groups);
+        return true;
+    }
+
+    private void OnPenumbraModAdded(string directory)
+    {
+        if (string.IsNullOrWhiteSpace(directory) || !queuedAddedModDirectories.TryAdd(directory, 0)) return;
+        addedModDirectories.Enqueue(directory);
+    }
+
+    private void ProcessAddedMod()
+    {
+        if (pendingModRefresh is not null || !addedModDirectories.TryDequeue(out var directory)) return;
+        queuedAddedModDirectories.TryRemove(directory, out _);
+
+        try
+        {
+            var root = penumbra.GetModRoot();
+            if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) return;
+            var matchingMods = penumbra.GetMods()
+                .Where(mod => mod.Directory.Equals(directory, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (matchingMods.Count == 0)
+            {
+                Log.Warning("Penumbra reported added mod {ModDirectory}, but it was not present in the mod list.", directory);
+                return;
+            }
+
+            var mod = matchingMods[0];
+            RemoveModIndex(mod.Directory);
+            var animationMods = Mods
+                .Where(existing => !existing.Directory.Equals(mod.Directory, StringComparison.OrdinalIgnoreCase))
+                .ToList();
+            if (!IndexAnimationMod(root, mod))
+            {
+                Mods = animationMods;
+                RebuildModDirectoryLookup();
+                NormalizeOrganization();
+                Status = $"Installed {mod.Name}; it does not contain PAP animations.";
+                return;
+            }
+
+            animationMods.Add(mod);
+            Mods = animationMods;
+            RebuildModDirectoryLookup();
+            NormalizeOrganization();
+            InvalidateLibraryOrder();
+            var fingerprint = modCatalogKeys[mod.Directory];
+            if (sync.IsInRoom)
+                RunSync(sync.AddCatalogFingerprintAsync(fingerprint),
+                    $"Installed {mod.Name}; everyone in the room now sees its availability.");
+            else
+                Status = $"Installed {mod.Name}; added it to the animation library.";
+            Log.Information("Indexed newly installed animation mod {ModName} without refreshing the full library.", mod.Name);
+        }
+        catch (Exception ex)
+        {
+            Status = $"Could not add the newly installed animation to the library: {ex.GetBaseException().Message}";
+            Log.Warning(ex, "Could not index newly installed Penumbra mod {ModDirectory}.", directory);
+        }
+    }
+
+    private void RemoveModIndex(string directory)
+    {
+        optionGroups.Remove(directory);
+        modPoses.Remove(directory);
+        modEmotes.Remove(directory);
+        modSyncKeys.Remove(directory);
+        modCatalogKeys.Remove(directory);
+        var prefix = directory + "\u001f";
+        foreach (var key in optionPoses.Keys.Where(key => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList())
+            optionPoses.Remove(key);
+        foreach (var key in optionGroupMulti.Keys.Where(key => key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase)).ToList())
+            optionGroupMulti.Remove(key);
+    }
+
+    private void RebuildModDirectoryLookup()
+    {
+        modsByDirectory.Clear();
+        foreach (var mod in Mods) modsByDirectory[mod.Directory] = mod;
     }
 
     public IReadOnlyList<ModOptionGroup> GetOptionGroups(string directory) =>
@@ -651,7 +736,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     }
 
     public void ForceSyncStart() =>
-        RunSync(sync.ForceStartAsync(), "Forced the prepared animation to start for matching room members.");
+        RunSync(sync.ForceStartAsync(), "Started every prepared room member's selected animation role.");
 
     public void RemoveSyncMember(RoomMemberDto member) =>
         RunSync(sync.RemoveMemberAsync(member.ConnectionId), $"Removed {member.DisplayName} from the room.");
@@ -1273,6 +1358,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
         waitingForAnimation = false;
         pendingCommand = null;
         pendingPose = null;
+        pendingSelectionModKey = null;
+        secondTriggerCommand = null;
+        secondTriggerPose = null;
+        secondTriggerTime = 0;
         cyclingPose = null;
         hasMovementSample = false;
         movementFrames = 0;
@@ -1323,32 +1412,45 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (communityRoleSyncPending) StartCommunityRoleLabelSync();
         UpdateAlignment();
         ProcessCompletedDownloads();
+        ProcessAddedMod();
         ProcessSyncPlaySignals();
-        var initializedPendingMod = false;
+        string? triggeredCommand = null;
+        PoseTarget? triggeredPose = null;
         if (pendingPose is not null && Environment.TickCount64 >= pendingCommandTime)
         {
             var pose = pendingPose;
             pendingPose = null;
             ExecutePose(pose);
-            initializedPendingMod = true;
+            triggeredPose = pose;
         }
         if (pendingCommand is not null && Environment.TickCount64 >= pendingCommandTime)
         {
             var command = pendingCommand;
             pendingCommand = null;
             ExecuteCommand(command);
-            initializedPendingMod = true;
+            triggeredCommand = command;
         }
-        if (initializedPendingMod && pendingSelectionModKey is not null)
+        if ((triggeredCommand is not null || triggeredPose is not null) && pendingSelectionModKey is not null)
         {
             ClearRemoteSelections(pendingSelectionModKey);
             pendingSelectionModKey = null;
-            lobbyEmoteRefreshTime = Environment.TickCount64 + LobbyEmoteRefreshDelayMs;
+            secondTriggerCommand = triggeredCommand;
+            secondTriggerPose = triggeredPose;
+            secondTriggerTime = Environment.TickCount64 + SecondAnimationTriggerDelayMs;
+            Status = "Animation loaded once; triggering it again for everyone in 6 seconds.";
         }
-        if (lobbyEmoteRefreshTime > 0 && Environment.TickCount64 >= lobbyEmoteRefreshTime)
+        if (secondTriggerTime > 0 && Environment.TickCount64 >= secondTriggerTime)
         {
-            lobbyEmoteRefreshTime = 0;
-            RefreshLobbyEmotes();
+            var command = secondTriggerCommand;
+            var pose = secondTriggerPose;
+            secondTriggerCommand = null;
+            secondTriggerPose = null;
+            secondTriggerTime = 0;
+            if (pose is not null) ExecutePose(pose);
+            if (command is not null) ExecuteCommand(command);
+            Status = "Animation triggered a second time for the full nearby queue.";
+            Log.Information("Sent the second group animation trigger after {DelayMilliseconds} ms.",
+                SecondAnimationTriggerDelayMs);
         }
         UpdatePoseCycling();
         if (!waitingForAnimation) return;
@@ -1591,6 +1693,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingCommand = preparedCommand;
             pendingPose = preparedPose;
             pendingSelectionModKey = signal.ModKey;
+            secondTriggerCommand = null;
+            secondTriggerPose = null;
+            secondTriggerTime = 0;
             Status = $"Group ready. Starting in {delay / 1000f:F1}s.";
             Log.Information(
                 "Group play {SequenceId} received; scheduling {ModKey} in {DelayMilliseconds} ms ({TimingMode}).",
@@ -1613,43 +1718,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
                      pair.Value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase)))
             activeAnimationSuggestions.TryRemove(pair.Key, out _);
         InvalidateLibraryOrder();
-    }
-
-    private void RefreshLobbyEmotes()
-    {
-        var room = sync.Room;
-        var localPlayer = Objects.LocalPlayer;
-        if (room is null || localPlayer is null) return;
-
-        var lobbyNames = room.Members.Select(member => member.DisplayName)
-            .ToHashSet(StringComparer.OrdinalIgnoreCase);
-        var refreshed = 0;
-        foreach (var actor in Objects.OfType<IPlayerCharacter>())
-        {
-            // The local player is necessarily a lobby member. Remote actors are included
-            // only when their character name is one of the room's displayed identities.
-            if (actor.Address != localPlayer.Address && !lobbyNames.Contains(actor.Name.TextValue)) continue;
-            if (RefreshActorEmote(actor.Address)) refreshed++;
-        }
-        Log.Debug("Refreshed synchronized emote time for {ActorCount} visible lobby actors.", refreshed);
-    }
-
-    private static bool RefreshActorEmote(nint address)
-    {
-        var character = (Character*)address;
-        if (character is null || character->DrawObject is null ||
-            character->DrawObject->GetObjectType() != ObjectType.CharacterBase) return false;
-        if (character->Mode is not (CharacterModes.EmoteLoop or CharacterModes.InPositionLoop)) return false;
-        var characterBase = (CharacterBase*)character->DrawObject;
-        if (characterBase->GetModelType() != CharacterBase.ModelType.Human) return false;
-        var skeleton = ((Human*)character->DrawObject)->Skeleton;
-        if (skeleton is null || skeleton->PartialSkeletonCount < 1) return false;
-        var animatedSkeleton = skeleton->PartialSkeletons[0].GetHavokAnimatedSkeleton(0);
-        if (animatedSkeleton is null || animatedSkeleton->AnimationControls.Length < 1) return false;
-        var control = animatedSkeleton->AnimationControls[0].Value;
-        if (control is null) return false;
-        control->hkaAnimationControl.LocalTime = 0f;
-        return true;
     }
 
     private void UpdateMovementCleanup()
@@ -1763,6 +1831,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.OpenMainUi -= ToggleWindow;
         PluginInterface.UiBuilder.OpenConfigUi -= ToggleWindow;
         Commands.RemoveHandler(Command);
+        penumbra.ModAdded -= OnPenumbraModAdded;
+        penumbra.Dispose();
         movement.Dispose();
         anywherePoses?.Dispose();
         sync.DisposeAsync().AsTask().GetAwaiter().GetResult();

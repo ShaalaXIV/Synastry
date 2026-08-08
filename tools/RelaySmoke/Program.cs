@@ -45,6 +45,44 @@ var firstMatches = await first.InvokeAsync<Dictionary<string, int>>(
 if (firstMatches.Count != 2 || firstMatches[sharedFingerprint] != 2 || firstMatches[firstOnlyFingerprint] != 1 ||
     firstMatches.ContainsKey(secondOnlyFingerprint))
     throw new InvalidOperationException("Private catalog match counts were incorrect.");
+var incrementalFingerprint = new string('D', 64);
+var catalogFingerprintChanged = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
+first.On<string>("CatalogFingerprintChanged", fingerprint => catalogFingerprintChanged.TrySetResult(fingerprint));
+await first.InvokeAsync("SetCatalog", new[] { sharedFingerprint, firstOnlyFingerprint, incrementalFingerprint });
+var incrementalMatches = await second.InvokeAsync<int>("AddCatalogFingerprint", incrementalFingerprint);
+var changedFingerprint = await catalogFingerprintChanged.Task.WaitAsync(TimeSpan.FromSeconds(5));
+if (incrementalMatches != 2 || changedFingerprint != incrementalFingerprint)
+    throw new InvalidOperationException("Incremental catalog matching was not updated correctly.");
+Console.WriteLine("PASS incremental catalog update");
+if (args.Contains("--catalog-only", StringComparer.OrdinalIgnoreCase))
+{
+    await first.StopAsync();
+    await second.StopAsync();
+    await third.StopAsync();
+    await fourth.StopAsync();
+    await fifth.StopAsync();
+    return;
+}
+if (args.Contains("--playback-only", StringComparer.OrdinalIgnoreCase))
+{
+    const string probeFirstRoleKey = "paired animation:actor-one";
+    const string probeSecondRoleKey = "paired animation:actor-two";
+    await first.InvokeAsync<RoomStateDto>("SetReady", probeFirstRoleKey);
+    await second.InvokeAsync<RoomStateDto>("SetReady", probeSecondRoleKey);
+    var probeRolePlays = await Task.WhenAll(firstPlay.Task.WaitAsync(TimeSpan.FromSeconds(5)),
+        secondPlay.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+    if (probeRolePlays[0].ModKey != probeFirstRoleKey || probeRolePlays[1].ModKey != probeSecondRoleKey ||
+        probeRolePlays[0].SequenceId != probeRolePlays[1].SequenceId ||
+        probeRolePlays[0].StartUnixMilliseconds != probeRolePlays[1].StartUnixMilliseconds)
+        throw new InvalidOperationException("Different prepared actor roles did not receive one synchronized start.");
+    Console.WriteLine("PASS distinct actor-role playback");
+    await first.StopAsync();
+    await second.StopAsync();
+    await third.StopAsync();
+    await fourth.StopAsync();
+    await fifth.StopAsync();
+    return;
+}
 const string modKey = "deep plaps:0123456789ABCDEF";
 var suggestionDeclined = new TaskCompletionSource<AnimationSuggestionDeclinedDto>(TaskCreationOptions.RunContinuationsAsynchronously);
 first.On<AnimationSuggestionDeclinedDto>("AnimationSuggestionDeclined", decline => suggestionDeclined.TrySetResult(decline));
@@ -126,6 +164,20 @@ if (plays[0].SequenceId != plays[1].SequenceId ||
     throw new InvalidOperationException("Clients received different play signals.");
 if (plays[0].DelayMilliseconds <= 0)
     throw new InvalidOperationException("Relay did not provide a relative play countdown.");
+
+firstPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+secondPlay = new TaskCompletionSource<PlaySignalDto>(TaskCreationOptions.RunContinuationsAsynchronously);
+const string firstRoleModKey = "paired animation:actor-one";
+const string secondRoleModKey = "paired animation:actor-two";
+await first.InvokeAsync<RoomStateDto>("SetReady", firstRoleModKey);
+await second.InvokeAsync<RoomStateDto>("SetReady", secondRoleModKey);
+var rolePlays = await Task.WhenAll(firstPlay.Task.WaitAsync(TimeSpan.FromSeconds(5)),
+    secondPlay.Task.WaitAsync(TimeSpan.FromSeconds(5)));
+if (rolePlays[0].ModKey != firstRoleModKey || rolePlays[1].ModKey != secondRoleModKey ||
+    rolePlays[0].SequenceId != rolePlays[1].SequenceId ||
+    rolePlays[0].StartUnixMilliseconds != rolePlays[1].StartUnixMilliseconds)
+    throw new InvalidOperationException("Different prepared actor roles did not receive one synchronized start.");
+Console.WriteLine("PASS distinct actor-role playback");
 var removed = new TaskCompletionSource<string>(TaskCreationOptions.RunContinuationsAsynchronously);
 second.On<string>("RemovedFromRoom", reason => removed.TrySetResult(reason));
 var afterRemoval = await first.InvokeAsync<RoomStateDto>("RemoveMember", second.ConnectionId!);

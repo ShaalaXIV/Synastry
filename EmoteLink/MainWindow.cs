@@ -192,7 +192,7 @@ public sealed class MainWindow : Window
             ImGui.SameLine();
             if (DrawPrimaryButton("Force start", forceWidth)) plugin.ForceSyncStart();
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Start the host's prepared animation now. Only members prepared on the same mod will join.");
+                ImGui.SetTooltip("Start every room member who currently has a role or animation prepared.");
         }
 
         ImGui.Spacing();
@@ -228,7 +228,7 @@ public sealed class MainWindow : Window
         }
 
         ImGui.Spacing();
-        ImGui.TextDisabled("Choose an animation below. Playback starts when everyone is ready on the same mod.");
+        ImGui.TextDisabled("Choose an animation below. Playback starts when everyone has prepared their role.");
         DrawCharacterUtilities();
         ImGui.EndChild();
         ImGui.PopStyleColor(2);

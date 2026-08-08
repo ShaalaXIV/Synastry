@@ -4,7 +4,7 @@ using Dalamud.Plugin.Services;
 
 namespace EmoteLink;
 
-public sealed class PenumbraService
+public sealed class PenumbraService : IDisposable
 {
     private const string Source = "EmoteLink";
     private readonly IPluginLog log;
@@ -21,6 +21,9 @@ public sealed class PenumbraService
     private readonly ICallGateSubscriber<string, string,
         IReadOnlyDictionary<string, (string[] Options, int GroupType)>?> getAvailableSettings;
     private readonly ICallGateSubscriber<string, int> installMod;
+    private readonly ICallGateSubscriber<string, object?> modAdded;
+
+    public event Action<string>? ModAdded;
 
     public PenumbraService(IDalamudPluginInterface pi, IPluginLog log)
     {
@@ -38,6 +41,8 @@ public sealed class PenumbraService
         getAvailableSettings = pi.GetIpcSubscriber<string, string,
             IReadOnlyDictionary<string, (string[] Options, int GroupType)>?>("Penumbra.GetAvailableModSettings.V5");
         installMod = pi.GetIpcSubscriber<string, int>("Penumbra.InstallMod.V5");
+        modAdded = pi.GetIpcSubscriber<string, object?>("Penumbra.ModAdded");
+        modAdded.Subscribe(OnModAdded);
     }
 
     public bool IsAvailable
@@ -189,6 +194,10 @@ public sealed class PenumbraService
             return false;
         }
     }
+
+    private void OnModAdded(string directory) => ModAdded?.Invoke(directory);
+
+    public void Dispose() => modAdded.Unsubscribe(OnModAdded);
 }
 
 public sealed record ModOptionGroup(string Name, IReadOnlyList<string> Options, bool IsMultiSelect);

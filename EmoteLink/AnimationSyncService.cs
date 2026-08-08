@@ -55,6 +55,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         hub.On<RoomStateDto>("RoomStateChanged", UpdateRoom);
         hub.On<PlaySignalDto>("AnimationPlay", signal => PlayReceived?.Invoke(signal));
         hub.On("CatalogChanged", () => _ = RefreshMatchCountsAsync());
+        hub.On<string>("CatalogFingerprintChanged", fingerprint => _ = RefreshMatchCountAsync(fingerprint));
         hub.On<ModTransferOfferDto>("ModTransferOffered", offer => ModTransferOffered?.Invoke(offer));
         hub.On<OptionSelectionDto>("OptionSelectionChanged", selection => OptionSelectionChanged?.Invoke(selection));
         hub.On<RoleLabelDto>("RoleLabelChanged", label => RoleLabelChanged?.Invoke(label));
@@ -144,6 +145,35 @@ public sealed class AnimationSyncService : IAsyncDisposable
         catch
         {
             // Catalog matching is optional when connected to an older relay.
+        }
+    }
+
+    public async Task AddCatalogFingerprintAsync(string fingerprint)
+    {
+        var clean = CleanFingerprint(fingerprint);
+        if (clean.Length != 64) return;
+
+        IReadOnlyList<string> snapshot;
+        lock (gate)
+        {
+            catalog = catalog
+                .Append(clean)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(1000)
+                .ToList();
+            snapshot = catalog;
+        }
+        if (!IsInRoom) return;
+
+        try
+        {
+            var count = await RequireConnection().InvokeAsync<int>("AddCatalogFingerprint", clean);
+            UpdateMatchCount(clean, count);
+        }
+        catch
+        {
+            // Fall back to replacing the catalog when connected to an older relay.
+            await SetCatalogAsync(snapshot);
         }
     }
 
@@ -255,6 +285,37 @@ public sealed class AnimationSyncService : IAsyncDisposable
         }
     }
 
+    private async Task RefreshMatchCountAsync(string fingerprint)
+    {
+        try
+        {
+            var clean = CleanFingerprint(fingerprint);
+            IReadOnlyList<string> requested;
+            lock (gate)
+                requested = catalog.Contains(clean, StringComparer.OrdinalIgnoreCase) ? [clean] : [];
+            if (requested.Count == 0 || !IsInRoom || connection?.State != HubConnectionState.Connected) return;
+            var counts = await connection.InvokeAsync<Dictionary<string, int>>("GetMatchCounts", requested);
+            if (counts.TryGetValue(clean, out var count)) UpdateMatchCount(clean, count);
+        }
+        catch
+        {
+            // Incremental catalog updates are optional when connected to an older relay.
+        }
+    }
+
+    private void UpdateMatchCount(string fingerprint, int count)
+    {
+        lock (gate)
+        {
+            var updated = new Dictionary<string, int>(matchCounts, StringComparer.OrdinalIgnoreCase)
+            {
+                [fingerprint] = count
+            };
+            Volatile.Write(ref matchCounts, updated);
+        }
+        Notify();
+    }
+
     public async Task LeaveRoomAsync()
     {
         lock (gate) desiredRoomCode = null;
@@ -362,6 +423,9 @@ public sealed class AnimationSyncService : IAsyncDisposable
 
     private static string CleanDisplayName(string value) =>
         string.IsNullOrWhiteSpace(value) ? "Player" : value.Trim();
+
+    private static string CleanFingerprint(string value) =>
+        new(value.Where(Uri.IsHexDigit).Take(64).Select(char.ToUpperInvariant).ToArray());
 
     private void Notify() => StateChanged?.Invoke();
     public async ValueTask DisposeAsync() => await DisconnectAsync();

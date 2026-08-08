@@ -30,6 +30,8 @@ If another room member does not have an animation, Synastry can offer the mod di
 
 This makes coordinated animation sessions much easier: find an animation, share it with the people who need it, assign the roles, and start together from the same room.
 
+When Penumbra finishes an accepted install, Synastry indexes only that mod and updates its room fingerprint. The row changes to orange or green as appropriate without a full library refresh.
+
 - Transfers are limited to 75 MB.
 - Transfer packages expire from relay storage after 10 minutes.
 - Private mods cannot be advertised or sent.
@@ -42,7 +44,7 @@ This makes coordinated animation sessions much easier: find an animation, share 
 - Create folders and drag mods into a preferred order.
 - Mark mods private from their right-click menu.
 - Temporarily activate animations without disturbing unrelated Penumbra settings.
-- Ready a room for synchronized playback or play an animation locally with **Solo**.
+- Ready a room for synchronized playback or play an animation locally with **Solo**. Each member keeps their own prepared actor role, even when the roles come from different mod entries. Group playback sends the normal animation trigger once to load it, waits six seconds, then sends it again so nearby players receive the regular game event.
 - Right-click another player to send a room invitation they can accept or decline immediately.
 - Align your character with a nearby target before playback.
 - Optionally enable **Sit/doze anywhere** for furniture-free chair-sit and doze animations.

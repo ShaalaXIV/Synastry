@@ -109,6 +109,7 @@ public sealed class HowToWindow : Window
                     "Expand a mod to see its actions. Send offers a public mod to the room.",
                     "Press the large Ready button to prepare that emote or pose for synchronized playback.",
                     "Press Solo to activate the same animation only for yourself.",
+                    "Group playback triggers once to load, waits six seconds, then triggers again for the full nearby queue.",
                     "A purple row with Suggested by a member means that member selected an animation in this mod. It is a suggestion, not an automatic download or playback.",
                     "Expand Mod Options when the pack has variants or Penumbra option groups.");
                 Image(3);
@@ -144,6 +145,7 @@ public sealed class HowToWindow : Window
                     "Offers are limited to 75 MB and expire from relay storage after 10 minutes.",
                     "The recipient sees the sender, mod name, and file size before installation.",
                     "Accept downloads and hands the package to Penumbra; Decline rejects the offer.",
+                    "When installation finishes, only that animation is indexed and its room color updates automatically.",
                     "Only send or accept files that everyone involved is allowed to share.",
                     "Private mods never show a Send button.");
                 Image(5);
