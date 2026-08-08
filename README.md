@@ -56,7 +56,7 @@ When Penumbra finishes an accepted install, Synastry indexes only that mod and u
 Add this URL under **Dalamud Settings → Experimental → Custom Plugin Repositories**:
 
 ```text
-[https://aethercast.org/repo](https://plugins.aethercast.org/)
+https://plugins.aethercast.org/
 ```
 
 This combined repository contains **AetherPress** and **Synastry**. Save the
