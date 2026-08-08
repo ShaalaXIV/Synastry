@@ -56,6 +56,8 @@ public sealed class MainWindow : Window
             DrawGroupPlay();
             ImGui.Spacing();
             DrawLibrary();
+            ImGui.Spacing();
+            DrawFooterActions();
             DrawRoomInvitePopup();
             DrawTransferOfferPopup();
         }
@@ -74,6 +76,15 @@ public sealed class MainWindow : Window
             ImGui.SetTooltip(plugin.PenumbraAvailable
                 ? "Penumbra is available and animation mods can be activated."
                 : "Penumbra is not currently available.");
+
+        ImGui.SameLine(0, 18f);
+        ImGui.TextColored(plugin.SimpleHeelsAvailable ? EveryoneColor : MutedColor, "â—");
+        ImGui.SameLine();
+        ImGui.TextUnformatted(plugin.SimpleHeelsAvailable ? "SIMPLE HEELS CONNECTED" : "SIMPLE HEELS NOT FOUND");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(plugin.SimpleHeelsAvailable
+                ? "Simple Heels is loaded; Temp Offset and Livepose are available below."
+                : "Install and load Simple Heels to use Temp Offset and Livepose.");
 
         var refreshLabel = plugin.IsRefreshingMods ? "Refreshing..." : "Refresh";
         var refreshWidth = ButtonWidth(refreshLabel);
@@ -260,7 +271,7 @@ public sealed class MainWindow : Window
     {
         ImGui.PushStyleColor(ImGuiCol.ChildBg, PanelColor);
         ImGui.PushStyleColor(ImGuiCol.Border, BorderColor);
-        ImGui.BeginChild("animation-library-card", new Vector2(0, 0), true);
+        ImGui.BeginChild("animation-library-card", new Vector2(0, -44f), true);
 
         DrawSectionHeading("ANIMATION LIBRARY");
         ImGui.SameLine();
@@ -293,6 +304,38 @@ public sealed class MainWindow : Window
         DrawLegend();
         ImGui.EndChild();
         ImGui.PopStyleColor(2);
+    }
+
+    private void DrawFooterActions()
+    {
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        var width = MathF.Max(80f, (ImGui.GetContentRegionAvail().X - spacing * 2f) / 3f);
+
+        if (!plugin.Sync.IsInRoom) ImGui.BeginDisabled();
+        if (ImGui.Button("EmoteSync", new Vector2(width, 34f))) plugin.SyncLobbyEmotes();
+        if (!plugin.Sync.IsInRoom) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(plugin.Sync.IsInRoom
+                ? "Reset animation time only for visible members of this Synastry room."
+                : "Join a Synastry room to use lobby-only EmoteSync.");
+
+        ImGui.SameLine();
+        if (!plugin.SimpleHeelsAvailable) ImGui.BeginDisabled();
+        if (ImGui.Button("Temp Offset", new Vector2(width, 34f))) plugin.OpenSimpleHeelsTempOffset();
+        if (!plugin.SimpleHeelsAvailable) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(plugin.SimpleHeelsAvailable
+                ? "Open /heels temp."
+                : "Simple Heels is not installed or loaded.");
+
+        ImGui.SameLine();
+        if (!plugin.SimpleHeelsAvailable) ImGui.BeginDisabled();
+        if (ImGui.Button("Livepose", new Vector2(width, 34f))) plugin.OpenSimpleHeelsLivePose();
+        if (!plugin.SimpleHeelsAvailable) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(plugin.SimpleHeelsAvailable
+                ? "Open /heels livepose."
+                : "Simple Heels is not installed or loaded.");
     }
 
     private static void DrawLegend()

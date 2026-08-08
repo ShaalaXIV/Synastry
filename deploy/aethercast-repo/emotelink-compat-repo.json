@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.45.0",
+    "AssemblyVersion": "1.0.46.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -13,9 +13,9 @@
     "Tags": [ "penumbra", "animation", "emote", "sync" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.45/Synastry-1.0.45.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.45/Synastry-1.0.45.zip",
-    "Changelog": "Fixes group ready for different actor-role mods, triggers animations normally twice six seconds apart, and updates accepted installs without a full library refresh.",
-    "LastUpdate": "1786153650"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.46/Synastry-1.0.46.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.46/Synastry-1.0.46.zip",
+    "Changelog": "Fresh installs activate without a Penumbra toggle, group animations play once before lobby-only EmoteSync runs at six seconds, and Simple Heels controls are available in the footer.",
+    "LastUpdate": "1786181106"
   }
 ]

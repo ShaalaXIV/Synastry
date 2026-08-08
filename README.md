@@ -44,7 +44,8 @@ When Penumbra finishes an accepted install, Synastry indexes only that mod and u
 - Create folders and drag mods into a preferred order.
 - Mark mods private from their right-click menu.
 - Temporarily activate animations without disturbing unrelated Penumbra settings.
-- Ready a room for synchronized playback or play an animation locally with **Solo**. Each member keeps their own prepared actor role, even when the roles come from different mod entries. Group playback sends the normal animation trigger once to load it, waits six seconds, then sends it again so nearby players receive the regular game event.
+- Ready a room for synchronized playback or play an animation locally with **Solo**. Each member keeps their own prepared actor role, even when the roles come from different mod entries. Group playback sends the normal animation trigger once, then runs Synastry's lobby-only EmoteSync six seconds later.
+- Use the footer to run lobby-only **EmoteSync** manually. When Simple Heels is loaded, **Temp Offset** opens `/heels temp` and **Livepose** opens `/heels livepose`.
 - Right-click another player to send a room invitation they can accept or decline immediately.
 - Align your character with a nearby target before playback.
 - Optionally enable **Sit/doze anywhere** for furniture-free chair-sit and doze animations.

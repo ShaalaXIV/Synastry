@@ -1,5 +1,6 @@
 using Dalamud.Game.Command;
 using Dalamud.Game.Gui.ContextMenu;
+using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Game.Text;
 using Dalamud.Game.Chat;
 using Dalamud.Interface.Windowing;
@@ -7,6 +8,8 @@ using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
+using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
 using System.Text.Json;
@@ -22,7 +25,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 {
     private const string Command = "/synastry";
     private const float MaxAlignDistance = 2f;
-    private const int SecondAnimationTriggerDelayMs = 6000;
+    private const int LobbyEmoteRefreshDelayMs = 6000;
     private const string RelayUrl = "https://emotelink.aethercast.org";
 
     [PluginService] private static IDalamudPluginInterface PluginInterface { get; set; } = null!;
@@ -56,9 +59,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private long pendingCommandTime;
     private PoseTarget? pendingPose;
     private string? pendingSelectionModKey;
-    private string? secondTriggerCommand;
-    private PoseTarget? secondTriggerPose;
-    private long secondTriggerTime;
+    private long lobbyEmoteRefreshTime;
     private readonly Dictionary<string, PoseTarget> optionPoses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<PoseTarget>> modPoses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<EmoteTarget>> modEmotes = new(StringComparer.OrdinalIgnoreCase);
@@ -108,6 +109,21 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public IReadOnlyList<(string Directory, string Name)> Mods { get; private set; } = [];
     public IReadOnlyList<ModCategory> Categories => configuration.Categories;
     public bool PenumbraAvailable => penumbra.IsAvailable;
+    public bool SimpleHeelsAvailable
+    {
+        get
+        {
+            try
+            {
+                return PluginInterface.InstalledPlugins.Any(plugin =>
+                    plugin.IsLoaded && plugin.InternalName.Equals("SimpleHeels", StringComparison.OrdinalIgnoreCase));
+            }
+            catch
+            {
+                return false;
+            }
+        }
+    }
     public bool IsAligning => movement.IsWalking || alignmentFramesRemaining > 0;
     public bool SitDozeAnywhereEnabled => configuration.SitDozeAnywhere;
     public bool SitDozeAnywhereAvailable => anywherePoses is not null;
@@ -1347,6 +1363,83 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ui->ProcessChatBoxEntry(&text);
     }
 
+    public void SyncLobbyEmotes()
+    {
+        if (!sync.IsInRoom)
+        {
+            Status = "Join a Synastry room before using lobby EmoteSync.";
+            return;
+        }
+
+        var refreshed = RefreshLobbyEmotes();
+        Status = refreshed == 0
+            ? "No visible lobby animations were available to sync."
+            : $"EmoteSync reset {refreshed} visible lobby animation(s).";
+    }
+
+    public void OpenSimpleHeelsTempOffset()
+    {
+        if (!SimpleHeelsAvailable)
+        {
+            Status = "Simple Heels is not installed or loaded.";
+            return;
+        }
+
+        ExecuteCommand("/heels temp");
+        Status = "Opened Simple Heels temporary offset.";
+    }
+
+    public void OpenSimpleHeelsLivePose()
+    {
+        if (!SimpleHeelsAvailable)
+        {
+            Status = "Simple Heels is not installed or loaded.";
+            return;
+        }
+
+        ExecuteCommand("/heels livepose");
+        Status = "Opened Simple Heels LivePose.";
+    }
+
+    private int RefreshLobbyEmotes()
+    {
+        var room = sync.Room;
+        var localPlayer = Objects.LocalPlayer;
+        if (room is null || localPlayer is null) return 0;
+
+        var lobbyNames = room.Members.Select(member => member.DisplayName)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var refreshed = 0;
+        foreach (var actor in Objects.OfType<IPlayerCharacter>())
+        {
+            // The local player is necessarily a lobby member. Remote actors are included
+            // only when their character name is one of the room's displayed identities.
+            if (actor.Address != localPlayer.Address && !lobbyNames.Contains(actor.Name.TextValue)) continue;
+            if (RefreshActorEmote(actor.Address)) refreshed++;
+        }
+
+        Log.Debug("Refreshed synchronized emote time for {ActorCount} visible lobby actors.", refreshed);
+        return refreshed;
+    }
+
+    private static bool RefreshActorEmote(nint address)
+    {
+        var character = (Character*)address;
+        if (character is null || character->DrawObject is null ||
+            character->DrawObject->GetObjectType() != ObjectType.CharacterBase) return false;
+        if (character->Mode is not (CharacterModes.EmoteLoop or CharacterModes.InPositionLoop)) return false;
+        var characterBase = (CharacterBase*)character->DrawObject;
+        if (characterBase->GetModelType() != CharacterBase.ModelType.Human) return false;
+        var skeleton = ((Human*)character->DrawObject)->Skeleton;
+        if (skeleton is null || skeleton->PartialSkeletonCount < 1) return false;
+        var animatedSkeleton = skeleton->PartialSkeletons[0].GetHavokAnimatedSkeleton(0);
+        if (animatedSkeleton is null || animatedSkeleton->AnimationControls.Length < 1) return false;
+        var control = animatedSkeleton->AnimationControls[0].Value;
+        if (control is null) return false;
+        control->hkaAnimationControl.LocalTime = 0f;
+        return true;
+    }
+
     public void ClearTemporaryAssignments() => ClearTemporaryAssignmentsInternal(true);
 
     private void ClearTemporaryAssignmentsInternal(bool cancelGroupReady)
@@ -1359,9 +1452,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         pendingCommand = null;
         pendingPose = null;
         pendingSelectionModKey = null;
-        secondTriggerCommand = null;
-        secondTriggerPose = null;
-        secondTriggerTime = 0;
+        lobbyEmoteRefreshTime = 0;
         cyclingPose = null;
         hasMovementSample = false;
         movementFrames = 0;
@@ -1414,43 +1505,37 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ProcessCompletedDownloads();
         ProcessAddedMod();
         ProcessSyncPlaySignals();
-        string? triggeredCommand = null;
-        PoseTarget? triggeredPose = null;
+        var animationStarted = false;
         if (pendingPose is not null && Environment.TickCount64 >= pendingCommandTime)
         {
             var pose = pendingPose;
             pendingPose = null;
             ExecutePose(pose);
-            triggeredPose = pose;
+            animationStarted = true;
         }
         if (pendingCommand is not null && Environment.TickCount64 >= pendingCommandTime)
         {
             var command = pendingCommand;
             pendingCommand = null;
             ExecuteCommand(command);
-            triggeredCommand = command;
+            animationStarted = true;
         }
-        if ((triggeredCommand is not null || triggeredPose is not null) && pendingSelectionModKey is not null)
+        if (animationStarted && pendingSelectionModKey is not null)
         {
             ClearRemoteSelections(pendingSelectionModKey);
             pendingSelectionModKey = null;
-            secondTriggerCommand = triggeredCommand;
-            secondTriggerPose = triggeredPose;
-            secondTriggerTime = Environment.TickCount64 + SecondAnimationTriggerDelayMs;
-            Status = "Animation loaded once; triggering it again for everyone in 6 seconds.";
+            lobbyEmoteRefreshTime = Environment.TickCount64 + LobbyEmoteRefreshDelayMs;
+            Status = "Animation started; lobby EmoteSync will run in 6 seconds.";
         }
-        if (secondTriggerTime > 0 && Environment.TickCount64 >= secondTriggerTime)
+        if (lobbyEmoteRefreshTime > 0 && Environment.TickCount64 >= lobbyEmoteRefreshTime)
         {
-            var command = secondTriggerCommand;
-            var pose = secondTriggerPose;
-            secondTriggerCommand = null;
-            secondTriggerPose = null;
-            secondTriggerTime = 0;
-            if (pose is not null) ExecutePose(pose);
-            if (command is not null) ExecuteCommand(command);
-            Status = "Animation triggered a second time for the full nearby queue.";
-            Log.Information("Sent the second group animation trigger after {DelayMilliseconds} ms.",
-                SecondAnimationTriggerDelayMs);
+            lobbyEmoteRefreshTime = 0;
+            var refreshed = RefreshLobbyEmotes();
+            Status = refreshed == 0
+                ? "Lobby EmoteSync ran; no visible lobby animations were available to reset."
+                : $"Lobby EmoteSync reset {refreshed} visible lobby animation(s).";
+            Log.Information("Ran lobby EmoteSync after {DelayMilliseconds} ms for {ActorCount} visible actors.",
+                LobbyEmoteRefreshDelayMs, refreshed);
         }
         UpdatePoseCycling();
         if (!waitingForAnimation) return;
@@ -1693,9 +1778,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingCommand = preparedCommand;
             pendingPose = preparedPose;
             pendingSelectionModKey = signal.ModKey;
-            secondTriggerCommand = null;
-            secondTriggerPose = null;
-            secondTriggerTime = 0;
+            lobbyEmoteRefreshTime = 0;
             Status = $"Group ready. Starting in {delay / 1000f:F1}s.";
             Log.Information(
                 "Group play {SequenceId} received; scheduling {ModKey} in {DelayMilliseconds} ms ({TimingMode}).",

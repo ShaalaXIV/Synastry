@@ -90,10 +90,18 @@ public sealed class PenumbraService : IDisposable
         try
         {
             var (code, current) = getSettings.InvokeFunc(collectionId, directory, name, false);
-            if (code != 0 || current is null)
+            if (code != 0)
+            {
+                log.Warning("Could not read Penumbra settings for {Mod}; error code {ErrorCode}.", name, code);
                 return false;
+            }
 
-            var (_, _, options, _) = current.Value;
+            // A newly installed mod can legitimately have no collection settings yet.
+            // Penumbra's temporary-settings API creates default settings in that case and
+            // emits the cache refresh needed to make the mod's PAP files immediately usable.
+            var options = current is { } currentSettings
+                ? currentSettings.Item3.ToDictionary(pair => pair.Key, pair => pair.Value.ToList())
+                : new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
             foreach (var (group, selections) in selectedOptions)
                 options[group] = selections.ToList();
             var readonlyOptions = options.ToDictionary(
@@ -102,6 +110,8 @@ public sealed class PenumbraService : IDisposable
             var settings = (false, true, 9999,
                 (IReadOnlyDictionary<string, IReadOnlyList<string>>)readonlyOptions);
             var result = setTemporary.InvokeFunc(collectionId, directory, name, settings, Source, 0);
+            if (result is not (0 or 1))
+                log.Warning("Penumbra rejected temporary activation for {Mod}; error code {ErrorCode}.", name, result);
             return result is 0 or 1;
         }
         catch (Exception ex)

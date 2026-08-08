@@ -77,7 +77,7 @@ public sealed class HowToWindow : Window
             case 1:
                 Paragraph("Connecting to the relay and entering a room are separate steps. The status line confirms when the relay connection is ready.");
                 Steps(
-                    "Check for PENUMBRA CONNECTED and a successful relay status.",
+                    "Check for PENUMBRA CONNECTED, SIMPLE HEELS CONNECTED when its footer tools are wanted, and a successful relay status.",
                     "Press Create room to host, or type a code and press Join room. Disconnect leaves the relay.",
                     "Use Align / teleport to target when actors need the same position and facing direction. Sit/doze anywhere is an optional direct-mode toggle, not an automatic fallback.",
                     "Search or create folders while connected; these controls do not affect the room.",
@@ -109,7 +109,7 @@ public sealed class HowToWindow : Window
                     "Expand a mod to see its actions. Send offers a public mod to the room.",
                     "Press the large Ready button to prepare that emote or pose for synchronized playback.",
                     "Press Solo to activate the same animation only for yourself.",
-                    "Group playback triggers once to load, waits six seconds, then triggers again for the full nearby queue.",
+                    "Group playback triggers the animation once, then runs lobby-only EmoteSync six seconds later.",
                     "A purple row with Suggested by a member means that member selected an animation in this mod. It is a suggestion, not an automatic download or playback.",
                     "Expand Mod Options when the pack has variants or Penumbra option groups.");
                 Image(3);
