@@ -89,8 +89,21 @@ public sealed class CommunityRoleLabelStore
         }
     }
 
+    public bool RegisterMetadata(
+        string fingerprint, string group, string option, string modName, string animationName)
+    {
+        var key = fingerprint + "\n" + group + "\n" + option;
+        lock (gate)
+        {
+            if (!records.TryGetValue(key, out var record)) return false;
+            if (UpdateMetadata(record, modName, animationName)) Save();
+            return true;
+        }
+    }
+
     public (CommunityRoleLabelDto? Accepted, bool Changed) Submit(
-        string fingerprint, string group, string option, string label, string reporterId)
+        string fingerprint, string group, string option, string label, string reporterId,
+        string modName = "", string animationName = "")
     {
         var key = fingerprint + "\n" + group + "\n" + option;
         lock (gate)
@@ -105,6 +118,7 @@ public sealed class CommunityRoleLabelStore
                     Option = option
                 };
             }
+            UpdateMetadata(record, modName, animationName);
             var reporterHash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(reporterId)));
             if (label.Equals(record.AcceptedLabel, StringComparison.OrdinalIgnoreCase))
             {
@@ -143,6 +157,25 @@ public sealed class CommunityRoleLabelStore
     private static CommunityRoleLabelDto ToDto(StoredRoleLabel record) =>
         new(record.Fingerprint, record.Group, record.Option, record.AcceptedLabel);
 
+    private static bool UpdateMetadata(StoredRoleLabel record, string modName, string animationName)
+    {
+        var cleanModName = modName.Trim()[..Math.Min(160, modName.Trim().Length)];
+        var cleanAnimationName = animationName.Trim()[..Math.Min(120, animationName.Trim().Length)];
+        var changed = false;
+        if (cleanModName.Length > 0 && !record.ModName.Equals(cleanModName, StringComparison.Ordinal))
+        {
+            record.ModName = cleanModName;
+            changed = true;
+        }
+        if (cleanAnimationName.Length > 0 &&
+            !record.AnimationName.Equals(cleanAnimationName, StringComparison.Ordinal))
+        {
+            record.AnimationName = cleanAnimationName;
+            changed = true;
+        }
+        return changed;
+    }
+
     private static AdminRoleLabelDto ToAdminDto(string key, StoredRoleLabel record)
     {
         var votes = record.Votes.Values
@@ -151,7 +184,8 @@ public sealed class CommunityRoleLabelStore
             .OrderByDescending(vote => vote.Count)
             .ThenBy(vote => vote.Label, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        return new(key, record.Fingerprint, record.Group, record.Option, record.AcceptedLabel, votes);
+        return new(key, record.Fingerprint, record.ModName, record.AnimationName, record.Group, record.Option,
+            record.AcceptedLabel, votes);
     }
 
     private void Load()
@@ -175,6 +209,8 @@ public sealed class CommunityRoleLabelStore
     public sealed class StoredRoleLabel
     {
         public string Fingerprint { get; set; } = "";
+        public string ModName { get; set; } = "";
+        public string AnimationName { get; set; } = "";
         public string Group { get; set; } = "";
         public string Option { get; set; } = "";
         public string AcceptedLabel { get; set; } = "";
@@ -184,5 +220,5 @@ public sealed class CommunityRoleLabelStore
 
 public sealed record CommunityRoleLabelDto(string Fingerprint, string Group, string Option, string Label);
 public sealed record AdminVoteDto(string Label, int Count);
-public sealed record AdminRoleLabelDto(string Key, string Fingerprint, string Group, string Option,
-    string AcceptedLabel, IReadOnlyList<AdminVoteDto> Votes);
+public sealed record AdminRoleLabelDto(string Key, string Fingerprint, string ModName, string AnimationName,
+    string Group, string Option, string AcceptedLabel, IReadOnlyList<AdminVoteDto> Votes);

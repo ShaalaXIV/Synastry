@@ -493,8 +493,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
             _ = sync.SetRoleLabelAsync(modKey, group, option, clean);
         if (sync.IsConnected && clean.Length > 0 && IsSynchronizedRoleGroup(group) && !IsModPrivate(directory) &&
             modCatalogKeys.TryGetValue(directory, out var fingerprint))
+        {
+            var metadata = GetCommunityRoleMetadata(directory, group, option);
             _ = sync.SubmitCommunityRoleLabelAsync(
-                fingerprint, group, option, clean, configuration.CommunityReporterId);
+                fingerprint, group, option, clean, configuration.CommunityReporterId,
+                metadata.ModName, metadata.AnimationName);
+        }
     }
 
     public void ReportBadRoleLabel(string directory, string group, string option, string correction)
@@ -954,9 +958,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
             : configuration.Categories.FirstOrDefault(folder => folder.Id == categoryId)?.ModDirectories ?? [];
         var organized = order.Where(modsByDirectory.ContainsKey)
             .Select(directory => modsByDirectory[directory])
-            // LINQ's stable ordering preserves the user's manual order inside each
-            // match tier while promoting purple, green, then orange, within every folder.
             .OrderBy(mod => GetMatchSortTier(mod.Directory))
+            .ThenBy(mod => mod.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(mod => mod.Directory, StringComparer.OrdinalIgnoreCase)
             .ToList();
         organizedModsCache[cacheKey] = organized;
         return organized;
@@ -1751,10 +1755,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             var parts = key.Split('\n', 3);
             if (parts.Length != 3 || !IsSynchronizedRoleGroup(parts[1]) || IsModPrivate(parts[0]) ||
-                configuration.CommunityRoleKeys.Contains(key) ||
                 !modCatalogKeys.TryGetValue(parts[0], out var fingerprint)) continue;
+            var metadata = GetCommunityRoleMetadata(parts[0], parts[1], parts[2]);
+            _ = sync.RegisterCommunityRoleMetadataAsync(
+                fingerprint, parts[1], parts[2], metadata.ModName, metadata.AnimationName);
+            if (configuration.CommunityRoleKeys.Contains(key)) continue;
             _ = sync.SubmitCommunityRoleLabelAsync(
-                fingerprint, parts[1], parts[2], label, configuration.CommunityReporterId);
+                fingerprint, parts[1], parts[2], label, configuration.CommunityReporterId,
+                metadata.ModName, metadata.AnimationName);
         }
         var fingerprints = modCatalogKeys
             .Where(pair => !IsModPrivate(pair.Key))
@@ -1784,6 +1792,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 !string.IsNullOrWhiteSpace(existing)) continue;
             configuration.OptionNotes[key] = shared.Label.Trim()[..Math.Min(20, shared.Label.Trim().Length)];
             configuration.CommunityRoleKeys.Add(key);
+            var metadata = GetCommunityRoleMetadata(mod.Directory, shared.Group, shared.Option);
+            _ = sync.RegisterCommunityRoleMetadataAsync(
+                shared.Fingerprint, shared.Group, shared.Option, metadata.ModName, metadata.AnimationName);
             changed = true;
         }
         if (changed) configuration.Save(PluginInterface);
@@ -1792,6 +1803,35 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private static bool IsSynchronizedRoleGroup(string group) =>
         group.Equals("$detected-pose", StringComparison.OrdinalIgnoreCase) ||
         group.Equals("$detected-emote", StringComparison.OrdinalIgnoreCase);
+
+    private (string ModName, string AnimationName) GetCommunityRoleMetadata(
+        string directory, string group, string option)
+    {
+        var modName = modsByDirectory.TryGetValue(directory, out var mod) ? mod.Name : directory;
+        if (group.Equals("$detected-pose", StringComparison.OrdinalIgnoreCase))
+        {
+            var pose = GetDetectedPoses(directory).FirstOrDefault(candidate =>
+                $"{candidate.Kind}:{candidate.Index}".Equals(option, StringComparison.OrdinalIgnoreCase));
+            if (pose is not null)
+            {
+                var animationName = pose.Kind switch
+                {
+                    PoseKind.Sit => $"Chair Sit {pose.Index}",
+                    PoseKind.GroundSit => $"Ground Sit {pose.Index}",
+                    PoseKind.Doze => $"Doze {pose.Index}",
+                    _ => $"Idle {pose.Index}"
+                };
+                return (modName, animationName);
+            }
+        }
+        else if (group.Equals("$detected-emote", StringComparison.OrdinalIgnoreCase) &&
+                 uint.TryParse(option, out var emoteId))
+        {
+            var emote = GetDetectedEmotes(directory).FirstOrDefault(candidate => candidate.Id == emoteId);
+            if (emote is not null) return (modName, $"{emote.Name} (ID {emote.Id})");
+        }
+        return (modName, option);
+    }
 
     private static string OptionNoteKey(string directory, string group, string option) =>
         directory + "\n" + group + "\n" + option;

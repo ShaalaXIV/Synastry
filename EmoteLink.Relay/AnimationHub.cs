@@ -196,6 +196,30 @@ public sealed class AnimationHub : Hub
 
     public async Task<CommunityRoleLabelDto?> SubmitCommunityRoleLabel(
         string fingerprint, string group, string option, string label, string reporterId)
+        => await SubmitCommunityRoleLabelCore(fingerprint, group, option, label, reporterId, "", "");
+
+    public async Task<CommunityRoleLabelDto?> SubmitCommunityRoleLabelV2(
+        string fingerprint, string group, string option, string label, string reporterId,
+        string modName, string animationName)
+        => await SubmitCommunityRoleLabelCore(
+            fingerprint, group, option, label, reporterId, modName, animationName);
+
+    public void RegisterCommunityRoleMetadata(
+        string fingerprint, string group, string option, string modName, string animationName)
+    {
+        var cleanFingerprint = CleanFingerprint(fingerprint);
+        var cleanGroup = CleanLabel(group);
+        var cleanOption = CleanLabel(option);
+        if (cleanFingerprint.Length != 64 ||
+            (cleanGroup != "$detected-pose" && cleanGroup != "$detected-emote"))
+            throw new HubException("Invalid community role-label metadata.");
+        communityRoles.RegisterMetadata(cleanFingerprint, cleanGroup, cleanOption,
+            CleanDisplayMetadata(modName, 160), CleanDisplayMetadata(animationName, 120));
+    }
+
+    private async Task<CommunityRoleLabelDto?> SubmitCommunityRoleLabelCore(
+        string fingerprint, string group, string option, string label, string reporterId,
+        string modName, string animationName)
     {
         var cleanFingerprint = CleanFingerprint(fingerprint);
         var cleanGroup = CleanLabel(group);
@@ -210,7 +234,8 @@ public sealed class AnimationHub : Hub
             throw new HubException("A connection cannot submit as multiple installations.");
         ConnectionReporterIds[Context.ConnectionId] = cleanReporter;
         var (accepted, changed) = communityRoles.Submit(
-            cleanFingerprint, cleanGroup, cleanOption, cleanRole, cleanReporter);
+            cleanFingerprint, cleanGroup, cleanOption, cleanRole, cleanReporter,
+            CleanDisplayMetadata(modName, 160), CleanDisplayMetadata(animationName, 120));
         if (changed && accepted is not null)
             await Clients.All.SendAsync("CommunityRoleLabelChanged", accepted);
         return accepted;
@@ -417,6 +442,11 @@ public sealed class AnimationHub : Hub
     {
         var clean = new string(value.Where(character => !char.IsControl(character)).ToArray()).Trim();
         return clean[..Math.Min(20, clean.Length)];
+    }
+    private static string CleanDisplayMetadata(string value, int maximumLength)
+    {
+        var clean = new string(value.Where(character => !char.IsControl(character)).ToArray()).Trim();
+        return clean[..Math.Min(maximumLength, clean.Length)];
     }
     private static string CleanFingerprint(string value) =>
         new(value.Where(Uri.IsHexDigit).Take(64).Select(char.ToUpperInvariant).ToArray());

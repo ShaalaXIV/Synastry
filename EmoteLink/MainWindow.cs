@@ -30,6 +30,7 @@ public sealed class MainWindow : Window
     private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> correctionBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> folderRenameBuffers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, bool> folderOpenStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> selectedMods = new(StringComparer.OrdinalIgnoreCase);
     private string? selectionAnchor;
     private string? selectionAnchorGroup;
@@ -475,11 +476,16 @@ public sealed class MainWindow : Window
         var visible = search.Length == 0 || mods.Any(MatchesSearch);
         if (visible)
         {
+            var hadOpenState = folderOpenStates.TryGetValue(category.Id, out var previousOpen);
+            if (hadOpenState) ImGui.SetNextItemOpen(previousOpen, ImGuiCond.Always);
             var open = ImGui.CollapsingHeader($"{category.Name}  {mods.Count}##folderHeader",
                 ImGuiTreeNodeFlags.DefaultOpen);
             DrawFolderDragSource(category);
-            AcceptFolderReorder(category);
-            AcceptModDrop(category.Id);
+            var dragHovered = AcceptFolderReorder(category) | AcceptModDrop(category.Id);
+            // Dear ImGui automatically opens tree headers when a drag payload is held
+            // over them. Keep the user's prior state so moving a mod does not expand
+            // its destination folder as a side effect.
+            folderOpenStates[category.Id] = dragHovered && hadOpenState ? previousOpen : open;
             if (ImGui.BeginPopupContextItem("folderMenu"))
             {
                 ImGui.TextDisabled("Folder options");
@@ -938,20 +944,26 @@ public sealed class MainWindow : Window
         ImGui.EndDragDropSource();
     }
 
-    private void AcceptFolderReorder(ModCategory category)
+    private bool AcceptFolderReorder(ModCategory category)
     {
-        if (!ImGui.BeginDragDropTarget()) return;
-        var source = ReadPayload(ImGui.AcceptDragDropPayload(FolderPayload));
-        if (source is not null) plugin.MoveCategory(source, category.Id);
+        if (!ImGui.BeginDragDropTarget()) return false;
+        var payload = ImGui.AcceptDragDropPayload(FolderPayload);
+        var source = ReadPayload(payload);
+        var hovered = source is not null;
+        if (source is not null && payload.IsDelivery()) plugin.MoveCategory(source, category.Id);
         ImGui.EndDragDropTarget();
+        return hovered;
     }
 
-    private void AcceptModDrop(string? categoryId)
+    private bool AcceptModDrop(string? categoryId)
     {
-        if (!ImGui.BeginDragDropTarget()) return;
-        var source = ReadPayload(ImGui.AcceptDragDropPayload(ModPayload));
-        if (source is not null) MoveDroppedMods(source, categoryId);
+        if (!ImGui.BeginDragDropTarget()) return false;
+        var payload = ImGui.AcceptDragDropPayload(ModPayload);
+        var source = ReadPayload(payload);
+        var hovered = source is not null;
+        if (source is not null && payload.IsDelivery()) MoveDroppedMods(source, categoryId);
         ImGui.EndDragDropTarget();
+        return hovered;
     }
 
     private void HandleModSelection(

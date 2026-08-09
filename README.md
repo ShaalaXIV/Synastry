@@ -41,7 +41,7 @@ When Penumbra finishes an accepted install, Synastry indexes only that mod and u
 
 - Automatically lists Penumbra mods containing animation files.
 - Collapsible option groups support large packs with hundreds of choices.
-- Create folders and drag mods into a preferred order.
+- Create folders and move mods between them individually or in Shift-selected groups. Folders keep their open/closed state after a move, and mods sort alphabetically within each availability-color tier.
 - Mark mods private from their right-click menu.
 - Temporarily activate animations without disturbing unrelated Penumbra settings.
 - Ready a room for synchronized playback or play an animation locally with **Solo**. Each member keeps their own prepared actor role, even when the roles come from different mod entries. Group playback sends the normal animation trigger once, then runs Synastry's lobby-only EmoteSync six seconds later.
@@ -70,7 +70,7 @@ Use `/synastry` to open the plugin. To join a room directly, use:
 
 ## Privacy
 
-Room matching uses animation fingerprints instead of local file paths. Community labels are keyed by opaque mod fingerprints and animation trigger IDs. The community database does not require character names, mod names, or local paths.
+Room matching uses animation fingerprints instead of local file paths. Community labels are keyed by opaque mod fingerprints and animation trigger IDs. Public label submissions include the mod and animation display names so the community database can be moderated; they do not include character names or local file paths.
 
 Private mods are excluded from room catalogs, transfers, and community-label submissions.
 

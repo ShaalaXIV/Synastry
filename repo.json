@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.47.0",
+    "AssemblyVersion": "1.0.48.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -13,9 +13,9 @@
     "Tags": [ "penumbra", "animation", "emote", "sync" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.47/Synastry-1.0.47.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.47/Synastry-1.0.47.zip",
-    "Changelog": "Adds folder renaming, Shift-range and Ctrl multi-selection, bulk folder moves, and bulk Private toggles. Fixes the Simple Heels status dot and makes mod-option checkboxes configure options without activating or broadcasting an animation.",
-    "LastUpdate": "1786294526"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.48/Synastry-1.0.48.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.48/Synastry-1.0.48.zip",
+    "Changelog": "Keeps destination folders collapsed when mods are moved, sorts mods alphabetically within each match-color tier, and sends human-readable mod and animation names to community-label moderation.",
+    "LastUpdate": "1786296736"
   }
 ]

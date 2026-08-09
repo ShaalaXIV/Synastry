@@ -254,14 +254,35 @@ public sealed class AnimationSyncService : IAsyncDisposable
     }
 
     public async Task SubmitCommunityRoleLabelAsync(
-        string fingerprint, string group, string option, string label, string reporterId)
+        string fingerprint, string group, string option, string label, string reporterId,
+        string modName, string animationName)
     {
         try
         {
             await RequireConnection().InvokeAsync<CommunityRoleLabelDto?>(
-                "SubmitCommunityRoleLabel", fingerprint, group, option, label, reporterId);
+                "SubmitCommunityRoleLabelV2", fingerprint, group, option, label, reporterId,
+                modName, animationName);
         }
-        catch { /* Community labels are optional when connected to an older relay. */ }
+        catch
+        {
+            try
+            {
+                await RequireConnection().InvokeAsync<CommunityRoleLabelDto?>(
+                    "SubmitCommunityRoleLabel", fingerprint, group, option, label, reporterId);
+            }
+            catch { /* Community labels are optional when connected to an older relay. */ }
+        }
+    }
+
+    public async Task RegisterCommunityRoleMetadataAsync(
+        string fingerprint, string group, string option, string modName, string animationName)
+    {
+        try
+        {
+            await RequireConnection().InvokeAsync(
+                "RegisterCommunityRoleMetadata", fingerprint, group, option, modName, animationName);
+        }
+        catch { /* Display metadata is optional when connected to an older relay. */ }
     }
 
     public Task DeclineAnimationSuggestionAsync(string modKey, string suggestedBy) =>

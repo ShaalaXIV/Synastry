@@ -6,19 +6,13 @@ Room option selections can be offered as animation suggestions. Recipients may e
 
 Animation role labels are shared within a room so clients with an empty local label can adopt one from another member. Clients retain their own existing labels, and private mods are not advertised by the plugin.
 
-Accepted community role labels persist across rooms and relay restarts. The first submission accepts an initial label; five matching installation reports accept a later correction. Set `EMOTELINK_DATA_DIR` to place `community-role-labels.json` on durable production storage.
+Accepted community role labels persist across rooms and relay restarts. The first submission accepts an initial label; five matching installation reports accept a later correction. Updated clients also register the human-readable mod and animation names used by the moderation UI. Set `EMOTELINK_DATA_DIR` to place `community-role-labels.json` on durable production storage.
 
 ## Community-label administration
 
 Set a long random `EMOTELINK_ADMIN_TOKEN` in the relay service environment and restart it. The administration API only answers requests whose network peer is localhost and whose `Authorization` header contains that bearer token. Access it remotely through an SSH tunnel; do not expose another public listener for it.
 
-On the Windows machine, open the tunnel (replace the host name):
-
-```powershell
-ssh -N -L 25081:127.0.0.1:25080 user@relay-host
-```
-
-Run `EmoteLink.LabelAdmin`, use `http://127.0.0.1:25081` as the tunnel URL, enter the admin token, and press **Refresh**. The tool can approve the current leading correction immediately, clear pending votes, edit an accepted label, or delete a record. Normal client submissions still require five matching votes for later corrections.
+Run `EmoteLink.LabelAdmin`, enter the SSH host, private-key path, and admin token, then press **Connect / Refresh**. The app starts and owns the localhost SSH tunnel automatically; if a working tunnel already exists, it reuses it. Saved settings reconnect automatically on later launches. The tool displays mod and animation names and can approve the current leading correction immediately, clear pending votes, edit an accepted label, or delete a record. Normal client submissions still require five matching votes for later corrections.
 
 ## Run directly on Linux
 
