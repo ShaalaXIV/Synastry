@@ -3,19 +3,19 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.48.0",
+    "AssemblyVersion": "1.0.49.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
     "Punchline": "Paired animation sync for Penumbra.",
     "RepoUrl": "https://github.com/ShaalaXIV/Synastry",
-    "IconUrl": "https://plugins.aethercast.org/images/synastry.png",
+    "IconUrl": "https://raw.githubusercontent.com/ShaalaXIV/Synastry/main/images/icon.png",
     "Tags": [ "penumbra", "animation", "emote", "sync" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.48/Synastry-1.0.48.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.48/Synastry-1.0.48.zip",
-    "Changelog": "Keeps destination folders collapsed when mods are moved, sorts mods alphabetically within each match-color tier, and sends human-readable mod and animation names to community-label moderation.",
-    "LastUpdate": "1786296736"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.49/Synastry-1.0.49.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.49/Synastry-1.0.49.zip",
+    "Changelog": "Moves the installed-plugin icon to GitHub's raw image host so xlplugins can reliably display the Synastry logo.",
+    "LastUpdate": "1786298134"
   }
 ]
