@@ -399,7 +399,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
         configuration.ModOptionSelections.TryGetValue(directory, out var groups) &&
         groups.TryGetValue(group, out var selected) && selected.Contains(option, StringComparer.OrdinalIgnoreCase);
 
-    public void SetOptionSelected(string directory, string group, string option, bool selected, bool multiSelect)
+    public void SetOptionSelected(
+        string directory,
+        string group,
+        string option,
+        bool selected,
+        bool multiSelect,
+        bool broadcastSelection = true)
     {
         if (!configuration.ModOptionSelections.TryGetValue(directory, out var groups))
             configuration.ModOptionSelections[directory] = groups = new(StringComparer.OrdinalIgnoreCase);
@@ -422,7 +428,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             selections.RemoveAll(item => item.Equals(option, StringComparison.OrdinalIgnoreCase));
         }
         SaveOrganization();
-        if (selected && sync.IsInRoom && modSyncKeys.TryGetValue(directory, out var modKey))
+        if (broadcastSelection && selected && sync.IsInRoom && modSyncKeys.TryGetValue(directory, out var modKey))
             RunSync(sync.SetOptionSelectionAsync(modKey, group, option), $"Selected {option} for the room.");
     }
 
@@ -509,6 +515,29 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = isPrivate
             ? "Mod marked private. It will not be advertised or sent in group play."
             : "Mod is available to group play again.";
+    }
+
+    public void SetModsPrivate(IReadOnlyCollection<string> directories, bool isPrivate)
+    {
+        var changed = 0;
+        foreach (var directory in directories.Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            var didChange = isPrivate
+                ? configuration.PrivateMods.Add(directory)
+                : configuration.PrivateMods.Remove(directory);
+            if (didChange) changed++;
+        }
+        if (changed == 0)
+        {
+            Status = isPrivate ? "The selected mods are already private." : "The selected mods are already public.";
+            return;
+        }
+        configuration.Save(PluginInterface);
+        if (sync.IsInRoom) _ = sync.SetCatalogAsync(GetCatalogFingerprints());
+        InvalidateLibraryOrder();
+        Status = isPrivate
+            ? $"Marked {changed} selected mod(s) private."
+            : $"Marked {changed} selected mod(s) public.";
     }
 
     public void MarkAllModsPrivate()
@@ -951,6 +980,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
         SaveOrganization();
     }
 
+    public void RenameCategory(string categoryId, string name)
+    {
+        var category = configuration.Categories.FirstOrDefault(item => item.Id == categoryId);
+        var clean = name.Trim();
+        if (category is null || clean.Length == 0 || category.Name.Equals(clean, StringComparison.Ordinal)) return;
+        category.Name = clean;
+        SaveOrganization();
+        Status = $"Renamed folder to {clean}.";
+    }
+
     public void DeleteCategory(string categoryId)
     {
         var category = configuration.Categories.FirstOrDefault(item => item.Id == categoryId);
@@ -975,6 +1014,36 @@ public sealed unsafe class Plugin : IDalamudPlugin
             : target.FindIndex(item => item.Equals(beforeDirectory, StringComparison.OrdinalIgnoreCase));
         if (index < 0) target.Add(directory); else target.Insert(index, directory);
         SaveOrganization();
+    }
+
+    public void MoveMods(
+        IReadOnlyCollection<string> directories,
+        string? targetCategoryId,
+        string? beforeDirectory = null)
+    {
+        var requested = directories.ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var ordered = configuration.Categories.SelectMany(category => category.ModDirectories)
+            .Concat(configuration.UncategorizedOrder)
+            .Where(requested.Contains)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .ToList();
+        if (ordered.Count == 0) return;
+
+        var target = targetCategoryId is null
+            ? configuration.UncategorizedOrder
+            : configuration.Categories.FirstOrDefault(item => item.Id == targetCategoryId)?.ModDirectories;
+        if (target is null) return;
+
+        configuration.UncategorizedOrder.RemoveAll(requested.Contains);
+        foreach (var category in configuration.Categories)
+            category.ModDirectories.RemoveAll(requested.Contains);
+
+        var index = beforeDirectory is null
+            ? -1
+            : target.FindIndex(item => item.Equals(beforeDirectory, StringComparison.OrdinalIgnoreCase));
+        if (index < 0) target.AddRange(ordered); else target.InsertRange(index, ordered);
+        SaveOrganization();
+        Status = $"Moved {ordered.Count} selected mod(s).";
     }
 
     public void MoveCategory(string sourceId, string beforeId)

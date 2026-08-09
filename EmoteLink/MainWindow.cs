@@ -29,6 +29,10 @@ public sealed class MainWindow : Window
     private RoomInvite? activeRoomInvite;
     private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> correctionBuffers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> folderRenameBuffers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> selectedMods = new(StringComparer.OrdinalIgnoreCase);
+    private string? selectionAnchor;
+    private string? selectionAnchorGroup;
     private const string ModPayload = "EMOTELINK_MOD";
     private const string FolderPayload = "EMOTELINK_FOLDER";
 
@@ -69,7 +73,7 @@ public sealed class MainWindow : Window
 
     private void DrawHeader()
     {
-        ImGui.TextColored(plugin.PenumbraAvailable ? EveryoneColor : SomeColor, "●");
+        ImGui.TextColored(plugin.PenumbraAvailable ? EveryoneColor : SomeColor, "\u25CF");
         ImGui.SameLine();
         ImGui.TextUnformatted(plugin.PenumbraAvailable ? "PENUMBRA CONNECTED" : "PENUMBRA UNAVAILABLE");
         if (ImGui.IsItemHovered())
@@ -78,7 +82,7 @@ public sealed class MainWindow : Window
                 : "Penumbra is not currently available.");
 
         ImGui.SameLine(0, 18f);
-        ImGui.TextColored(plugin.SimpleHeelsAvailable ? EveryoneColor : MutedColor, "â—");
+        ImGui.TextColored(plugin.SimpleHeelsAvailable ? EveryoneColor : MutedColor, "\u25CF");
         ImGui.SameLine();
         ImGui.TextUnformatted(plugin.SimpleHeelsAvailable ? "SIMPLE HEELS CONNECTED" : "SIMPLE HEELS NOT FOUND");
         if (ImGui.IsItemHovered())
@@ -211,7 +215,7 @@ public sealed class MainWindow : Window
         {
             ImGui.PushID(member.ConnectionId);
             ImGui.Separator();
-            ImGui.TextColored(member.Ready ? EveryoneColor : SomeColor, "●");
+            ImGui.TextColored(member.Ready ? EveryoneColor : SomeColor, "\u25CF");
             ImGui.SameLine();
             ImGui.TextUnformatted(member.DisplayName);
             if (member.IsLeader)
@@ -293,6 +297,18 @@ public sealed class MainWindow : Window
         DrawCreateFolderPopup();
         DrawMarkAllPrivatePopup();
 
+        selectedMods.RemoveWhere(directory => !plugin.Mods.Any(mod =>
+            mod.Directory.Equals(directory, StringComparison.OrdinalIgnoreCase)));
+        if (selectedMods.Count > 0)
+        {
+            ImGui.Spacing();
+            ImGui.TextColored(AccentColor, $"{selectedMods.Count} MOD{(selectedMods.Count == 1 ? "" : "S")} SELECTED");
+            ImGui.SameLine();
+            ImGui.TextDisabled("Shift-click another mod to select a range.");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Clear selection")) ClearModSelection();
+        }
+
         ImGui.Spacing();
         ImGui.PushStyleColor(ImGuiCol.ChildBg, NestedPanelColor);
         ImGui.BeginChild("mods", new Vector2(0, -38f), true);
@@ -354,7 +370,7 @@ public sealed class MainWindow : Window
 
     private static void DrawLegendItem(Vector4 color, string label)
     {
-        ImGui.TextColored(color, "●");
+        ImGui.TextColored(color, "\u25CF");
         ImGui.SameLine();
         ImGui.TextDisabled(label);
     }
@@ -467,6 +483,24 @@ public sealed class MainWindow : Window
             if (ImGui.BeginPopupContextItem("folderMenu"))
             {
                 ImGui.TextDisabled("Folder options");
+                if (!folderRenameBuffers.TryGetValue(category.Id, out var rename)) rename = category.Name;
+                ImGui.SetNextItemWidth(220f);
+                var submitRename = ImGui.InputText("##folderRename", ref rename, 80,
+                    ImGuiInputTextFlags.EnterReturnsTrue);
+                folderRenameBuffers[category.Id] = rename;
+                ImGui.SameLine();
+                if ((ImGui.SmallButton("Rename") || submitRename) && !string.IsNullOrWhiteSpace(rename))
+                {
+                    plugin.RenameCategory(category.Id, rename);
+                    folderRenameBuffers[category.Id] = rename.Trim();
+                    ImGui.CloseCurrentPopup();
+                }
+                if (selectedMods.Count > 0 && ImGui.MenuItem($"Move {selectedMods.Count} selected here"))
+                {
+                    plugin.MoveMods(selectedMods, category.Id);
+                    ClearModSelection();
+                }
+                ImGui.Separator();
                 if (ImGui.MenuItem("Delete folder")) plugin.DeleteCategory(category.Id);
                 if (ImGui.IsItemHovered()) ImGui.SetTooltip("Mods will move to Uncategorized.");
                 ImGui.EndPopup();
@@ -488,17 +522,20 @@ public sealed class MainWindow : Window
         }
 
         var drewAny = false;
-        foreach (var mod in mods)
+        var visibleMods = mods.Where(MatchesSearch).ToList();
+        foreach (var mod in visibleMods)
         {
-            if (!MatchesSearch(mod)) continue;
             drewAny = true;
-            DrawModRow(mod, categoryId);
+            DrawModRow(mod, categoryId, visibleMods);
         }
         if (!drewAny)
             ImGui.TextDisabled(search.Length == 0 ? "  Drop mods here" : "  No matching animation mods");
     }
 
-    private void DrawModRow((string Directory, string Name) mod, string? categoryId)
+    private void DrawModRow(
+        (string Directory, string Name) mod,
+        string? categoryId,
+        IReadOnlyList<(string Directory, string Name)> groupOrder)
     {
         ImGui.PushID(mod.Directory);
         var groups = plugin.GetOptionGroups(mod.Directory);
@@ -536,10 +573,17 @@ public sealed class MainWindow : Window
         if (sendWidth > 0 && statusWidth > 0) controlsWidth += ImGui.GetStyle().ItemSpacing.X;
         var labelWidth = MathF.Max(80f, ImGui.GetContentRegionAvail().X - controlsWidth - 42f);
         var displayName = TruncateText(mod.Name, labelWidth);
+        var selected = selectedMods.Contains(mod.Directory);
+        var treeFlags = ImGuiTreeNodeFlags.OpenOnArrow | ImGuiTreeNodeFlags.OpenOnDoubleClick |
+                        (selected ? ImGuiTreeNodeFlags.Selected : ImGuiTreeNodeFlags.None);
         var open = hasDetails
-            ? ImGui.TreeNodeEx(displayName, ImGuiTreeNodeFlags.None)
-            : ImGui.Selectable(displayName, false, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(labelWidth, 0));
+            ? ImGui.TreeNodeEx(displayName, treeFlags)
+            : ImGui.Selectable(displayName, selected, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(labelWidth, 0));
         if (selectedBy is not null || isPrivate || hasMatchColor) ImGui.PopStyleColor();
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+            HandleModSelection(mod.Directory, categoryId, groupOrder);
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Right) && !selectedMods.Contains(mod.Directory))
+            SelectOnly(mod.Directory, categoryId);
         if (ImGui.IsItemHovered())
         {
             if (selectedBy is not null) ImGui.SetTooltip($"{selectedBy} selected an option in this mod.");
@@ -548,16 +592,41 @@ public sealed class MainWindow : Window
 
         if (ImGui.BeginPopupContextItem("modMenu"))
         {
-            if (ImGui.MenuItem("Private", "", isPrivate)) plugin.SetModPrivate(mod.Directory, !isPrivate);
+            var targets = selectedMods.Contains(mod.Directory) ? selectedMods.ToList() : [mod.Directory];
+            if (targets.Count > 1) ImGui.TextDisabled($"{targets.Count} selected mods");
+            var anyPublic = targets.Any(directory => !plugin.IsModPrivate(directory));
+            var anyPrivate = targets.Any(plugin.IsModPrivate);
+            if (anyPublic && ImGui.MenuItem(targets.Count > 1 ? "Mark selected private" : "Mark private"))
+                plugin.SetModsPrivate(targets, true);
+            if (anyPrivate && ImGui.MenuItem(targets.Count > 1 ? "Unmark selected private" : "Unmark private"))
+                plugin.SetModsPrivate(targets, false);
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("Private mods are not advertised or transferable in group play.");
+            if (ImGui.BeginMenu(targets.Count > 1 ? "Move selected to folder" : "Move to folder"))
+            {
+                if (ImGui.MenuItem("Uncategorized"))
+                {
+                    plugin.MoveMods(targets, null);
+                    ClearModSelection();
+                }
+                foreach (var category in plugin.Categories)
+                {
+                    if (!ImGui.MenuItem(category.Name)) continue;
+                    plugin.MoveMods(targets, category.Id);
+                    ClearModSelection();
+                }
+                ImGui.EndMenu();
+            }
+            if (targets.Count > 1 && ImGui.MenuItem("Clear selection")) ClearModSelection();
             ImGui.EndPopup();
         }
 
         if (ImGui.BeginDragDropSource())
         {
             ImGui.SetDragDropPayload(ModPayload, Encoding.UTF8.GetBytes(mod.Directory));
-            ImGui.TextUnformatted(mod.Name);
+            ImGui.TextUnformatted(selectedMods.Contains(mod.Directory) && selectedMods.Count > 1
+                ? $"Move {selectedMods.Count} selected mods"
+                : mod.Name);
             ImGui.EndDragDropSource();
         }
         if (ImGui.BeginDragDropTarget())
@@ -565,7 +634,7 @@ public sealed class MainWindow : Window
             var payload = ImGui.AcceptDragDropPayload(ModPayload);
             var source = ReadPayload(payload);
             if (source is not null && source != mod.Directory)
-                plugin.MoveMod(source, categoryId, mod.Directory);
+                MoveDroppedMods(source, categoryId, mod.Directory);
             ImGui.EndDragDropTarget();
         }
 
@@ -626,9 +695,8 @@ public sealed class MainWindow : Window
                     }
                     if (ImGui.Checkbox(option, ref selected))
                     {
-                        plugin.SetOptionSelected(mod.Directory, group.Name, option, selected, group.IsMultiSelect);
-                        var appliedSelection = plugin.IsOptionSelected(mod.Directory, group.Name, option);
-                        plugin.ApplyOption(mod.Directory, mod.Name, group.Name, option, appliedSelection);
+                        plugin.SetOptionSelected(mod.Directory, group.Name, option, selected,
+                            group.IsMultiSelect, broadcastSelection: false);
                     }
                     if (selectedBy is not null)
                     {
@@ -839,7 +907,7 @@ public sealed class MainWindow : Window
     private static string TruncateText(string text, float maxWidth)
     {
         if (ImGui.CalcTextSize(text).X <= maxWidth) return text;
-        const string suffix = "…";
+        const string suffix = "\u2026";
         var low = 0;
         var high = text.Length;
         while (low < high)
@@ -882,8 +950,78 @@ public sealed class MainWindow : Window
     {
         if (!ImGui.BeginDragDropTarget()) return;
         var source = ReadPayload(ImGui.AcceptDragDropPayload(ModPayload));
-        if (source is not null) plugin.MoveMod(source, categoryId);
+        if (source is not null) MoveDroppedMods(source, categoryId);
         ImGui.EndDragDropTarget();
+    }
+
+    private void HandleModSelection(
+        string directory,
+        string? categoryId,
+        IReadOnlyList<(string Directory, string Name)> groupOrder)
+    {
+        var groupKey = categoryId ?? "\0uncategorized";
+        var io = ImGui.GetIO();
+        if (io.KeyShift && selectionAnchor is not null && selectionAnchorGroup == groupKey)
+        {
+            var anchorIndex = FindModIndex(groupOrder, selectionAnchor);
+            var clickedIndex = FindModIndex(groupOrder, directory);
+            if (anchorIndex >= 0 && clickedIndex >= 0)
+            {
+                if (!io.KeyCtrl) selectedMods.Clear();
+                var start = Math.Min(anchorIndex, clickedIndex);
+                var end = Math.Max(anchorIndex, clickedIndex);
+                for (var index = start; index <= end; index++) selectedMods.Add(groupOrder[index].Directory);
+                return;
+            }
+        }
+
+        if (io.KeyCtrl)
+        {
+            if (!selectedMods.Add(directory)) selectedMods.Remove(directory);
+        }
+        else
+        {
+            selectedMods.Clear();
+            selectedMods.Add(directory);
+        }
+        selectionAnchor = directory;
+        selectionAnchorGroup = groupKey;
+    }
+
+    private static int FindModIndex(
+        IReadOnlyList<(string Directory, string Name)> mods,
+        string directory)
+    {
+        for (var index = 0; index < mods.Count; index++)
+            if (mods[index].Directory.Equals(directory, StringComparison.OrdinalIgnoreCase)) return index;
+        return -1;
+    }
+
+    private void SelectOnly(string directory, string? categoryId)
+    {
+        selectedMods.Clear();
+        selectedMods.Add(directory);
+        selectionAnchor = directory;
+        selectionAnchorGroup = categoryId ?? "\0uncategorized";
+    }
+
+    private void ClearModSelection()
+    {
+        selectedMods.Clear();
+        selectionAnchor = null;
+        selectionAnchorGroup = null;
+    }
+
+    private void MoveDroppedMods(string source, string? categoryId, string? beforeDirectory = null)
+    {
+        if (selectedMods.Contains(source) && selectedMods.Count > 1)
+        {
+            if (beforeDirectory is not null && selectedMods.Contains(beforeDirectory)) return;
+            plugin.MoveMods(selectedMods, categoryId, beforeDirectory);
+            ClearModSelection();
+            return;
+        }
+        plugin.MoveMod(source, categoryId, beforeDirectory);
     }
 
     private bool MatchesSearch((string Directory, string Name) mod) =>
