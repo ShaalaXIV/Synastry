@@ -1,17 +1,17 @@
 # Aethercast Dalamud Repository
 
-The combined custom-plugin repository is served at both:
+The combined custom-plugin repository is served at:
 
-- `https://aethercast.org/repo`
-- `https://aethercast.org/repo/repo.json`
+- `https://plugins.aethercast.org/`
 
 `repo.json` contains the current AetherPress and Synastry store entries. The
-Nginx files are loaded through Nginx Proxy Manager's supported
-`/data/nginx/custom/http.conf` include.
+repository is hosted by the `plugins-repo` Docker container. Its persistent
+host files are under `/opt/portainer/plugins-repo`.
 
-The deployed Synastry icon is copied from `images/icon.png` to
-`/data/aethercast-repo/images/synastry.png` in the proxy container's data
-volume.
+The live repository file is `/opt/portainer/plugins-repo/www/repo.json`. The
+deployed Synastry icon is copied from `images/icon.png` to
+`/opt/portainer/plugins-repo/www/images/synastry.png` and is served at
+`https://plugins.aethercast.org/images/synastry.png`.
 
 The `aethercast-cert-renew` systemd timer runs Certbot daily and validates and
 reloads Nginx Proxy Manager afterward. Its service calls the deployed
