@@ -22,7 +22,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.46.0",
+    "AssemblyVersion": "1.0.47.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -32,9 +32,9 @@
     "Tags": [ "penumbra", "animation", "emote", "sync" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.46/Synastry-1.0.46.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.46/Synastry-1.0.46.zip",
-    "Changelog": "Freshly installed animation mods now activate without a manual Penumbra toggle. Group animations play once and run lobby-only EmoteSync six seconds later. Adds manual EmoteSync, Simple Heels Temp Offset, and Livepose controls.",
-    "LastUpdate": "1786181106"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.47/Synastry-1.0.47.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.47/Synastry-1.0.47.zip",
+    "Changelog": "Adds folder renaming, Shift-range and Ctrl multi-selection, bulk folder moves, and bulk Private toggles. Fixes the Simple Heels status dot and makes mod-option checkboxes configure options without activating or broadcasting an animation.",
+    "LastUpdate": "1786294526"
   }
 ]
