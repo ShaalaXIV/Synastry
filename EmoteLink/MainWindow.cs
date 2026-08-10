@@ -300,6 +300,17 @@ public sealed class MainWindow : Window
 
         selectedMods.RemoveWhere(directory => !plugin.Mods.Any(mod =>
             mod.Directory.Equals(directory, StringComparison.OrdinalIgnoreCase)));
+        ImGui.Spacing();
+        var selectionFooterHeight = selectedMods.Count > 0
+            ? ImGui.GetFrameHeightWithSpacing() + ImGui.GetStyle().ItemSpacing.Y
+            : 0f;
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, NestedPanelColor);
+        ImGui.BeginChild("mods", new Vector2(0, -(38f + selectionFooterHeight)), true);
+        foreach (var category in plugin.Categories.ToList()) DrawCategory(category);
+        DrawModGroup(null, "Uncategorized", true);
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
+
         if (selectedMods.Count > 0)
         {
             ImGui.Spacing();
@@ -309,14 +320,6 @@ public sealed class MainWindow : Window
             ImGui.SameLine();
             if (ImGui.SmallButton("Clear selection")) ClearModSelection();
         }
-
-        ImGui.Spacing();
-        ImGui.PushStyleColor(ImGuiCol.ChildBg, NestedPanelColor);
-        ImGui.BeginChild("mods", new Vector2(0, -38f), true);
-        foreach (var category in plugin.Categories.ToList()) DrawCategory(category);
-        DrawModGroup(null, "Uncategorized", true);
-        ImGui.EndChild();
-        ImGui.PopStyleColor();
 
         DrawLegend();
         ImGui.EndChild();
