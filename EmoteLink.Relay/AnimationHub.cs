@@ -1,5 +1,6 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
+using System.Text.Json;
 using Microsoft.AspNetCore.SignalR;
 
 namespace EmoteLink.Relay;
@@ -10,15 +11,25 @@ public sealed class AnimationHub : Hub
     private static readonly TimeSpan EmptyRoomGracePeriod = TimeSpan.FromSeconds(30);
     private static readonly ConcurrentDictionary<string, Room> Rooms = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, string> ConnectionRooms = new();
-    private static readonly ConcurrentDictionary<string, string> ConnectionReporterIds = new();
+    private static readonly ConcurrentDictionary<string, string> ConnectionCommunityReporterIds = new();
+    private static readonly ConcurrentDictionary<string, string> ConnectionCatalogReporterIds = new();
+    private static readonly ConcurrentDictionary<string, int> ConnectionCatalogReportCounts = new();
+    private static readonly ConcurrentDictionary<string, CatalogCreationBucket> CatalogCreationBuckets = new();
+    private const int MaximumCatalogReportsPerConnection = 10_000;
+    private const int MaximumNewArtifactsPerPeerBurst = 10_000;
+    private const int MaximumCatalogCreationPeerBuckets = 100_000;
+    private static readonly TimeSpan NewArtifactPeerRefillPeriod = TimeSpan.FromDays(1);
     private const int MaxMembers = 16;
     private readonly TransferStore transfers;
     private readonly CommunityRoleLabelStore communityRoles;
+    private readonly AnimationCatalogStore animationCatalog;
 
-    public AnimationHub(TransferStore transfers, CommunityRoleLabelStore communityRoles)
+    public AnimationHub(TransferStore transfers, CommunityRoleLabelStore communityRoles,
+        AnimationCatalogStore animationCatalog)
     {
         this.transfers = transfers;
         this.communityRoles = communityRoles;
+        this.animationCatalog = animationCatalog;
     }
 
     public async Task<RoomStateDto> CreateRoom(string displayName)
@@ -111,12 +122,20 @@ public sealed class AnimationHub : Hub
 
     public TransferUploadDto BeginModTransfer(string modName, long size, string sha256)
     {
-        var room = GetCurrentRoom();
-        lock (room.Gate)
+        try
         {
-            var sender = room.Members[Context.ConnectionId];
-            var recipients = room.Members.Keys.Where(id => id != Context.ConnectionId).ToList();
-            return transfers.Begin(room.Code, Context.ConnectionId, sender.DisplayName, modName, size, sha256, recipients);
+            var room = GetCurrentRoom();
+            lock (room.Gate)
+            {
+                var sender = room.Members[Context.ConnectionId];
+                var recipients = room.Members.Keys.Where(id => id != Context.ConnectionId).ToList();
+                return transfers.Begin(room.Code, Context.ConnectionId, sender.DisplayName, modName, size, sha256,
+                    recipients);
+            }
+        }
+        catch (TransferSharingBlockedException exception)
+        {
+            throw new HubException(exception.Message);
         }
     }
 
@@ -126,25 +145,32 @@ public sealed class AnimationHub : Hub
         string sha256,
         string catalogFingerprint)
     {
-        var room = GetCurrentRoom();
-        var fingerprint = CleanFingerprint(catalogFingerprint);
-        if (fingerprint.Length != 64) throw new HubException("A valid animation fingerprint is required.");
-        lock (room.Gate)
+        try
         {
-            var sender = room.Members[Context.ConnectionId];
-            var recipients = room.Members.Values
-                .Where(member => member.ConnectionId != Context.ConnectionId)
-                .ToList();
-            if (recipients.Count == 0) throw new HubException("There is nobody else in the room.");
-            var pending = recipients
-                .Where(member => !member.Catalog.Contains(fingerprint))
-                .Select(member => member.ConnectionId)
-                .ToList();
-            var alreadyReceived = recipients.Count - pending.Count;
-            return pending.Count == 0
-                ? new TransferUploadDto("", "", 0, alreadyReceived)
-                : transfers.Begin(room.Code, Context.ConnectionId, sender.DisplayName, modName, size, sha256,
-                    pending, fingerprint, alreadyReceived);
+            var room = GetCurrentRoom();
+            var fingerprint = CleanFingerprint(catalogFingerprint);
+            if (fingerprint.Length != 64) throw new HubException("A valid animation fingerprint is required.");
+            lock (room.Gate)
+            {
+                var sender = room.Members[Context.ConnectionId];
+                var recipients = room.Members.Values
+                    .Where(member => member.ConnectionId != Context.ConnectionId)
+                    .ToList();
+                if (recipients.Count == 0) throw new HubException("There is nobody else in the room.");
+                var pending = recipients
+                    .Where(member => !member.Catalog.Contains(fingerprint))
+                    .Select(member => member.ConnectionId)
+                    .ToList();
+                var alreadyReceived = recipients.Count - pending.Count;
+                return pending.Count == 0
+                    ? new TransferUploadDto("", "", 0, alreadyReceived)
+                    : transfers.Begin(room.Code, Context.ConnectionId, sender.DisplayName, modName, size, sha256,
+                        pending, fingerprint, alreadyReceived);
+            }
+        }
+        catch (TransferSharingBlockedException exception)
+        {
+            throw new HubException(exception.Message);
         }
     }
 
@@ -245,6 +271,96 @@ public sealed class AnimationHub : Hub
             CleanDisplayMetadata(modName, 160), CleanDisplayMetadata(animationName, 120));
     }
 
+    public IReadOnlyList<AnimationArtifactCatalogEntry> LookupAnimationArtifacts(
+        IReadOnlyList<AnimationArtifactLookupKey> artifacts)
+    {
+        if (artifacts.Count > AnimationCatalogStore.MaximumBatchSize)
+            throw new HubException($"Look up at most {AnimationCatalogStore.MaximumBatchSize} artifacts at once.");
+        try
+        {
+            return animationCatalog.Lookup(artifacts);
+        }
+        catch (ArgumentException exception)
+        {
+            throw new HubException(exception.Message);
+        }
+    }
+
+    public IReadOnlyList<AnimationArtifactCatalogEntry> SubmitAnimationArtifactReports(
+        string reporterId, IReadOnlyList<AnimationArtifactReportSubmission> reports)
+    {
+        if (reports.Count is < 1 or > AnimationCatalogStore.MaximumBatchSize)
+            throw new HubException($"Submit 1-{AnimationCatalogStore.MaximumBatchSize} reports per batch.");
+        var total = ConnectionCatalogReportCounts.AddOrUpdate(
+            Context.ConnectionId, reports.Count, (_, current) => checked(current + reports.Count));
+        if (total > MaximumCatalogReportsPerConnection)
+        {
+            ConnectionCatalogReportCounts.AddOrUpdate(
+                Context.ConnectionId, 0, (_, current) => Math.Max(0, current - reports.Count));
+            throw new HubException("This connection has reached its animation-report limit.");
+        }
+        var cleanReporter = BindReporterId(reporterId, ConnectionCatalogReporterIds);
+        try
+        {
+            var lookupKeys = reports.Select(report =>
+                    new AnimationArtifactLookupKey(report.SignatureAlgorithm, report.Signature))
+                .ToList();
+            var newArtifacts = animationCatalog.CountUnknownArtifacts(lookupKeys);
+            if (newArtifacts > 0 && !TryConsumeCatalogCreationBudget(CatalogPeerKey(), newArtifacts))
+                throw new HubException(
+                    "This network peer has reached its daily new animation-artifact safety budget. " +
+                    "Updates to existing artifacts remain available.");
+            return animationCatalog.SubmitReports(cleanReporter, reports);
+        }
+        catch (ArgumentException exception)
+        {
+            throw new HubException(exception.Message);
+        }
+        catch (JsonException exception)
+        {
+            throw new HubException("Animation extraction payload JSON is invalid: " + exception.Message);
+        }
+        catch (InvalidOperationException exception)
+        {
+            throw new HubException(exception.Message);
+        }
+    }
+
+    private string CatalogPeerKey() =>
+        Context.GetHttpContext()?.Connection.RemoteIpAddress?.ToString() ?? "unknown-peer";
+
+    private static bool TryConsumeCatalogCreationBudget(string peer, int count)
+    {
+        if (!CatalogCreationBuckets.TryGetValue(peer, out var bucket))
+        {
+            if (CatalogCreationBuckets.Count >= MaximumCatalogCreationPeerBuckets)
+            {
+                var staleBefore = DateTimeOffset.UtcNow - (NewArtifactPeerRefillPeriod * 2);
+                var removed = 0;
+                foreach (var candidate in CatalogCreationBuckets)
+                {
+                    var stale = false;
+                    lock (candidate.Value.Gate) stale = candidate.Value.UpdatedUtc < staleBefore;
+                    if (stale && CatalogCreationBuckets.TryRemove(candidate.Key, out _) && ++removed >= 2_000)
+                        break;
+                }
+                if (CatalogCreationBuckets.Count >= MaximumCatalogCreationPeerBuckets) return false;
+            }
+            bucket = CatalogCreationBuckets.GetOrAdd(peer, _ => new CatalogCreationBucket());
+        }
+        lock (bucket.Gate)
+        {
+            var now = DateTimeOffset.UtcNow;
+            var elapsed = Math.Max(0, (now - bucket.UpdatedUtc).TotalSeconds);
+            var refillPerSecond = MaximumNewArtifactsPerPeerBurst / NewArtifactPeerRefillPeriod.TotalSeconds;
+            bucket.Tokens = Math.Min(MaximumNewArtifactsPerPeerBurst, bucket.Tokens + elapsed * refillPerSecond);
+            bucket.UpdatedUtc = now;
+            if (bucket.Tokens + 0.0001 < count) return false;
+            bucket.Tokens -= count;
+            return true;
+        }
+    }
+
     private async Task<CommunityRoleLabelDto?> SubmitCommunityRoleLabelCore(
         string fingerprint, string group, string option, string label, string reporterId,
         string modName, string animationName)
@@ -253,20 +369,27 @@ public sealed class AnimationHub : Hub
         var cleanGroup = CleanLabel(group);
         var cleanOption = CleanLabel(option);
         var cleanRole = CleanRoleLabel(label);
-        var cleanReporter = new string(reporterId.Where(Uri.IsHexDigit).Take(32).ToArray());
-        if (cleanFingerprint.Length != 64 || cleanRole.Length == 0 || cleanReporter.Length != 32 ||
+        var cleanReporter = BindReporterId(reporterId, ConnectionCommunityReporterIds);
+        if (cleanFingerprint.Length != 64 || cleanRole.Length == 0 ||
             (cleanGroup != "$detected-pose" && cleanGroup != "$detected-emote"))
             throw new HubException("Invalid community role-label submission.");
-        if (ConnectionReporterIds.TryGetValue(Context.ConnectionId, out var existingReporter) &&
-            !existingReporter.Equals(cleanReporter, StringComparison.OrdinalIgnoreCase))
-            throw new HubException("A connection cannot submit as multiple installations.");
-        ConnectionReporterIds[Context.ConnectionId] = cleanReporter;
         var (accepted, changed) = communityRoles.Submit(
             cleanFingerprint, cleanGroup, cleanOption, cleanRole, cleanReporter,
             CleanDisplayMetadata(modName, 160), CleanDisplayMetadata(animationName, 120));
         if (changed && accepted is not null)
             await Clients.All.SendAsync("CommunityRoleLabelChanged", accepted);
         return accepted;
+    }
+
+    private string BindReporterId(string reporterId, ConcurrentDictionary<string, string> bindings)
+    {
+        var cleanReporter = new string(reporterId.Where(Uri.IsHexDigit).Take(32).ToArray());
+        if (cleanReporter.Length != 32) throw new HubException("Invalid installation reporter identifier.");
+        if (bindings.TryGetValue(Context.ConnectionId, out var existingReporter) &&
+            !existingReporter.Equals(cleanReporter, StringComparison.OrdinalIgnoreCase))
+            throw new HubException("A connection cannot submit as multiple installations.");
+        bindings[Context.ConnectionId] = cleanReporter;
+        return cleanReporter;
     }
 
     public async Task DeclineAnimationSuggestion(string modKey, string suggestedBy)
@@ -292,6 +415,7 @@ public sealed class AnimationHub : Hub
     public async Task LeaveRoom()
     {
         if (!ConnectionRooms.TryRemove(Context.ConnectionId, out var code)) return;
+        transfers.DetachRecipient(Context.ConnectionId);
         if (!Rooms.TryGetValue(code, out var room)) return;
         var removeRoom = false;
         lock (room.Gate)
@@ -412,6 +536,7 @@ public sealed class AnimationHub : Hub
             ConnectionRooms.TryRemove(connectionId, out _);
             ResetReady(room);
         }
+        transfers.DetachRecipient(connectionId);
         await Groups.RemoveFromGroupAsync(connectionId, room.Code);
         await Clients.Client(connectionId).SendAsync("RemovedFromRoom", "The host removed you from the room.");
         var state = Snapshot(room);
@@ -422,7 +547,9 @@ public sealed class AnimationHub : Hub
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
-        ConnectionReporterIds.TryRemove(Context.ConnectionId, out _);
+        ConnectionCommunityReporterIds.TryRemove(Context.ConnectionId, out _);
+        ConnectionCatalogReporterIds.TryRemove(Context.ConnectionId, out _);
+        ConnectionCatalogReportCounts.TryRemove(Context.ConnectionId, out _);
         await LeaveRoom();
         await base.OnDisconnectedAsync(exception);
     }
@@ -496,6 +623,13 @@ public sealed class AnimationHub : Hub
         public HashSet<string> Catalog { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, OptionSelectionDto> OptionSelections { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, RoleLabelDto> RoleLabels { get; } = new(StringComparer.OrdinalIgnoreCase);
+    }
+
+    private sealed class CatalogCreationBucket
+    {
+        public object Gate { get; } = new();
+        public double Tokens { get; set; } = MaximumNewArtifactsPerPeerBurst;
+        public DateTimeOffset UpdatedUtc { get; set; } = DateTimeOffset.UtcNow;
     }
 }
 

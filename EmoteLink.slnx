@@ -1,5 +1,4 @@
 <Solution>
   <Project Path="EmoteLink/EmoteLink.csproj" />
   <Project Path="EmoteLink.Relay/EmoteLink.Relay.csproj" />
-  <Project Path="EmoteLink.LabelAdmin/EmoteLink.LabelAdmin.csproj" />
 </Solution>

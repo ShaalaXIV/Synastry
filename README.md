@@ -35,9 +35,13 @@ This makes coordinated animation sessions much easier: find an animation, share 
 When Penumbra finishes an accepted install, Synastry indexes only that mod and updates its room fingerprint. The row changes to orange or green as appropriate without a full library refresh.
 
 - Transfers are limited to 75 MB.
-- Transfer packages expire from relay storage after 10 minutes.
+- Transfer packages remain reviewable on the relay until their original 10-minute expiry, even after every recipient downloads or declines them. Recipient access is revoked as soon as an item leaves their queue.
+- Authorized relay moderators may inspect a retained package during that window to investigate safety, policy, or creator opt-out reports. Packages can disappear sooner after a relay restart, storage pressure, or an administrative deletion.
+- One-time upload and download capabilities are sent in a dedicated HTTP header, never placed in URLs, and transfer responses are marked not to be cached.
 - Private mods cannot be advertised or sent.
 - Mods are never transferred without the recipient accepting the offer.
+
+Synastry is not intended for exchanging paid or otherwise restricted animations. Please support community creators and only share files you are permitted to share. A creator can ask the relay moderation team to block an exact package, animation fingerprint, or mod family from future sharing.
 
 ## Other features
 
@@ -75,6 +79,14 @@ Use `/synastry` to open the plugin. To join a room directly, use:
 Room matching uses animation fingerprints instead of local file paths. Community labels are keyed by opaque mod fingerprints and animation trigger IDs. Public label submissions include the mod and animation display names so the community database can be moderated; they do not include character names or local file paths.
 
 Private mods are excluded from room catalogs, transfers, and community-label submissions.
+
+To accelerate library refreshes, connected clients may contribute a versioned fingerprint of a mod's top-level Penumbra manifests, its display name, whether those manifests contain animation mappings, and a portable extraction result. The catalog does not store a character, room, local directory, private/public flag, or reusable cross-mod reporter identity. Private mods can contribute the same content-only index record, but they remain excluded from room advertising, transfers, and community-label submissions.
+
+Completed transfer packages may also be inspected in place by the relay to create an exact catalog candidate; the package is never extracted into a mod directory. Candidate evidence is not automatically trusted. A moderator must approve the classification and pin the exact payload SHA-256 before another client can use that payload to accelerate its local index.
+
+Transfer moderation is separate from the catalog. While a package is retained for up to 10 minutes, authorized moderators can see its transient sender/room metadata and obtain a review copy. Persistent sharing bans retain content hashes, a searchable display name, and the moderation reason; they do not retain the package. A catalog-only blocked marker is a moderation label and does not itself prevent transfers; enforced blocks are separate transfer-ban records keyed by an exact package SHA-256, animation fingerprint, or normalized mod-family-name SHA-256.
+
+The moderation audit is bounded to the newest 100,000 events by count, not by age. An event may retain its transfer ID, event name and timestamp, exact package SHA-256, animation catalog fingerprint, normalized mod-name SHA-256, and a bounded moderation note. It excludes package bytes, transfer capability tokens, sender identity/display name, and room code. Administrator labels are hashed before storage. Audit metadata may therefore outlive the ten-minute review package.
 
 ## Build
 

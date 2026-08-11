@@ -6,6 +6,7 @@ namespace EmoteLink;
 
 public sealed class AnimationSyncService : IAsyncDisposable
 {
+    private const string TransferCapabilityHeader = "X-Synastry-Transfer-Token";
     private static readonly IReadOnlyDictionary<string, int> EmptyMatchCounts =
         new Dictionary<string, int>(StringComparer.OrdinalIgnoreCase);
     private readonly object gate = new();
@@ -191,18 +192,35 @@ public sealed class AnimationSyncService : IAsyncDisposable
         await using var input = File.OpenRead(packagePath);
         using var content = new StreamContent(input);
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
-        using var response = await Http.PutAsync(
-            $"{relayBaseUrl}/transfers/{Uri.EscapeDataString(upload.TransferId)}?token={Uri.EscapeDataString(upload.UploadToken)}",
-            content);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Put,
+            $"{relayBaseUrl}/transfers/{Uri.EscapeDataString(upload.TransferId)}")
+        {
+            Content = content
+        };
+        request.Headers.TryAddWithoutValidation(TransferCapabilityHeader, upload.UploadToken);
+        request.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue
+        {
+            NoCache = true,
+            NoStore = true
+        };
+        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
         response.EnsureSuccessStatusCode();
         return new ModTransferSendResult(upload.PendingRecipients, upload.AlreadyReceived);
     }
 
     public async Task DownloadModAsync(ModTransferOfferDto offer, string destination)
     {
-        using var response = await Http.GetAsync(
-            $"{relayBaseUrl}/transfers/{Uri.EscapeDataString(offer.TransferId)}?token={Uri.EscapeDataString(offer.DownloadToken)}",
-            HttpCompletionOption.ResponseHeadersRead);
+        using var request = new HttpRequestMessage(
+            HttpMethod.Get,
+            $"{relayBaseUrl}/transfers/{Uri.EscapeDataString(offer.TransferId)}");
+        request.Headers.TryAddWithoutValidation(TransferCapabilityHeader, offer.DownloadToken);
+        request.Headers.CacheControl = new System.Net.Http.Headers.CacheControlHeaderValue
+        {
+            NoCache = true,
+            NoStore = true
+        };
+        using var response = await Http.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
         response.EnsureSuccessStatusCode();
         if (response.Content.Headers.ContentLength is > 75L * 1024 * 1024)
             throw new InvalidDataException("The mod exceeds the 75 MB transfer limit.");
@@ -292,6 +310,53 @@ public sealed class AnimationSyncService : IAsyncDisposable
                 "RegisterCommunityRoleMetadata", fingerprint, group, option, modName, animationName);
         }
         catch { /* Display metadata is optional when connected to an older relay. */ }
+    }
+
+    public async Task<IReadOnlyList<AnimationArtifactCatalogEntryDto>?> LookupAnimationArtifactsAsync(
+        IReadOnlyList<AnimationArtifactLookupKeyDto> artifacts,
+        CancellationToken cancellationToken = default)
+    {
+        if (artifacts.Count == 0) return [];
+        var hub = connection;
+        if (hub?.State != HubConnectionState.Connected) return null;
+        try
+        {
+            return await hub.InvokeCoreAsync<IReadOnlyList<AnimationArtifactCatalogEntryDto>>(
+                "LookupAnimationArtifacts", [artifacts], cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            // Catalog acceleration is additive. An offline or older relay follows the exact
+            // same local extraction path as releases that predate the shared catalog.
+            return null;
+        }
+    }
+
+    public async Task<IReadOnlyList<AnimationArtifactCatalogEntryDto>?> SubmitAnimationArtifactReportsAsync(
+        string reporterId,
+        IReadOnlyList<AnimationArtifactReportSubmissionDto> reports,
+        CancellationToken cancellationToken = default)
+    {
+        if (reports.Count == 0) return [];
+        var hub = connection;
+        if (hub?.State != HubConnectionState.Connected) return null;
+        try
+        {
+            return await hub.InvokeCoreAsync<IReadOnlyList<AnimationArtifactCatalogEntryDto>>(
+                "SubmitAnimationArtifactReports", [reporterId, reports], cancellationToken);
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     public Task DeclineAnimationSuggestionAsync(string modKey, string suggestedBy) =>
@@ -474,6 +539,54 @@ public sealed record ModTransferSendResult(int PendingRecipients, int AlreadyRec
 public sealed record OptionSelectionDto(string MemberName, string ModKey, string Group, string Option);
 public sealed record RoleLabelDto(string MemberName, string ModKey, string Group, string Option, string Label);
 public sealed record CommunityRoleLabelDto(string Fingerprint, string Group, string Option, string Label);
+public enum AnimationArtifactClassificationDto
+{
+    Unknown = 0,
+    Animation = 1,
+    NonAnimation = 2
+}
+public enum AnimationSharingPolicyDto
+{
+    Default = 0,
+    Allowed = 1,
+    CatalogOnlyBlocked = 2
+}
+public sealed record AnimationArtifactLookupKeyDto(string SignatureAlgorithm, string Signature);
+public sealed record PortableAnimationPayloadSubmissionDto(int SchemaVersion, string ExtractorVersion, string Json);
+public sealed record AnimationArtifactReportSubmissionDto(
+    string Signature,
+    string SignatureAlgorithm,
+    string DisplayName,
+    AnimationArtifactClassificationDto Classification,
+    int ManifestFileCount,
+    long ManifestBytes,
+    PortableAnimationPayloadSubmissionDto? Payload = null);
+public sealed record PortableAnimationPayloadDto(
+    int SchemaVersion,
+    string ExtractorVersion,
+    string Sha256,
+    string Json,
+    int VerificationReports);
+public sealed record AnimationArtifactCatalogEntryDto(
+    string ArtifactKey,
+    string Signature,
+    string SignatureAlgorithm,
+    IReadOnlyList<string> Names,
+    int ManifestFileCount,
+    long ManifestBytes,
+    DateTimeOffset FirstSeenUtc,
+    DateTimeOffset LastSeenUtc,
+    AnimationArtifactClassificationDto ConsensusClassification,
+    AnimationArtifactClassificationDto EffectiveClassification,
+    double Confidence,
+    int AnimationReports,
+    int NonAnimationReports,
+    AnimationSharingPolicyDto SharingPolicy,
+    string OverrideReasonCode,
+    string OverrideNote,
+    PortableAnimationPayloadDto? Payload,
+    bool IsModeratorVerified = false,
+    bool IsPayloadModeratorVerified = false);
 public sealed record AnimationSuggestionDeclinedDto(string DeclinedBy, string SuggestedBy, string ModKey);
 public sealed record PlaySignalDto(
     string ModKey,
