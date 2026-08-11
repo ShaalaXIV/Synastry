@@ -21,7 +21,6 @@ public sealed class Configuration : IPluginConfiguration
     // Catalog evidence deliberately uses a separate pseudonymous identifier. The relay
     // derives a per-signature hash from it, so reports cannot be joined into a mod inventory.
     public string CatalogReporterId { get; set; } = Guid.NewGuid().ToString("N");
-    public bool HasAcknowledgedTransferReviewPolicy { get; set; }
     // Localhost-only override for testing a relay build before public deployment.
     public string LocalRelayUrl { get; set; } = "";
     public bool AutomaticEmoteSync { get; set; } = true;

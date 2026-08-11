@@ -147,7 +147,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public bool AutomaticEmoteSyncEnabled => configuration.AutomaticEmoteSync;
     public bool SitDozeAnywhereEnabled => configuration.SitDozeAnywhere;
     public bool SitDozeAnywhereAvailable => anywherePoses is not null;
-    public bool HasAcknowledgedTransferReviewPolicy => configuration.HasAcknowledgedTransferReviewPolicy;
     public bool IsRefreshingMods => modRefreshCancellation is not null;
     public string Status { get; private set; } = "Ready.";
     public AnimationSyncService Sync => sync;
@@ -983,13 +982,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public bool TryTakeTransferOffer(out ModTransferOfferDto offer) => transferOffers.TryDequeue(out offer!);
 
     public bool TryTakeRoomInvite(out RoomInvite invite) => roomInvites.TryDequeue(out invite!);
-
-    public void AcknowledgeTransferReviewPolicy()
-    {
-        if (configuration.HasAcknowledgedTransferReviewPolicy) return;
-        configuration.HasAcknowledgedTransferReviewPolicy = true;
-        configuration.Save(PluginInterface);
-    }
 
     public void SendMod(string directory, string name)
     {

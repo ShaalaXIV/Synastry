@@ -22,7 +22,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.53.0",
+    "AssemblyVersion": "1.0.54.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -32,9 +32,9 @@
     "Tags": [ "penumbra", "animation", "emote", "sync" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.53/Synastry-1.0.53.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.53/Synastry-1.0.53.zip",
-    "Changelog": "Adds fast relay-assisted animation recognition, adaptive background indexing, ten-minute transfer review retention, creator opt-outs, and live private moderation search.",
-    "LastUpdate": "1786465733"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.54/Synastry-1.0.54.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.54/Synastry-1.0.54.zip",
+    "Changelog": "Removes the extra confirmation popup when sending an animation to the room.",
+    "LastUpdate": "1786467900"
   }
 ]
