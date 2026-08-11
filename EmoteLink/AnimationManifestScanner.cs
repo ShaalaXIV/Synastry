@@ -24,6 +24,11 @@ internal static class AnimationManifestScanner
     {
         PropertyNamingPolicy = JsonNamingPolicy.CamelCase
     };
+    private static readonly JsonDocumentOptions ManifestDocumentOptions = new()
+    {
+        AllowTrailingCommas = true,
+        CommentHandling = JsonCommentHandling.Skip
+    };
 
     public static ManifestFileSet Inspect(string modPath, string modName, CancellationToken cancellationToken)
     {
@@ -37,12 +42,17 @@ internal static class AnimationManifestScanner
         if (files.Length > MaximumTopLevelManifestFiles)
             throw new InvalidDataException(
                 $"The mod has more than {MaximumTopLevelManifestFiles:N0} top-level JSON manifests.");
+        // Restore the original, reliable inclusion rule: a mod is an animation mod when its
+        // installed folder contains at least one PAP file. Manifests remain useful for portable
+        // identity and option metadata, but a parsing quirk must never hide a real animation.
+        var containsPapFiles = Directory.EnumerateFiles(modPath, "*.pap", SearchOption.AllDirectories).Any();
         cancellationToken.ThrowIfCancellationRequested();
         return new ManifestFileSet(
             modPath,
             modName,
             AnimationIndexCache.BuildSourceStamp(modName, files),
-            files);
+            files,
+            containsPapFiles);
     }
 
     public static AnimationManifestSnapshot Capture(
@@ -96,7 +106,7 @@ internal static class AnimationManifestScanner
         {
             try
             {
-                using var document = JsonDocument.Parse(file.Bytes);
+                using var document = ParseManifest(file.Bytes);
                 var root = document.RootElement;
                 CollectPapGamePaths(root, papGamePaths);
                 if (file.NormalizedName.Equals("default_mod.json", StringComparison.OrdinalIgnoreCase)) continue;
@@ -147,8 +157,20 @@ internal static class AnimationManifestScanner
         out string json)
     {
         json = SerializePayload(payload);
-        if (Encoding.UTF8.GetByteCount(json) > MaximumPortablePayloadBytes) return null;
+        if (payload.PapGamePaths.Count == 0 ||
+            Encoding.UTF8.GetByteCount(json) > MaximumPortablePayloadBytes) return null;
         return new PortableAnimationPayloadSubmissionDto(PayloadSchemaVersion, ExtractorVersion, json);
+    }
+
+    private static JsonDocument ParseManifest(byte[] bytes)
+    {
+        // StreamReader preserves the behavior of the pre-cache scanner: BOM-encoded UTF-8,
+        // UTF-16, and UTF-32 Penumbra manifests are decoded before System.Text.Json sees them.
+        // Capture still hashes the exact raw bytes, so portable signatures do not change.
+        using var stream = new MemoryStream(bytes, writable: false);
+        using var reader = new StreamReader(
+            stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: false);
+        return JsonDocument.Parse(reader.ReadToEnd(), ManifestDocumentOptions);
     }
 
     public static bool TryReadRelayPayload(
@@ -315,7 +337,8 @@ internal sealed record ManifestFileSet(
     string ModPath,
     string ModName,
     string SourceStamp,
-    IReadOnlyList<FileInfo> Files);
+    IReadOnlyList<FileInfo> Files,
+    bool ContainsPapFiles);
 
 internal sealed record AnimationManifestFile(string NormalizedName, byte[] Bytes);
 
