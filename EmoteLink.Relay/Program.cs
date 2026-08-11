@@ -8,6 +8,7 @@ using System.Text.Json;
 
 var builder = WebApplication.CreateBuilder(args);
 var adminPort = ReadPort("EMOTELINK_ADMIN_PORT", 25081);
+var trustedProxyAddresses = ReadTrustedProxyAddresses();
 var publicUrls = (Environment.GetEnvironmentVariable("ASPNETCORE_URLS") ?? "http://0.0.0.0:25080")
     .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
 if (publicUrls.Any(url => ConfiguredPort(url) == adminPort))
@@ -33,6 +34,8 @@ builder.Services.Configure<ForwardedHeadersOptions>(options =>
     options.ForwardLimit = 1;
     options.KnownProxies.Add(IPAddress.Loopback);
     options.KnownProxies.Add(IPAddress.IPv6Loopback);
+    foreach (var address in trustedProxyAddresses)
+        options.KnownProxies.Add(address);
 });
 builder.Services.AddSignalR(options =>
 {
@@ -333,6 +336,22 @@ static int ConfiguredPort(string url)
         uri.Scheme is not ("http" or "https"))
         throw new InvalidOperationException($"Invalid ASPNETCORE_URLS endpoint: {url}");
     return uri.Port;
+}
+
+static IReadOnlyList<IPAddress> ReadTrustedProxyAddresses()
+{
+    var raw = Environment.GetEnvironmentVariable("EMOTELINK_TRUSTED_PROXY_IPS");
+    if (string.IsNullOrWhiteSpace(raw)) return [];
+    var addresses = new HashSet<IPAddress>();
+    foreach (var value in raw.Split([',', ';', ' '],
+                 StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries))
+    {
+        if (!IPAddress.TryParse(value, out var address))
+            throw new InvalidOperationException(
+                $"EMOTELINK_TRUSTED_PROXY_IPS contains an invalid IP address: {value}");
+        addresses.Add(address);
+    }
+    return addresses.ToList();
 }
 
 public sealed record AdminLabelUpdate(string Label);

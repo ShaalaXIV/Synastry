@@ -55,3 +55,10 @@ docker run --rm -p 25080:25080 emotelink-relay
 The standard container command intentionally publishes only the public listener. The loopback-only admin listener is not reachable through Docker port publishing; keep it unavailable until a separately reviewed private administration transport is configured.
 
 For internet use, place the relay behind HTTPS (for example Caddy or Cloudflare). Rooms are ephemeral and disappear when their last member leaves or the process restarts.
+
+When the HTTPS reverse proxy connects from a non-loopback address, set
+`EMOTELINK_TRUSTED_PROXY_IPS` to that proxy's exact peer IP (or a comma-separated
+list of exact proxy IPs). This allows ASP.NET Core to accept `X-Forwarded-For`
+only from those explicitly trusted peers, so catalog creation limits remain
+per-client instead of being shared by every user behind the proxy. Never set it
+to an address that ordinary clients can originate from.
