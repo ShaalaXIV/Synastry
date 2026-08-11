@@ -35,6 +35,8 @@ public sealed class MainWindow : Window
     private readonly HashSet<string> selectedMods = new(StringComparer.OrdinalIgnoreCase);
     private string? selectionAnchor;
     private string? selectionAnchorGroup;
+    private (string Directory, string Name)? pendingModerationSend;
+    private bool openTransferReviewNotice;
     private const string ModPayload = "EMOTELINK_MOD";
     private const string FolderPayload = "EMOTELINK_FOLDER";
 
@@ -66,6 +68,7 @@ public sealed class MainWindow : Window
             ImGui.Spacing();
             DrawFooterActions();
             DrawRoomInvitePopup();
+            DrawTransferReviewNotice();
             DrawTransferInboxWindow();
         }
         finally
@@ -487,6 +490,65 @@ public sealed class MainWindow : Window
         ImGui.End();
     }
 
+    private void RequestSendMod(string directory, string name)
+    {
+        if (plugin.HasAcknowledgedTransferReviewPolicy)
+        {
+            plugin.SendMod(directory, name);
+            return;
+        }
+
+        pendingModerationSend = (directory, name);
+        openTransferReviewNotice = true;
+    }
+
+    private void DrawTransferReviewNotice()
+    {
+        const string popup = "Before you share an animation###SynastryTransferReviewNotice";
+        if (openTransferReviewNotice)
+        {
+            ImGui.OpenPopup(popup);
+            openTransferReviewNotice = false;
+        }
+        if (!ImGui.BeginPopupModal(popup, ImGuiWindowFlags.AlwaysAutoResize)) return;
+
+        ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + 500f);
+        ImGui.TextWrapped(
+            "Shared animation packages stay on the relay until their original 10-minute transfer expires, " +
+            "even after everyone downloads or declines them.");
+        ImGui.Spacing();
+        ImGui.TextWrapped(
+            "During that window, authorized moderators can inspect a retained copy for safety, policy, " +
+            "or creator opt-out requests. A package may disappear sooner after a relay restart, storage " +
+            "pressure, or moderator removal.");
+        ImGui.TextWrapped(
+            "A bounded moderation log keeps content hashes and transfer events after the package is gone; " +
+            "it does not keep the package, sender name, or room.");
+        ImGui.Spacing();
+        ImGui.TextColored(AccentColor, "Only share files you are allowed to redistribute.");
+        ImGui.TextWrapped(
+            "Synastry is not intended for exchanging paid or otherwise restricted animations. Please " +
+            "support the creators who make this community fun.");
+        ImGui.PopTextWrapPos();
+        ImGui.Spacing();
+
+        if (DrawPrimaryButton("I understand - Send", 160f))
+        {
+            plugin.AcknowledgeTransferReviewPolicy();
+            var pending = pendingModerationSend;
+            pendingModerationSend = null;
+            ImGui.CloseCurrentPopup();
+            if (pending is not null) plugin.SendMod(pending.Value.Directory, pending.Value.Name);
+        }
+        ImGui.SameLine();
+        if (ImGui.Button("Cancel", new Vector2(90f, 0)))
+        {
+            pendingModerationSend = null;
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.EndPopup();
+    }
+
     private static Vector4 RainbowTextColor()
     {
         var hue = (float)(ImGui.GetTime() * 0.2 % 1.0);
@@ -638,7 +700,10 @@ public sealed class MainWindow : Window
         else if (hasMatchColor)
             ImGui.PushStyleColor(ImGuiCol.Text,
                 match.Matches >= match.Members ? EveryoneColor : SomeColor);
-        var hasDetails = groups.Count > 0 || detectedPoses.Count > 0 || detectedEmotes.Count > 0;
+        // Every indexed animation can be expanded. Emote enrichment is intentionally lazy:
+        // Penumbra's changed-item IPC runs only when the user opens this row, never hundreds
+        // of times during a bulk library refresh.
+        const bool hasDetails = true;
         var sendWidth = plugin.Sync.IsInRoom && !isPrivate
             ? ButtonWidth("Send")
             : 0;
@@ -721,13 +786,17 @@ public sealed class MainWindow : Window
             if (sendWidth > 0)
             {
                 if (statusWidth > 0) ImGui.SameLine();
-                if (ImGui.SmallButton("Send")) plugin.SendMod(mod.Directory, mod.Name);
+                if (ImGui.SmallButton("Send")) RequestSendMod(mod.Directory, mod.Name);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip("Offer this mod to everyone else in the room (75 MB maximum).");
+                    ImGui.SetTooltip(
+                        "Offer this public mod to the room (75 MB maximum). The relay keeps a completed " +
+                        "package until its original 10-minute expiry so authorized moderators can review it.");
             }
         }
         if (hasDetails && open)
         {
+            plugin.EnsureDetectedEmotes(mod.Directory, mod.Name);
+            detectedEmotes = plugin.GetDetectedEmotes(mod.Directory);
             DrawOptions(mod, groups, detectedPoses, detectedEmotes);
             ImGui.TreePop();
         }

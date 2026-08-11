@@ -7,3 +7,4 @@ dist/
 Encore-reference/
 Snowcloak-reference/
 relay-test.*.log
+.local-admin/
