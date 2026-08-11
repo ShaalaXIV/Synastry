@@ -18,6 +18,7 @@ using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text;
 using System.IO.Compression;
+using System.Diagnostics;
 
 namespace EmoteLink;
 
@@ -26,6 +27,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private const string Command = "/synastry";
     private const float MaxAlignDistance = 2f;
     private const int LobbyEmoteRefreshDelayMs = 6000;
+    private const double RefreshFrameBudgetMilliseconds = 4;
+    private const double SlowModScanLogThresholdMilliseconds = 50;
     private const string RelayUrl = "https://emotelink.aethercast.org";
 
     [PluginService] private static IDalamudPluginInterface PluginInterface { get; set; } = null!;
@@ -41,6 +44,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] private static ITextureProvider TextureProvider { get; set; } = null!;
 
     private readonly Configuration configuration;
+    private readonly AnimationIndexCache animationIndexCache;
     private readonly PenumbraService penumbra;
     private readonly MovementService movement;
     private readonly PoseService poses;
@@ -97,6 +101,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly ConcurrentQueue<RoleLabelDto> receivedRoleLabels = new();
     private readonly ConcurrentQueue<CommunityRoleLabelDto> receivedCommunityRoleLabels = new();
     private readonly ConcurrentDictionary<string, AnimationSuggestion> activeAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, string> remoteReadyModKeys = new(StringComparer.OrdinalIgnoreCase);
     private string? remoteSelectionRoom;
     private bool roleSyncPending;
     private bool communityRoleSyncPending;
@@ -106,6 +111,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private string? refreshModRoot;
     private int refreshTotalMods;
     private int refreshProcessedMods;
+    private int refreshCachedMods;
+    private int refreshScannedMods;
+    private HashSet<string>? refreshCurrentDirectories;
 
     public IReadOnlyList<(string Directory, string Name)> Mods { get; private set; } = [];
     public IReadOnlyList<ModCategory> Categories => configuration.Categories;
@@ -137,6 +145,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public Plugin()
     {
         configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        animationIndexCache = AnimationIndexCache.Load(
+            Path.Combine(PluginInterface.ConfigDirectory.FullName, "animation-index.json"), Log);
         if (configuration.CommunityReporterId.Length != 32 ||
             configuration.CommunityReporterId.Any(character => !Uri.IsHexDigit(character)))
             configuration.CommunityReporterId = Guid.NewGuid().ToString("N");
@@ -238,6 +248,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
         pendingModRefresh = new Queue<(string Directory, string Name)>(allMods);
         refreshTotalMods = allMods.Count;
         refreshProcessedMods = 0;
+        refreshCachedMods = 0;
+        refreshScannedMods = 0;
+        refreshCurrentDirectories = allMods.Select(mod => mod.Directory)
+            .ToHashSet(StringComparer.OrdinalIgnoreCase);
         Status = $"Refreshing animation library: 0 of {allMods.Count} mods checked...";
         if (pendingModRefresh.Count == 0) FinishModRefresh();
     }
@@ -245,29 +259,32 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void ProcessModRefresh()
     {
         if (pendingModRefresh is null || refreshedMods is null || refreshModRoot is null) return;
-        if (!pendingModRefresh.TryDequeue(out var mod))
+        var frameStart = Stopwatch.GetTimestamp();
+        while (pendingModRefresh.TryDequeue(out var mod))
         {
-            FinishModRefresh();
-            return;
-        }
-
-        try
-        {
-            if (IndexAnimationMod(refreshModRoot, mod)) refreshedMods.Add(mod);
-        }
-        catch (Exception ex)
-        {
-            Log.Warning(ex, "Could not refresh animation mod {ModDirectory}; it was skipped.", mod.Directory);
-        }
-        finally
-        {
-            if (pendingModRefresh is not null)
+            var cacheHit = false;
+            try
+            {
+                if (IndexAnimationModWithCache(refreshModRoot, mod, out cacheHit)) refreshedMods.Add(mod);
+            }
+            catch (Exception ex)
+            {
+                Log.Warning(ex, "Could not refresh animation mod {ModDirectory}; it was skipped.", mod.Directory);
+            }
+            finally
             {
                 refreshProcessedMods++;
+                if (cacheHit) refreshCachedMods++; else refreshScannedMods++;
                 Status = $"Refreshing animation library: {refreshProcessedMods} of {refreshTotalMods} mods checked...";
-                if (pendingModRefresh.Count == 0) FinishModRefresh();
             }
+
+            // Cache hits are cheap and can be restored in batches. A manifest scan remains
+            // limited to one mod per frame, with cached work capped to a tiny budget.
+            if (!cacheHit || Stopwatch.GetElapsedTime(frameStart).TotalMilliseconds >= RefreshFrameBudgetMilliseconds)
+                break;
         }
+
+        if (pendingModRefresh.Count == 0) FinishModRefresh();
     }
 
     private void FinishModRefresh()
@@ -279,21 +296,135 @@ public sealed unsafe class Plugin : IDalamudPlugin
         pendingModRefresh = null;
         refreshedMods = null;
         refreshModRoot = null;
+        animationIndexCache.RemoveExcept(refreshCurrentDirectories ?? []);
+        animationIndexCache.Save();
+        refreshCurrentDirectories = null;
         refreshTotalMods = 0;
         refreshProcessedMods = 0;
-        Status = $"Loaded {Mods.Count} mod(s) containing PAP animations.";
+        Status = $"Loaded {Mods.Count} animation mod(s): {refreshCachedMods} cached, {refreshScannedMods} scanned.";
+        refreshCachedMods = 0;
+        refreshScannedMods = 0;
         NormalizeOrganization();
         if (sync.IsInRoom) _ = sync.SetCatalogAsync(GetCatalogFingerprints());
+    }
+
+    private bool IndexAnimationModWithCache(
+        string root,
+        (string Directory, string Name) mod,
+        out bool cacheHit)
+    {
+        cacheHit = false;
+        var path = Path.Combine(root, mod.Directory);
+        if (!Directory.Exists(path)) return false;
+
+        string sourceStamp;
+        try
+        {
+            sourceStamp = AnimationIndexCache.BuildSourceStamp(path, mod.Name);
+        }
+        catch (Exception ex)
+        {
+            Log.Debug(ex, "Could not fingerprint {ModDirectory}; scanning it without the local cache.", mod.Directory);
+            return IndexAnimationModTimed(root, mod);
+        }
+        if (animationIndexCache.TryGet(mod.Directory, sourceStamp, out var cached))
+        {
+            cacheHit = true;
+            return RestoreCachedAnimationMod(mod, cached);
+        }
+
+        var isAnimationMod = IndexAnimationModTimed(root, mod);
+        animationIndexCache.Set(CaptureAnimationMod(mod, sourceStamp, isAnimationMod));
+        return isAnimationMod;
+    }
+
+    private bool IndexAnimationModTimed(string root, (string Directory, string Name) mod)
+    {
+        var started = Stopwatch.GetTimestamp();
+        var isAnimationMod = IndexAnimationMod(root, mod);
+        var elapsed = Stopwatch.GetElapsedTime(started).TotalMilliseconds;
+        if (elapsed >= SlowModScanLogThresholdMilliseconds)
+            Log.Warning("Slow animation manifest scan: {ModName} took {ElapsedMilliseconds:F1} ms.",
+                mod.Name, elapsed);
+        return isAnimationMod;
+    }
+
+    private CachedAnimationMod CaptureAnimationMod(
+        (string Directory, string Name) mod,
+        string sourceStamp,
+        bool isAnimationMod)
+    {
+        var cached = new CachedAnimationMod
+        {
+            Directory = mod.Directory,
+            SourceStamp = sourceStamp,
+            IsAnimationMod = isAnimationMod
+        };
+        if (!isAnimationMod) return cached;
+
+        cached.SyncKey = modSyncKeys[mod.Directory];
+        cached.OptionGroups = optionGroups.GetValueOrDefault(mod.Directory, [])
+            .Select(group => new CachedOptionGroup
+            {
+                Name = group.Name,
+                Options = group.Options.ToList(),
+                IsMultiSelect = group.IsMultiSelect
+            })
+            .ToList();
+        var prefix = mod.Directory + "\u001f";
+        cached.OptionPoses = optionPoses
+            .Where(pair => pair.Key.StartsWith(prefix, StringComparison.OrdinalIgnoreCase))
+            .Select(pair =>
+            {
+                var parts = pair.Key[prefix.Length..].Split('\u001f', 2);
+                return new CachedOptionPose
+                {
+                    Group = parts[0],
+                    Option = parts[1],
+                    Kind = pair.Value.Kind,
+                    Index = pair.Value.Index
+                };
+            })
+            .ToList();
+        cached.Poses = modPoses.GetValueOrDefault(mod.Directory, []).ToList();
+        cached.Emotes = modEmotes.GetValueOrDefault(mod.Directory, []).ToList();
+        return cached;
+    }
+
+    private bool RestoreCachedAnimationMod(
+        (string Directory, string Name) mod,
+        CachedAnimationMod cached)
+    {
+        if (!cached.IsAnimationMod) return false;
+
+        modSyncKeys[mod.Directory] = cached.SyncKey;
+        modCatalogKeys[mod.Directory] = CatalogFingerprint(cached.SyncKey);
+        foreach (var optionPose in cached.OptionPoses)
+            optionPoses[OptionPoseKey(mod.Directory, optionPose.Group, optionPose.Option)] =
+                new PoseTarget(optionPose.Kind, optionPose.Index);
+        modPoses[mod.Directory] = cached.Poses;
+        modEmotes[mod.Directory] = cached.Emotes;
+        var groups = cached.OptionGroups
+            .Select(group => new ModOptionGroup(group.Name, group.Options, group.IsMultiSelect))
+            .ToList();
+        optionGroups[mod.Directory] = groups;
+        NormalizeSelections(mod.Directory, groups);
+        InitializeOptionSelections(mod, groups);
+        return true;
     }
 
     private bool IndexAnimationMod(string root, (string Directory, string Name) mod)
     {
         var path = Path.Combine(root, mod.Directory);
-        if (!Directory.Exists(path) ||
-            !Directory.EnumerateFiles(path, "*.pap", SearchOption.AllDirectories).Any())
-            return false;
+        if (!Directory.Exists(path)) return false;
 
-        modSyncKeys[mod.Directory] = BuildModSyncKey(path, mod.Name);
+        // Penumbra's top-level manifests contain every mapped game path. Reading those
+        // small JSON files avoids recursively enumerating every texture, model, and other
+        // asset in the mod just to discover whether it maps a PAP animation.
+        var papGamePaths = ReadPapGamePaths(path);
+        if (papGamePaths.Count == 0) return false;
+
+        modSyncKeys[mod.Directory] = BuildModSyncKey(mod.Name, papGamePaths);
         modCatalogKeys[mod.Directory] = CatalogFingerprint(modSyncKeys[mod.Directory]);
         IndexPoseOptions(path, mod.Directory);
         IndexDetectedEmotes(mod.Directory, mod.Name);
@@ -337,11 +468,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
             var animationMods = Mods
                 .Where(existing => !existing.Directory.Equals(mod.Directory, StringComparison.OrdinalIgnoreCase))
                 .ToList();
-            if (!IndexAnimationMod(root, mod))
+            if (!IndexAnimationModWithCache(root, mod, out _))
             {
                 Mods = animationMods;
                 RebuildModDirectoryLookup();
                 NormalizeOrganization();
+                animationIndexCache.Save();
                 Status = $"Installed {mod.Name}; it does not contain PAP animations.";
                 return;
             }
@@ -351,6 +483,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             RebuildModDirectoryLookup();
             NormalizeOrganization();
             InvalidateLibraryOrder();
+            animationIndexCache.Save();
             var fingerprint = modCatalogKeys[mod.Directory];
             if (sync.IsInRoom)
                 RunSync(sync.AddCatalogFingerprintAsync(fingerprint),
@@ -1197,7 +1330,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private static string CatalogFingerprint(string modSyncKey) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(modSyncKey)));
 
-    private static string BuildModSyncKey(string modPath, string modName)
+    private static SortedSet<string> ReadPapGamePaths(string modPath)
     {
         var gamePaths = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var file in Directory.EnumerateFiles(modPath, "*.json", SearchOption.TopDirectoryOnly))
@@ -1209,6 +1342,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
             }
             catch { }
         }
+        return gamePaths;
+    }
+
+    private static string BuildModSyncKey(string modName, IEnumerable<string> gamePaths)
+    {
         var identity = NormalizeModKey(modName) + "\n" + string.Join('\n', gamePaths.Select(path => path.ToLowerInvariant()));
         var hash = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(identity)))[..20];
         return $"{NormalizeModKey(modName)}:{hash}";
@@ -1730,6 +1868,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             remoteSelectionRoom = null;
             remoteOptionSelections.Clear();
             activeAnimationSuggestions.Clear();
+            remoteReadyModKeys.Clear();
             roleSyncPending = false;
             while (receivedRoleLabels.TryDequeue(out _)) { }
             return;
@@ -1740,21 +1879,49 @@ public sealed unsafe class Plugin : IDalamudPlugin
             remoteSelectionRoom = roomCode;
             remoteOptionSelections.Clear();
             activeAnimationSuggestions.Clear();
+            remoteReadyModKeys.Clear();
             roleSyncPending = true;
         }
-        var currentMembers = sync.Room!.Members.Select(member => member.DisplayName).ToHashSet(StringComparer.OrdinalIgnoreCase);
+        var room = sync.Room!;
+        var currentMembers = room.Members.Select(member => member.DisplayName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in remoteOptionSelections.Where(pair => !currentMembers.Contains(pair.Value.MemberName)))
             remoteOptionSelections.TryRemove(pair.Key, out _);
         foreach (var pair in activeAnimationSuggestions.Where(pair => !currentMembers.Contains(pair.Value.SuggestedBy)))
             activeAnimationSuggestions.TryRemove(pair.Key, out _);
-        foreach (var member in sync.Room.Members.Where(member =>
+
+        var currentReadyModKeys = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var member in room.Members.Where(member =>
+                     !sync.IsCurrentMember(member.ConnectionId) && member.Ready &&
+                     !string.IsNullOrWhiteSpace(member.ModKey)))
+            currentReadyModKeys[member.DisplayName] = member.ModKey;
+        foreach (var previous in remoteReadyModKeys)
+        {
+            if (currentReadyModKeys.TryGetValue(previous.Key, out var currentModKey) &&
+                currentModKey.Equals(previous.Value, StringComparison.OrdinalIgnoreCase)) continue;
+            ClearRemoteSelections(previous.Key, previous.Value);
+            remoteReadyModKeys.TryRemove(previous.Key, out _);
+        }
+        foreach (var member in room.Members.Where(member =>
                      !sync.IsCurrentMember(member.ConnectionId) && member.Ready && !string.IsNullOrWhiteSpace(member.ModKey)))
+        {
+            remoteReadyModKeys[member.DisplayName] = member.ModKey;
             QueueAnimationSuggestion(member.DisplayName, member.ModKey);
+        }
         if (!roomChanged) return;
         _ = sync.GetOptionSelectionsAsync().ContinueWith(task =>
         {
             if (!task.IsCompletedSuccessfully) return;
-            foreach (var selection in task.Result) RememberOptionSelection(selection);
+            var activeRoom = sync.Room;
+            if (activeRoom is null || !activeRoom.RoomCode.Equals(roomCode, StringComparison.OrdinalIgnoreCase)) return;
+            var activeSuggestions = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+            foreach (var member in activeRoom.Members.Where(member =>
+                         !sync.IsCurrentMember(member.ConnectionId) && member.Ready &&
+                         !string.IsNullOrWhiteSpace(member.ModKey)))
+                activeSuggestions[member.DisplayName] = member.ModKey;
+            foreach (var selection in task.Result)
+                if (activeSuggestions.TryGetValue(selection.MemberName, out var activeModKey) &&
+                    activeModKey.Equals(selection.ModKey, StringComparison.OrdinalIgnoreCase))
+                    RememberOptionSelection(selection);
         }, TaskScheduler.Default);
     }
 
@@ -1958,6 +2125,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
         foreach (var pair in activeAnimationSuggestions.Where(pair =>
                      pair.Value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase)))
             activeAnimationSuggestions.TryRemove(pair.Key, out _);
+        InvalidateLibraryOrder();
+    }
+
+    private void ClearRemoteSelections(string memberName, string modKey)
+    {
+        foreach (var pair in remoteOptionSelections.Where(pair =>
+                     pair.Value.MemberName.Equals(memberName, StringComparison.OrdinalIgnoreCase) &&
+                     pair.Value.ModKey.Equals(modKey, StringComparison.OrdinalIgnoreCase)))
+            remoteOptionSelections.TryRemove(pair.Key, out _);
+        activeAnimationSuggestions.TryRemove(SuggestionKey(memberName, modKey), out _);
         InvalidateLibraryOrder();
     }
 
