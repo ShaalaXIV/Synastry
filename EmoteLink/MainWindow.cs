@@ -726,9 +726,7 @@ public sealed class MainWindow : Window
                 if (statusWidth > 0) ImGui.SameLine();
                 if (ImGui.SmallButton("Send")) plugin.SendMod(mod.Directory, mod.Name);
                 if (ImGui.IsItemHovered())
-                    ImGui.SetTooltip(
-                        "Offer this public mod to the room (75 MB maximum). The relay keeps a completed " +
-                        "package until its original 10-minute expiry so authorized moderators can review it.");
+                    ImGui.SetTooltip("Offer this public mod to the room (75 MB maximum).");
             }
         }
         if (hasDetails && open)
