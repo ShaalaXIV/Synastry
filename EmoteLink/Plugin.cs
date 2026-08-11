@@ -110,6 +110,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private bool communityRoleSyncPending;
     private bool communityRelayConnected;
     private readonly ConcurrentQueue<ModRefreshResult> modRefreshResults = new();
+    private readonly SemaphoreSlim modScanFramePermit = new(0, 1);
     private Queue<((string Directory, string Name) Mod, CachedAnimationMod Cached)>? provisionalCachedMods;
     private CancellationTokenSource? modRefreshCancellation;
     private Task? modRefreshWorker;
@@ -289,13 +290,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         var generation = ++refreshGeneration;
         modRefreshCancellation = new CancellationTokenSource();
+        while (modScanFramePermit.Wait(0)) { }
         refreshPriorityMode = false;
         refreshFastMode = mainWindow.IsOpen;
         Status = $"Refreshing animation library: 0 of {allMods.Count} mods checked...";
         var worker = new AnimationCatalogRefreshWorker(
             sync,
             configuration.CatalogReporterId,
-            () => refreshFastMode,
+            WaitForModScanSlotAsync,
             modRefreshResults.Enqueue);
         modRefreshWorker = Task.Run(
             () => worker.RunAsync(generation, work, modRefreshCancellation.Token),
@@ -308,6 +310,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         if (modRefreshCancellation is null) return;
         refreshFastMode = refreshPriorityMode || mainWindow.IsOpen;
+        // The worker consumes at most one permit for each recursive mod scan. Keeping the
+        // semaphore bounded at one prevents permits from accumulating while disk I/O is busy.
+        if (modScanFramePermit.CurrentCount == 0)
+        {
+            try { modScanFramePermit.Release(); }
+            catch (SemaphoreFullException) { }
+        }
         var frameStart = Stopwatch.GetTimestamp();
         while (provisionalCachedMods?.TryDequeue(out var provisional) == true)
         {
@@ -362,6 +371,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         if (refreshWorkerCompleted && modRefreshResults.IsEmpty && provisionalCachedMods?.Count == 0)
             FinishModRefresh();
+    }
+
+    private Task WaitForModScanSlotAsync(CancellationToken cancellationToken)
+    {
+        if (!refreshFastMode)
+            return Task.Delay(TimeSpan.FromSeconds(1), cancellationToken);
+
+        return modScanFramePermit.WaitAsync(cancellationToken);
     }
 
     private void FinishModRefresh()
@@ -603,6 +620,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
             var generation = ++refreshGeneration;
             modRefreshCancellation = new CancellationTokenSource();
+            while (modScanFramePermit.Wait(0)) { }
             refreshPriorityMode = true;
             refreshFastMode = true;
             Status = targets.Count == 1
@@ -611,7 +629,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             var worker = new AnimationCatalogRefreshWorker(
                 sync,
                 configuration.CatalogReporterId,
-                () => refreshFastMode,
+                WaitForModScanSlotAsync,
                 modRefreshResults.Enqueue);
             modRefreshWorker = Task.Run(
                 () => worker.RunAsync(generation, work, modRefreshCancellation.Token),
@@ -2499,6 +2517,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         catch (AggregateException exception) when (exception.InnerExceptions.All(inner => inner is TaskCanceledException)) { }
         refreshCancellation?.Dispose();
         modRefreshWorker = null;
+        modScanFramePermit.Dispose();
         ClearTemporaryAssignments();
         Framework.Update -= OnUpdate;
         ContextMenu.OnMenuOpened -= OnContextMenuOpened;

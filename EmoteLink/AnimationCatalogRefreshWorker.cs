@@ -51,14 +51,11 @@ internal sealed record ModRefreshResult(
 internal sealed class AnimationCatalogRefreshWorker(
     AnimationSyncService sync,
     string reporterId,
-    Func<bool> useFastRate,
+    Func<CancellationToken, Task> waitForScanSlot,
     Action<ModRefreshResult> publish)
 {
-    private const int LookupBatchSize = 64;
-    private const long SnapshotBatchBytes = 16L * 1024 * 1024;
     private const int MaximumEstimatedReportFrameBytes = 220 * 1024;
     private static readonly TimeSpan CatalogReportTtl = TimeSpan.FromDays(30);
-    private static readonly TimeSpan BackgroundUncachedScanDelay = TimeSpan.FromSeconds(1);
 
     public async Task RunAsync(
         int generation,
@@ -67,68 +64,73 @@ internal sealed class AnimationCatalogRefreshWorker(
     {
         try
         {
-            for (var offset = 0; offset < work.Count;)
+            var reports = new List<PendingCatalogReport>(128);
+            var estimatedReportBytes = 0;
+            foreach (var item in work)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var prepared = new List<PreparedModRefresh>(LookupBatchSize);
-                long capturedBytes = 0;
-                while (offset < work.Count && prepared.Count < LookupBatchSize &&
-                       (capturedBytes < SnapshotBatchBytes || prepared.Count == 0))
+                await waitForScanSlot(cancellationToken);
+                try
                 {
-                    var item = work[offset++];
-                    try
+                    var fileSet = AnimationManifestScanner.Inspect(item.Path, item.Mod.Name, cancellationToken);
+                    var cacheValid = item.Cached is not null &&
+                        item.Cached.SourceStamp.Equals(fileSet.SourceStamp, StringComparison.Ordinal) &&
+                        item.Cached.IsAnimationMod == fileSet.ContainsPapFiles &&
+                        HasPortableSignature(item.Cached);
+                    var snapshot = cacheValid
+                        ? null
+                        : AnimationManifestScanner.Capture(fileSet, cancellationToken);
+                    var prepared = new PreparedModRefresh(item, fileSet, snapshot, cacheValid);
+                    var analyzed = AnalyzePreparedMod(generation, prepared);
+                    var result = analyzed.Result;
+                    // Relay data may fill missing portable metadata, but only after the local
+                    // recursive PAP scan has positively identified the installed mod. Relay
+                    // classifications never remove or veto a local animation.
+                    if (fileSet.ContainsPapFiles && result.Payload is { PapGamePaths.Count: 0 } &&
+                        result.Signature.Length == 64)
                     {
-                        var fileSet = AnimationManifestScanner.Inspect(item.Path, item.Mod.Name, cancellationToken);
-                        var cacheValid = item.Cached is not null &&
-                            item.Cached.SourceStamp.Equals(fileSet.SourceStamp, StringComparison.Ordinal);
-                        AnimationManifestSnapshot? snapshot = null;
-                        if (!cacheValid || !HasPortableSignature(item.Cached!))
-                        {
-                            if (!useFastRate())
-                                await Task.Delay(BackgroundUncachedScanDelay, cancellationToken);
-                            snapshot = AnimationManifestScanner.Capture(fileSet, cancellationToken);
-                            capturedBytes += snapshot.ManifestBytes;
-                        }
-                        prepared.Add(new PreparedModRefresh(item, fileSet, snapshot, cacheValid));
+                        var catalog = await sync.LookupAnimationArtifactsAsync(
+                            [new AnimationArtifactLookupKeyDto(
+                                AnimationManifestScanner.SignatureAlgorithm, result.Signature)],
+                            cancellationToken);
+                        var relayEntry = catalog?.FirstOrDefault();
+                        if (IsStrongRelayAnimation(relayEntry) &&
+                            AnimationManifestScanner.TryReadRelayPayload(relayEntry!.Payload!, out var relayPayload))
+                            result = result with
+                            {
+                                Payload = relayPayload,
+                                PortablePayloadJson = relayEntry.Payload!.Json,
+                                RelayHit = true
+                            };
                     }
-                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                    {
-                        throw;
-                    }
-                    catch (Exception ex)
-                    {
-                        publish(new ModRefreshResult(
-                            generation, ModRefreshResultKind.Failed, item.Mod,
-                            Error: ex.GetBaseException().Message));
-                    }
-                }
+                    publish(result);
+                    if (analyzed.Report is null) continue;
 
-                // A source-stamp-valid v2 cache is already exact local evidence and needs no
-                // relay round trip. Lookup is reserved for new/changed manifests and the one-
-                // time v1 cache migration, keeping steady-state refresh traffic near zero.
-                var keys = prepared
-                    .Where(item => !item.CacheValid || item.Snapshot is not null)
-                    .Select(item => new AnimationArtifactLookupKeyDto(
-                        AnimationManifestScanner.SignatureAlgorithm, RefreshSignature(item)))
-                    .Where(key => key.Signature.Length == 64)
-                    .Distinct()
-                    .ToList();
-                var catalog = await sync.LookupAnimationArtifactsAsync(keys, cancellationToken);
-                var catalogBySignature = catalog?.ToDictionary(
-                    entry => entry.Signature, StringComparer.OrdinalIgnoreCase);
-                var reports = new List<PendingCatalogReport>();
-                foreach (var item in prepared)
-                {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var signature = RefreshSignature(item);
-                    AnimationArtifactCatalogEntryDto? catalogEntry = null;
-                    catalogBySignature?.TryGetValue(signature, out catalogEntry);
-                    var analyzed = AnalyzePreparedMod(generation, item, catalogEntry);
-                    publish(analyzed.Result);
-                    if (analyzed.Report is not null) reports.Add(analyzed.Report);
+                    var reportBytes = EstimateSerializedBytes(analyzed.Report.Submission);
+                    if (reports.Count > 0 && (reports.Count == 128 ||
+                            estimatedReportBytes + reportBytes > MaximumEstimatedReportFrameBytes))
+                    {
+                        await SubmitReportBatchAsync(generation, reports, cancellationToken);
+                        reports.Clear();
+                        estimatedReportBytes = 0;
+                    }
+                    reports.Add(analyzed.Report);
+                    estimatedReportBytes += reportBytes;
                 }
-                await SubmitCatalogReportsAsync(generation, reports, cancellationToken);
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
+                }
+                catch (Exception ex)
+                {
+                    publish(new ModRefreshResult(
+                        generation, ModRefreshResultKind.Failed, item.Mod,
+                        Error: ex.GetBaseException().Message));
+                }
             }
+
+            if (reports.Count > 0)
+                await SubmitReportBatchAsync(generation, reports, cancellationToken);
 
             publish(new ModRefreshResult(generation, ModRefreshResultKind.Completed, default));
         }
@@ -147,8 +149,7 @@ internal sealed class AnimationCatalogRefreshWorker(
 
     private static (ModRefreshResult Result, PendingCatalogReport? Report) AnalyzePreparedMod(
         int generation,
-        PreparedModRefresh prepared,
-        AnimationArtifactCatalogEntryDto? catalog)
+        PreparedModRefresh prepared)
     {
         var signature = RefreshSignature(prepared);
         var count = prepared.FileSet.Files.Count;
@@ -158,38 +159,17 @@ internal sealed class AnimationCatalogRefreshWorker(
                         : prepared.FileSet.Files.Sum(file => file.Length));
         var cached = prepared.Work.Cached;
 
-        if (prepared.CacheValid && prepared.Snapshot is null && cached is { IsAnimationMod: true })
+        if (prepared.CacheValid && prepared.Snapshot is null && cached is not null)
         {
             var cachedReport = BuildCachedReport(prepared.Work.Mod, cached, signature, count, bytes);
             return (new ModRefreshResult(generation, ModRefreshResultKind.Cached, prepared.Work.Mod,
                 prepared.FileSet.SourceStamp, signature, count, bytes, Cached: cached, CacheHit: true), cachedReport);
-        }
-
-        if (IsStrongRelayAnimation(catalog) &&
-            AnimationManifestScanner.TryReadRelayPayload(catalog!.Payload!, out var relayPayload))
-        {
-            return (new ModRefreshResult(generation, ModRefreshResultKind.PortableAnimation, prepared.Work.Mod,
-                prepared.FileSet.SourceStamp, signature, count, bytes, Payload: relayPayload,
-                PortablePayloadJson: catalog.Payload!.Json, RelayHit: true), null);
-        }
-
-        if (prepared.CacheValid && prepared.Snapshot is null && cached is { IsAnimationMod: false })
-        {
-            var cachedReport = BuildCachedReport(prepared.Work.Mod, cached, signature, count, bytes);
-            return (new ModRefreshResult(generation, ModRefreshResultKind.Cached, prepared.Work.Mod,
-                prepared.FileSet.SourceStamp, signature, count, bytes, Cached: cached, CacheHit: true), cachedReport);
-        }
-
-        if (IsStrongRelayNonAnimation(catalog))
-        {
-            return (new ModRefreshResult(generation, ModRefreshResultKind.NonAnimation, prepared.Work.Mod,
-                prepared.FileSet.SourceStamp, signature, count, bytes, RelayHit: true), null);
         }
 
         var snapshot = prepared.Snapshot ??
             AnimationManifestScanner.Capture(prepared.FileSet, CancellationToken.None);
         var payload = AnimationManifestScanner.Extract(snapshot);
-        var classification = payload.PapGamePaths.Count > 0
+        var classification = prepared.FileSet.ContainsPapFiles
             ? AnimationArtifactClassificationDto.Animation
             : AnimationArtifactClassificationDto.NonAnimation;
         string portableJson = "";
@@ -210,34 +190,9 @@ internal sealed class AnimationCatalogRefreshWorker(
         return classification == AnimationArtifactClassificationDto.Animation
             ? (new ModRefreshResult(generation, ModRefreshResultKind.PortableAnimation, prepared.Work.Mod,
                 prepared.FileSet.SourceStamp, signature, count, bytes, Payload: payload,
-                PortablePayloadJson: portableJson), localReport)
+                PortablePayloadJson: submission is null ? "" : portableJson), localReport)
             : (new ModRefreshResult(generation, ModRefreshResultKind.NonAnimation, prepared.Work.Mod,
                 prepared.FileSet.SourceStamp, signature, count, bytes), localReport);
-    }
-
-    private async Task SubmitCatalogReportsAsync(
-        int generation,
-        IReadOnlyList<PendingCatalogReport> reports,
-        CancellationToken cancellationToken)
-    {
-        if (reports.Count == 0) return;
-        var batch = new List<PendingCatalogReport>(128);
-        var estimatedBytes = 0;
-        foreach (var report in reports)
-        {
-            var reportBytes = EstimateSerializedBytes(report.Submission);
-            if (batch.Count > 0 && (batch.Count == 128 ||
-                    estimatedBytes + reportBytes > MaximumEstimatedReportFrameBytes))
-            {
-                await SubmitReportBatchAsync(generation, batch, cancellationToken);
-                batch.Clear();
-                estimatedBytes = 0;
-            }
-            batch.Add(report);
-            estimatedBytes += reportBytes;
-        }
-        if (batch.Count > 0)
-            await SubmitReportBatchAsync(generation, batch, cancellationToken);
     }
 
     private async Task SubmitReportBatchAsync(
@@ -312,10 +267,4 @@ internal sealed class AnimationCatalogRefreshWorker(
             IsPayloadModeratorVerified: true
         };
 
-    private static bool IsStrongRelayNonAnimation(AnimationArtifactCatalogEntryDto? entry) =>
-        entry is
-        {
-            EffectiveClassification: AnimationArtifactClassificationDto.NonAnimation,
-            IsModeratorVerified: true
-        };
 }

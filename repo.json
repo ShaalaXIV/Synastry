@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.55.0",
+    "AssemblyVersion": "1.0.56.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -13,9 +13,9 @@
     "Tags": [ "penumbra", "animation", "emote", "sync" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.55/Synastry-1.0.55.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.55/Synastry-1.0.55.zip",
-    "Changelog": "Shortens the Send tooltip to show only the room offer and 75 MB limit.",
-    "LastUpdate": "1786468479"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.56/Synastry-1.0.56.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.56/Synastry-1.0.56.zip",
+    "Changelog": "Restores recursive local PAP scanning so installed animations always appear, paced at one mod per frame while open and one per second in the background.",
+    "LastUpdate": "1786476541"
   }
 ]
