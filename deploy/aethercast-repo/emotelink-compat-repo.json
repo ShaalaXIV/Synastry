@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.50.0",
+    "AssemblyVersion": "1.0.51.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -13,9 +13,9 @@
     "Tags": [ "penumbra", "animation", "emote", "sync" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.50/Synastry-1.0.50.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.50/Synastry-1.0.50.zip",
-    "Changelog": "Moves the selected-mod count beneath the animation list so selecting mods no longer shifts the library content downward.",
-    "LastUpdate": "1786324198"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.51/Synastry-1.0.51.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.51/Synastry-1.0.51.zip",
+    "Changelog": "Adds an Auto EmoteSync toggle and persistent rainbow transfer inbox, removes the redundant clear button, and automatically acknowledges members who already have a sent animation.",
+    "LastUpdate": "1786412518"
   }
 ]

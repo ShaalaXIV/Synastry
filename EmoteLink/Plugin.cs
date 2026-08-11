@@ -87,6 +87,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private nint alignmentTargetAddress;
     private int alignmentFramesRemaining;
     private int alignmentStableFrames;
+    private readonly ConcurrentQueue<ModTransferOfferDto> incomingTransferOffers = new();
     private readonly ConcurrentQueue<ModTransferOfferDto> transferOffers = new();
     private readonly ConcurrentQueue<RoomInvite> roomInvites = new();
     private readonly ConcurrentQueue<(ModTransferOfferDto Offer, string Path, Exception? Error)> completedDownloads = new();
@@ -125,6 +126,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
     }
     public bool IsAligning => movement.IsWalking || alignmentFramesRemaining > 0;
+    public bool AutomaticEmoteSyncEnabled => configuration.AutomaticEmoteSync;
     public bool SitDozeAnywhereEnabled => configuration.SitDozeAnywhere;
     public bool SitDozeAnywhereAvailable => anywherePoses is not null;
     public bool IsRefreshingMods => pendingModRefresh is not null;
@@ -152,7 +154,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
         sync = new AnimationSyncService();
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
-        sync.ModTransferOffered += offer => transferOffers.Enqueue(offer);
+        sync.ModTransferOffered += offer => incomingTransferOffers.Enqueue(offer);
         sync.OptionSelectionChanged += RememberOptionSelection;
         sync.RoleLabelChanged += label => receivedRoleLabels.Enqueue(label);
         sync.CommunityRoleLabelChanged += label => receivedCommunityRoleLabels.Enqueue(label);
@@ -571,6 +573,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
             : "Sit/doze anywhere disabled. Chair-sit and doze will use normal game placement.";
     }
 
+    public void SetAutomaticEmoteSync(bool enabled)
+    {
+        configuration.AutomaticEmoteSync = enabled;
+        if (!enabled) lobbyEmoteRefreshTime = 0;
+        configuration.Save(PluginInterface);
+        Status = enabled
+            ? "Automatic room EmoteSync enabled. It will run six seconds after synchronized playback starts."
+            : "Automatic room EmoteSync disabled. The footer EmoteSync button remains available.";
+    }
+
     public void ApplyOption(string directory, string name, string group, string option, bool selected)
     {
         var pose = selected ? GetOptionPose(directory, group, option) : null;
@@ -722,6 +734,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Status = $"Could not find {name} on disk.";
             return;
         }
+        if (!modCatalogKeys.TryGetValue(directory, out var fingerprint))
+        {
+            Status = $"The animation fingerprint for {name} is not available yet. Refresh the library and try again.";
+            return;
+        }
 
         Status = $"Packaging {name} for the room...";
         _ = Task.Run(() =>
@@ -736,8 +753,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 using var packageInput = File.OpenRead(package);
                 var hash = Convert.ToHexString(SHA256.HashData(packageInput));
                 Status = $"Uploading {name} ({size / 1024f / 1024f:F1} MB)...";
-                sync.SendModAsync(name, package, size, hash).GetAwaiter().GetResult();
-                Status = $"Sent {name} to the room.";
+                var sent = sync.SendModAsync(name, package, size, hash, fingerprint).GetAwaiter().GetResult();
+                Status = sent.PendingRecipients == 0 && sent.AlreadyReceived > 0
+                    ? $"Everyone else in the room already has {name}; no transfer was stored."
+                    : sent.PendingRecipients > 0 && sent.AlreadyReceived > 0
+                        ? $"Sent {name} to {sent.PendingRecipients} member(s); {sent.AlreadyReceived} already had it."
+                        : sent.PendingRecipients > 0
+                            ? $"Sent {name} to {sent.PendingRecipients} room member(s)."
+                            : $"Sent {name} to the room.";
             }
             catch (Exception ex)
             {
@@ -1572,6 +1595,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ProcessModRefresh();
         ProcessReceivedRoleLabels();
         ProcessReceivedCommunityRoleLabels();
+        ProcessTransferOffers();
         if (roleSyncPending) StartRoleLabelSync();
         if (communityRoleSyncPending) StartCommunityRoleLabelSync();
         UpdateAlignment();
@@ -1597,8 +1621,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             ClearRemoteSelections(pendingSelectionModKey);
             pendingSelectionModKey = null;
-            lobbyEmoteRefreshTime = Environment.TickCount64 + LobbyEmoteRefreshDelayMs;
-            Status = "Animation started; lobby EmoteSync will run in 6 seconds.";
+            if (configuration.AutomaticEmoteSync)
+            {
+                lobbyEmoteRefreshTime = Environment.TickCount64 + LobbyEmoteRefreshDelayMs;
+                Status = "Animation started; lobby EmoteSync will run in 6 seconds.";
+            }
+            else
+            {
+                lobbyEmoteRefreshTime = 0;
+                Status = "Animation started; automatic lobby EmoteSync is disabled.";
+            }
         }
         if (lobbyEmoteRefreshTime > 0 && Environment.TickCount64 >= lobbyEmoteRefreshTime)
         {
@@ -1613,6 +1645,23 @@ public sealed unsafe class Plugin : IDalamudPlugin
         UpdatePoseCycling();
         if (!waitingForAnimation) return;
         UpdateMovementCleanup();
+    }
+
+    private void ProcessTransferOffers()
+    {
+        while (incomingTransferOffers.TryDequeue(out var offer))
+        {
+            var alreadyInstalled = offer.CatalogFingerprint.Length == 64 &&
+                modCatalogKeys.Values.Contains(offer.CatalogFingerprint, StringComparer.OrdinalIgnoreCase);
+            if (!alreadyInstalled)
+            {
+                transferOffers.Enqueue(offer);
+                continue;
+            }
+
+            RunSync(sync.CompleteModTransferAsync(offer.TransferId),
+                $"Already have {offer.ModName}; marked the transfer as received.");
+        }
     }
 
     private void ProcessCompletedDownloads()

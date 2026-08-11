@@ -69,7 +69,7 @@ public sealed class HowToWindow : Window
                 Steps(
                     "Confirm Penumbra is connected. Refresh rescans mods, Community labels downloads accepted role names, and How to reopens this guide.",
                     "Create a room, or enter a friend's code and join. Disconnect leaves the animation relay.",
-                    "Align to your current target, toggle Sit/doze anywhere when furniture-free poses are needed, or clear Synastry's temporary animation assignment.",
+                    "Align to your target, choose whether room playback runs Auto EmoteSync, toggle Sit/doze anywhere, and reopen pending cloud transfers.",
                     "Search the entire animation library or create a new folder.",
                     "Expand folders to browse your organized animation mods.");
                 Image(0);
@@ -79,7 +79,7 @@ public sealed class HowToWindow : Window
                 Steps(
                     "Check for PENUMBRA CONNECTED, SIMPLE HEELS CONNECTED when its footer tools are wanted, and a successful relay status.",
                     "Press Create room to host, or type a code and press Join room. Disconnect leaves the relay.",
-                    "Use Align / teleport to target when actors need the same position and facing direction. Sit/doze anywhere is an optional direct-mode toggle, not an automatic fallback.",
+                    "Use Align / teleport to target when actors need the same position and facing direction. Auto EmoteSync and Sit/doze anywhere are independent optional toggles.",
                     "Search or create folders while connected; these controls do not affect the room.",
                     "Your complete folder organization stays local and remains available during group play.");
                 Image(1);
@@ -109,7 +109,7 @@ public sealed class HowToWindow : Window
                     "Expand a mod to see its actions. Send offers a public mod to the room.",
                     "Press the large Ready button to prepare that emote or pose for synchronized playback.",
                     "Press Solo to activate the same animation only for yourself.",
-                    "Group playback triggers the animation once, then runs lobby-only EmoteSync six seconds later.",
+                    "Group playback triggers the animation once. When Auto EmoteSync is enabled, lobby-only EmoteSync runs six seconds later.",
                     "A purple row with Suggested by a member means that member selected an animation in this mod. It is a suggestion, not an automatic download or playback.",
                     "Expand Mod Options when the pack has variants or Penumbra option groups.");
                 Image(3);
@@ -139,12 +139,13 @@ public sealed class HowToWindow : Window
                     "Private mods are excluded from room matching, transfers, and community-label submissions.");
                 break;
             case 7:
-                Paragraph("Send is an explicit offer. No animation mod downloads or installs until the recipient accepts it.");
+                Paragraph("Send is an explicit offer. No animation mod downloads or installs until the recipient retrieves it.");
                 Bullets(
                     "Press Send beside a non-private mod to offer it to the other room members.",
                     "Offers are limited to 75 MB and expire from relay storage after 10 minutes.",
+                    "Members who already have the animation are marked received automatically and never see an offer.",
                     "The recipient sees the sender, mod name, and file size before installation.",
-                    "Accept downloads and hands the package to Penumbra; Decline rejects the offer.",
+                    "The cloud row reopens a queue of every pending offer. Retrieve downloads and hands a package to Penumbra; Decline rejects it.",
                     "When installation finishes, only that animation is indexed and its room color updates automatically.",
                     "Only send or accept files that everyone involved is allowed to share.",
                     "Private mods never show a Send button.");
@@ -152,12 +153,12 @@ public sealed class HowToWindow : Window
                 ImGui.Spacing();
                 if (ImGui.BeginChild("transfer-example", new Vector2(360, 135), true))
                 {
-                    ImGui.TextUnformatted("Animation mod received");
+                    ImGui.TextUnformatted("Animations pending retrieval");
                     ImGui.Separator();
                     ImGui.TextWrapped("A room member wants to send you:");
                     ImGui.TextUnformatted("Nightlife+ 3.1.1");
                     ImGui.TextDisabled("42.6 MB");
-                    ImGui.Button("Accept", new Vector2(110, 0));
+                    ImGui.Button("Retrieve", new Vector2(110, 0));
                     ImGui.SameLine();
                     ImGui.Button("Decline", new Vector2(110, 0));
                     ImGui.EndChild();

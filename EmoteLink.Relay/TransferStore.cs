@@ -21,7 +21,8 @@ public sealed class TransferStore : BackgroundService
     }
 
     public TransferUploadDto Begin(string roomCode, string senderId, string senderName, string modName,
-        long size, string sha256, IReadOnlyList<string> recipients)
+        long size, string sha256, IReadOnlyList<string> recipients, string catalogFingerprint = "",
+        int alreadyReceived = 0)
     {
         if (size <= 0 || size > MaximumBytes) throw new InvalidOperationException("Mod must be 75 MB or smaller.");
         var hash = CleanHash(sha256);
@@ -40,9 +41,10 @@ public sealed class TransferStore : BackgroundService
             var uploadToken = RandomToken(32);
             var recipientTokens = recipients.Distinct().ToDictionary(value => value, _ => RandomToken(32));
             var transfer = new Transfer(id, CleanName(modName), roomCode, senderId, senderName, size, hash,
-                DateTimeOffset.UtcNow.Add(Lifetime), uploadToken, Path.Combine(root, id + ".pmp"), recipientTokens);
+                DateTimeOffset.UtcNow.Add(Lifetime), uploadToken, Path.Combine(root, id + ".pmp"), recipientTokens,
+                CleanHash(catalogFingerprint));
             if (!transfers.TryAdd(id, transfer)) throw new InvalidOperationException("Could not create the transfer.");
-            return new TransferUploadDto(id, uploadToken);
+            return new TransferUploadDto(id, uploadToken, recipientTokens.Count, alreadyReceived);
         }
     }
 
@@ -57,7 +59,7 @@ public sealed class TransferStore : BackgroundService
             transfer.Uploaded = true;
             return transfer.RecipientTokens.Select(pair => (pair.Key,
                 new ModTransferOfferDto(transfer.Id, transfer.ModName, transfer.SenderName, transfer.Size,
-                    transfer.Sha256, pair.Value, transfer.ExpiresAt))).ToList();
+                    transfer.Sha256, pair.Value, transfer.ExpiresAt, transfer.CatalogFingerprint))).ToList();
         }
     }
 
@@ -70,19 +72,27 @@ public sealed class TransferStore : BackgroundService
     public void MarkDownloaded(string id, string connectionId)
     {
         if (!transfers.TryGetValue(id, out var transfer)) return;
+        var remove = false;
         lock (transfer.Gate)
         {
             if (!transfer.RecipientTokens.ContainsKey(connectionId)) return;
-            transfer.Downloaded.Add(connectionId);
-            if (transfer.Downloaded.Count < transfer.RecipientTokens.Count) return;
+            transfer.Handled.Add(connectionId);
+            remove = transfer.Handled.Count >= transfer.RecipientTokens.Count;
         }
-        Remove(id);
+        if (remove) Remove(id);
     }
 
     public void Decline(string id, string connectionId)
     {
-        if (transfers.TryGetValue(id, out var transfer) && transfer.RecipientTokens.ContainsKey(connectionId))
-            transfer.Declined.TryAdd(connectionId, 0);
+        if (!transfers.TryGetValue(id, out var transfer)) return;
+        var remove = false;
+        lock (transfer.Gate)
+        {
+            if (!transfer.RecipientTokens.ContainsKey(connectionId)) return;
+            transfer.Handled.Add(connectionId);
+            remove = transfer.Handled.Count >= transfer.RecipientTokens.Count;
+        }
+        if (remove) Remove(id);
     }
 
     public void RemoveForRoom(string roomCode)
@@ -126,7 +136,7 @@ public sealed class TransferStore : BackgroundService
 
     public sealed class Transfer(string id, string modName, string roomCode, string senderId, string senderName,
         long size, string sha256, DateTimeOffset expiresAt, string uploadToken, string path,
-        Dictionary<string, string> recipientTokens)
+        Dictionary<string, string> recipientTokens, string catalogFingerprint)
     {
         public object Gate { get; } = new();
         public string Id { get; } = id;
@@ -136,16 +146,20 @@ public sealed class TransferStore : BackgroundService
         public string SenderName { get; } = senderName;
         public long Size { get; } = size;
         public string Sha256 { get; } = sha256;
+        public string CatalogFingerprint { get; } = catalogFingerprint;
         public DateTimeOffset ExpiresAt { get; } = expiresAt;
         public string UploadToken { get; } = uploadToken;
         public string Path { get; } = path;
         public Dictionary<string, string> RecipientTokens { get; } = recipientTokens;
-        public HashSet<string> Downloaded { get; } = [];
-        public ConcurrentDictionary<string, byte> Declined { get; } = new();
+        public HashSet<string> Handled { get; } = [];
         public bool Uploaded { get; set; }
     }
 }
 
-public sealed record TransferUploadDto(string TransferId, string UploadToken);
+public sealed record TransferUploadDto(
+    string TransferId,
+    string UploadToken,
+    int PendingRecipients = 0,
+    int AlreadyReceived = 0);
 public sealed record ModTransferOfferDto(string TransferId, string ModName, string SenderName, long Size,
-    string Sha256, string DownloadToken, DateTimeOffset ExpiresAt);
+    string Sha256, string DownloadToken, DateTimeOffset ExpiresAt, string CatalogFingerprint = "");

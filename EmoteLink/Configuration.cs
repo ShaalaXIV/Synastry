@@ -5,7 +5,7 @@ namespace EmoteLink;
 
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 6;
+    public int Version { get; set; } = 7;
     public bool HasSeenHowTo { get; set; }
     public List<TemporaryAssignment> ActiveAssignments { get; set; } = [];
     public List<ModCategory> Categories { get; set; } = [];
@@ -18,6 +18,7 @@ public sealed class Configuration : IPluginConfiguration
     public HashSet<string> PrivateMods { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> CommunityRoleKeys { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string CommunityReporterId { get; set; } = Guid.NewGuid().ToString("N");
+    public bool AutomaticEmoteSync { get; set; } = true;
     public bool SitDozeAnywhere { get; set; }
 
     public void Save(IDalamudPluginInterface pluginInterface) => pluginInterface.SavePluginConfig(this);

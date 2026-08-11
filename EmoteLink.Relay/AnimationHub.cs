@@ -120,6 +120,34 @@ public sealed class AnimationHub : Hub
         }
     }
 
+    public TransferUploadDto BeginModTransferV2(
+        string modName,
+        long size,
+        string sha256,
+        string catalogFingerprint)
+    {
+        var room = GetCurrentRoom();
+        var fingerprint = CleanFingerprint(catalogFingerprint);
+        if (fingerprint.Length != 64) throw new HubException("A valid animation fingerprint is required.");
+        lock (room.Gate)
+        {
+            var sender = room.Members[Context.ConnectionId];
+            var recipients = room.Members.Values
+                .Where(member => member.ConnectionId != Context.ConnectionId)
+                .ToList();
+            if (recipients.Count == 0) throw new HubException("There is nobody else in the room.");
+            var pending = recipients
+                .Where(member => !member.Catalog.Contains(fingerprint))
+                .Select(member => member.ConnectionId)
+                .ToList();
+            var alreadyReceived = recipients.Count - pending.Count;
+            return pending.Count == 0
+                ? new TransferUploadDto("", "", 0, alreadyReceived)
+                : transfers.Begin(room.Code, Context.ConnectionId, sender.DisplayName, modName, size, sha256,
+                    pending, fingerprint, alreadyReceived);
+        }
+    }
+
     public Task CompleteModTransfer(string transferId)
     {
         transfers.MarkDownloaded(transferId, Context.ConnectionId);

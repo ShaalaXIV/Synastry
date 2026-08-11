@@ -28,6 +28,8 @@ The goal is simple: once the community identifies the roles in a complicated ani
 
 If another room member does not have an animation, Synastry can offer the mod directly through the room. The recipient explicitly accepts or declines the transfer, and accepted packages are handed to Penumbra for installation.
 
+Incoming offers stay in a retrieval queue even if its notification window is closed. The room panel shows **No Animations in the Cloud** when the queue is empty and a rainbow **You have Animations pending retrieval** button when one or more offers are waiting. Members whose room catalog already contains the animation are acknowledged automatically, do not see a notification, and do not keep an unnecessary relay transfer alive.
+
 This makes coordinated animation sessions much easier: find an animation, share it with the people who need it, assign the roles, and start together from the same room.
 
 When Penumbra finishes an accepted install, Synastry indexes only that mod and updates its room fingerprint. The row changes to orange or green as appropriate without a full library refresh.
@@ -44,7 +46,7 @@ When Penumbra finishes an accepted install, Synastry indexes only that mod and u
 - Create folders and move mods between them individually or in Shift-selected groups. Folders keep their open/closed state after a move, and mods sort alphabetically within each availability-color tier.
 - Mark mods private from their right-click menu.
 - Temporarily activate animations without disturbing unrelated Penumbra settings.
-- Ready a room for synchronized playback or play an animation locally with **Solo**. Each member keeps their own prepared actor role, even when the roles come from different mod entries. Group playback sends the normal animation trigger once, then runs Synastry's lobby-only EmoteSync six seconds later.
+- Ready a room for synchronized playback or play an animation locally with **Solo**. Each member keeps their own prepared actor role, even when the roles come from different mod entries. Group playback sends the normal animation trigger once. **Auto EmoteSync** can be disabled in the room controls; when enabled, Synastry runs its lobby-only EmoteSync six seconds later.
 - Use the footer to run lobby-only **EmoteSync** manually. When Simple Heels is loaded, **Temp Offset** opens `/heels temp` and **Livepose** opens `/heels livepose`.
 - Right-click another player to send a room invitation they can accept or decline immediately.
 - Align your character with a nearby target before playback.

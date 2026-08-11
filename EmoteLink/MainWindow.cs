@@ -25,7 +25,8 @@ public sealed class MainWindow : Window
     private string search = "";
     private string newFolderName = "";
     private string roomCode = "";
-    private ModTransferOfferDto? activeTransferOffer;
+    private readonly List<ModTransferOfferDto> pendingTransferOffers = [];
+    private bool transferInboxOpen;
     private RoomInvite? activeRoomInvite;
     private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> correctionBuffers = new(StringComparer.OrdinalIgnoreCase);
@@ -51,6 +52,7 @@ public sealed class MainWindow : Window
 
     public override void Draw()
     {
+        CollectTransferOffers();
         PushUiStyle();
         try
         {
@@ -64,7 +66,7 @@ public sealed class MainWindow : Window
             ImGui.Spacing();
             DrawFooterActions();
             DrawRoomInvitePopup();
-            DrawTransferOfferPopup();
+            DrawTransferInboxWindow();
         }
         finally
         {
@@ -130,10 +132,10 @@ public sealed class MainWindow : Window
     {
         var room = plugin.Sync.Room;
         var height = !plugin.Sync.IsConnected
-            ? 168f
+            ? 198f
             : !plugin.Sync.IsInRoom || room is null
-                ? 196f
-                : MathF.Min(340f, 198f + room.Members.Count * 31f);
+                ? 226f
+                : MathF.Min(370f, 228f + room.Members.Count * 31f);
         ImGui.PushStyleColor(ImGuiCol.ChildBg, PanelColor);
         ImGui.PushStyleColor(ImGuiCol.Border, BorderColor);
         ImGui.BeginChild("group-play-card", new Vector2(0, height), true);
@@ -258,6 +260,11 @@ public sealed class MainWindow : Window
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Match your character's position and facing direction to the current target.");
         ImGui.SameLine();
+        var automaticSync = plugin.AutomaticEmoteSyncEnabled;
+        if (ImGui.Checkbox("Auto EmoteSync", ref automaticSync)) plugin.SetAutomaticEmoteSync(automaticSync);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Automatically run lobby-only EmoteSync six seconds after synchronized room playback starts.");
+        ImGui.SameLine();
         var anywhere = plugin.SitDozeAnywhereEnabled;
         if (!plugin.SitDozeAnywhereAvailable) ImGui.BeginDisabled();
         if (ImGui.Checkbox("Sit/doze anywhere", ref anywhere)) plugin.SetSitDozeAnywhere(anywhere);
@@ -266,10 +273,22 @@ public sealed class MainWindow : Window
             ImGui.SetTooltip(plugin.SitDozeAnywhereAvailable
                 ? "When enabled, chair-sit and doze animations can start without nearby furniture."
                 : "Unavailable because the required game hooks could not be initialized.");
-        ImGui.SameLine();
-        if (ImGui.Button("Clear temporary animations")) plugin.ClearTemporaryAssignments();
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Clear the temporary animation assignment currently applied by Synastry.");
+
+        ImGui.Spacing();
+        var hasPendingTransfers = pendingTransferOffers.Count > 0;
+        var transferLabel = hasPendingTransfers
+            ? "You have Animations pending retrieval"
+            : "No Animations in the Cloud";
+        if (!hasPendingTransfers) ImGui.BeginDisabled();
+        if (hasPendingTransfers) ImGui.PushStyleColor(ImGuiCol.Text, RainbowTextColor());
+        var openInbox = ImGui.Button($"{transferLabel}##animationCloud", new Vector2(ImGui.GetContentRegionAvail().X, 0));
+        if (hasPendingTransfers) ImGui.PopStyleColor();
+        if (!hasPendingTransfers) ImGui.EndDisabled();
+        if (openInbox) transferInboxOpen = true;
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(hasPendingTransfers
+                ? $"Open the retrieval queue for {pendingTransferOffers.Count} pending animation(s)."
+                : "No animation transfers are waiting for you.");
     }
 
     private void DrawLibrary()
@@ -408,34 +427,80 @@ public sealed class MainWindow : Window
         ImGui.EndPopup();
     }
 
-    private void DrawTransferOfferPopup()
+    private void CollectTransferOffers()
     {
-        if (activeTransferOffer is null && plugin.TryTakeTransferOffer(out var offer))
+        pendingTransferOffers.RemoveAll(offer => offer.ExpiresAt <= DateTimeOffset.UtcNow);
+        var received = false;
+        while (plugin.TryTakeTransferOffer(out var offer))
         {
-            activeTransferOffer = offer;
-            ImGui.OpenPopup("Animation mod received");
+            if (pendingTransferOffers.Any(existing => existing.TransferId == offer.TransferId)) continue;
+            pendingTransferOffers.Add(offer);
+            received = true;
         }
-        if (!ImGui.BeginPopupModal("Animation mod received", ImGuiWindowFlags.AlwaysAutoResize)) return;
-        var active = activeTransferOffer;
-        if (active is null) { ImGui.CloseCurrentPopup(); ImGui.EndPopup(); return; }
-        ImGui.TextWrapped($"{active.SenderName} wants to send you:");
-        ImGui.TextUnformatted(active.ModName);
-        ImGui.TextDisabled($"{active.Size / 1024f / 1024f:F1} MB");
+        if (received) transferInboxOpen = true;
+    }
+
+    private void DrawTransferInboxWindow()
+    {
+        if (!transferInboxOpen) return;
+        ImGui.SetNextWindowSize(new Vector2(520, 320), ImGuiCond.Appearing);
+        if (!ImGui.Begin("Animations pending retrieval###SynastryTransferInbox", ref transferInboxOpen))
+        {
+            ImGui.End();
+            return;
+        }
+
+        if (pendingTransferOffers.Count == 0)
+        {
+            ImGui.TextDisabled("No Animations in the Cloud");
+            ImGui.End();
+            return;
+        }
+
+        ImGui.TextWrapped("Choose any animation you want to retrieve. Unhandled animations stay in this queue until they expire.");
         ImGui.Spacing();
-        if (ImGui.Button("Accept", new Vector2(110, 0)))
+        for (var index = 0; index < pendingTransferOffers.Count; index++)
         {
-            plugin.AcceptModTransfer(active);
-            activeTransferOffer = null;
-            ImGui.CloseCurrentPopup();
+            var offer = pendingTransferOffers[index];
+            ImGui.PushID(offer.TransferId);
+            ImGui.TextColored(AccentColor, offer.ModName);
+            ImGui.TextDisabled($"From {offer.SenderName}  •  {offer.Size / 1024f / 1024f:F1} MB");
+            var remaining = offer.ExpiresAt - DateTimeOffset.UtcNow;
+            ImGui.TextDisabled($"Available for {Math.Max(0, (int)Math.Ceiling(remaining.TotalMinutes))} more minute(s)");
+            if (ImGui.Button("Retrieve", new Vector2(110, 0)))
+            {
+                plugin.AcceptModTransfer(offer);
+                pendingTransferOffers.RemoveAt(index--);
+            }
+            else
+            {
+                ImGui.SameLine();
+                if (ImGui.Button("Decline", new Vector2(110, 0)))
+                {
+                    plugin.DeclineModTransfer(offer);
+                    pendingTransferOffers.RemoveAt(index--);
+                }
+            }
+            ImGui.Separator();
+            ImGui.PopID();
         }
-        ImGui.SameLine();
-        if (ImGui.Button("Decline", new Vector2(110, 0)))
+        ImGui.End();
+    }
+
+    private static Vector4 RainbowTextColor()
+    {
+        var hue = (float)(ImGui.GetTime() * 0.2 % 1.0);
+        var scaled = hue * 6f;
+        var fraction = scaled - MathF.Floor(scaled);
+        return ((int)scaled % 6) switch
         {
-            plugin.DeclineModTransfer(active);
-            activeTransferOffer = null;
-            ImGui.CloseCurrentPopup();
-        }
-        ImGui.EndPopup();
+            0 => new Vector4(1f, fraction, 0f, 1f),
+            1 => new Vector4(1f - fraction, 1f, 0f, 1f),
+            2 => new Vector4(0f, 1f, fraction, 1f),
+            3 => new Vector4(0f, 1f - fraction, 1f, 1f),
+            4 => new Vector4(fraction, 0f, 1f, 1f),
+            _ => new Vector4(1f, 0f, 1f - fraction, 1f)
+        };
     }
 
     private void DrawCreateFolderPopup()
