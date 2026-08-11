@@ -2,6 +2,7 @@ using System.Numerics;
 using System.Text;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
+using Dalamud.Utility;
 
 namespace EmoteLink;
 
@@ -37,6 +38,7 @@ public sealed class MainWindow : Window
     private string? selectionAnchorGroup;
     private const string ModPayload = "EMOTELINK_MOD";
     private const string FolderPayload = "EMOTELINK_FOLDER";
+    private const string DiscordInviteUrl = "https://discord.com/invite/jhPaQcvWW";
 
     public MainWindow(Plugin plugin) : base("Synastry###EmoteLink")
     {
@@ -113,12 +115,23 @@ public sealed class MainWindow : Window
         if (ImGui.Button(refreshLabel, new Vector2(refreshWidth, 0)))
             plugin.RefreshMods();
         if (plugin.IsRefreshingMods) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Reuse the local animation index and scan only new or changed Penumbra mods.");
         ImGui.SameLine();
         if (ImGui.Button("Community labels", new Vector2(communityWidth, 0))) plugin.DownloadCommunityTags();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Download accepted community role labels now. Your manually entered labels are preserved.");
         ImGui.SameLine();
         if (ImGui.Button("How to", new Vector2(howToWidth, 0))) plugin.OpenHowTo();
+
+        ImGui.SetCursorPosX(actionStart);
+        ImGui.PushStyleColor(ImGuiCol.Text, AccentColor);
+        if (ImGui.Selectable("Need Help?  discord.com/invite/jhPaQcvWW", false,
+                ImGuiSelectableFlags.None, new Vector2(totalWidth, 0)))
+            Util.OpenLink(DiscordInviteUrl);
+        ImGui.PopStyleColor();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Open the Synastry Discord invite in your browser.");
     }
 
     private void DrawStatusLine()
