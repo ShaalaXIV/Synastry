@@ -2,6 +2,8 @@
 
 A SignalR relay for synchronized animation starts and explicit room-member animation-mod transfers. Transfers are limited to 75 MB each, expire after 10 minutes, and share a 25 GB storage budget. When storage is needed, the oldest pending transfers are removed first. The relay does not transfer character data, appearance data, chat, or arbitrary game commands.
 
+Versioned transfer starts compare the offered animation fingerprint with each recipient's room catalog. Members who already have the animation are treated as received without receiving a notification, and stored packages are removed as soon as every remaining recipient retrieves or declines them.
+
 Room option selections can be offered as animation suggestions. Recipients may explicitly decline a suggestion, and the relay returns the named decline to the suggesting room member.
 
 Animation role labels are shared within a room so clients with an empty local label can adopt one from another member. Clients retain their own existing labels, and private mods are not advertised by the plugin.

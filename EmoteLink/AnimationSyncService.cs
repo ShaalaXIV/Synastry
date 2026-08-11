@@ -177,9 +177,17 @@ public sealed class AnimationSyncService : IAsyncDisposable
         }
     }
 
-    public async Task SendModAsync(string modName, string packagePath, long size, string sha256)
+    public async Task<ModTransferSendResult> SendModAsync(
+        string modName,
+        string packagePath,
+        long size,
+        string sha256,
+        string catalogFingerprint)
     {
-        var upload = await RequireConnection().InvokeAsync<TransferUploadDto>("BeginModTransfer", modName, size, sha256);
+        var upload = await RequireConnection().InvokeAsync<TransferUploadDto>(
+            "BeginModTransferV2", modName, size, sha256, catalogFingerprint);
+        if (string.IsNullOrWhiteSpace(upload.TransferId) || string.IsNullOrWhiteSpace(upload.UploadToken))
+            return new ModTransferSendResult(upload.PendingRecipients, upload.AlreadyReceived);
         await using var input = File.OpenRead(packagePath);
         using var content = new StreamContent(input);
         content.Headers.ContentType = new System.Net.Http.Headers.MediaTypeHeaderValue("application/octet-stream");
@@ -187,6 +195,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
             $"{relayBaseUrl}/transfers/{Uri.EscapeDataString(upload.TransferId)}?token={Uri.EscapeDataString(upload.UploadToken)}",
             content);
         response.EnsureSuccessStatusCode();
+        return new ModTransferSendResult(upload.PendingRecipients, upload.AlreadyReceived);
     }
 
     public async Task DownloadModAsync(ModTransferOfferDto offer, string destination)
@@ -454,9 +463,14 @@ public sealed class AnimationSyncService : IAsyncDisposable
 
 public sealed record RoomStateDto(string RoomCode, IReadOnlyList<RoomMemberDto> Members);
 public sealed record RoomMemberDto(string ConnectionId, string DisplayName, bool IsLeader, bool Ready, string ModKey);
-public sealed record TransferUploadDto(string TransferId, string UploadToken);
+public sealed record TransferUploadDto(
+    string TransferId,
+    string UploadToken,
+    int PendingRecipients = 0,
+    int AlreadyReceived = 0);
 public sealed record ModTransferOfferDto(string TransferId, string ModName, string SenderName, long Size,
-    string Sha256, string DownloadToken, DateTimeOffset ExpiresAt);
+    string Sha256, string DownloadToken, DateTimeOffset ExpiresAt, string CatalogFingerprint = "");
+public sealed record ModTransferSendResult(int PendingRecipients, int AlreadyReceived);
 public sealed record OptionSelectionDto(string MemberName, string ModKey, string Group, string Option);
 public sealed record RoleLabelDto(string MemberName, string ModKey, string Group, string Option, string Label);
 public sealed record CommunityRoleLabelDto(string Fingerprint, string Group, string Option, string Label);
