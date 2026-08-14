@@ -16,6 +16,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
     // Match-count snapshots are replaced as a unit and never mutated. Returning the
     // current snapshot avoids copying the entire catalog once per visible mod, per frame.
     private IReadOnlyDictionary<string, int> matchCounts = EmptyMatchCounts;
+    private int onlineUserCount = -1;
     private string? desiredRoomCode;
     private string desiredDisplayName = "Player";
     private string relayBaseUrl = "";
@@ -31,6 +32,10 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public event Action<AnimationSuggestionDeclinedDto>? AnimationSuggestionDeclined;
     public string Status { get; private set; } = "Disconnected";
     public bool IsConnected => connection?.State == HubConnectionState.Connected;
+    public int? OnlineUserCount => Volatile.Read(ref onlineUserCount) is var count && count >= 0 ? count : null;
+    public string RelayConnectionStatus => OnlineUserCount is { } count
+        ? $"Connected to animation relay. {count:N0} users online"
+        : "Connected to animation relay.";
     public bool IsRoomLeader => Room?.Members.Any(member =>
         member.ConnectionId == connection?.ConnectionId && member.IsLeader) == true;
     public bool IsCurrentMember(string connectionId) => connection?.ConnectionId == connectionId;
@@ -61,6 +66,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         hub.On<OptionSelectionDto>("OptionSelectionChanged", selection => OptionSelectionChanged?.Invoke(selection));
         hub.On<RoleLabelDto>("RoleLabelChanged", label => RoleLabelChanged?.Invoke(label));
         hub.On<CommunityRoleLabelDto>("CommunityRoleLabelChanged", label => CommunityRoleLabelChanged?.Invoke(label));
+        hub.On<int>("OnlineUserCountChanged", UpdateOnlineUserCount);
         hub.On<AnimationSuggestionDeclinedDto>("AnimationSuggestionDeclined",
             decline => AnimationSuggestionDeclined?.Invoke(decline));
         hub.On<string>("RemovedFromRoom", reason =>
@@ -78,6 +84,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         {
             if (!ReferenceEquals(connection, hub)) return Task.CompletedTask;
             Status = ConnectionStatus("Reconnecting", exception);
+            Interlocked.Exchange(ref onlineUserCount, -1);
             Diagnostic?.Invoke("Relay connection interrupted; attempting to reconnect.", exception);
             Notify();
             return Task.CompletedTask;
@@ -86,12 +93,14 @@ public sealed class AnimationSyncService : IAsyncDisposable
         {
             if (!ReferenceEquals(connection, hub)) return;
             Diagnostic?.Invoke($"Relay reconnected with connection ID {connectionId ?? "unknown"}.", null);
+            await RefreshOnlineUserCountAsync(hub);
             await RecoverRoomAsync(hub);
         };
         hub.Closed += exception =>
         {
             if (!ReferenceEquals(connection, hub)) return Task.CompletedTask;
             Status = ConnectionStatus("Disconnected", exception);
+            Interlocked.Exchange(ref onlineUserCount, -1);
             Volatile.Write(ref room, null);
             Volatile.Write(ref matchCounts, EmptyMatchCounts);
             Diagnostic?.Invoke("Relay connection closed after reconnect attempts were exhausted.", exception);
@@ -102,12 +111,14 @@ public sealed class AnimationSyncService : IAsyncDisposable
         try
         {
             await hub.StartAsync();
-            Status = "Connected";
+            await RefreshOnlineUserCountAsync(hub);
+            Status = RelayConnectionStatus;
         }
         catch (Exception exception)
         {
             await hub.DisposeAsync();
             if (ReferenceEquals(connection, hub)) connection = null;
+            Interlocked.Exchange(ref onlineUserCount, -1);
             Status = ConnectionStatus("Connection failed", exception);
             Diagnostic?.Invoke("Could not connect to the animation relay.", exception);
             Notify();
@@ -451,6 +462,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         lock (gate) desiredRoomCode = null;
         Volatile.Write(ref room, null);
         Volatile.Write(ref matchCounts, EmptyMatchCounts);
+        Interlocked.Exchange(ref onlineUserCount, -1);
         if (hub is not null)
         {
             try { await hub.StopAsync(); } catch { }
@@ -487,7 +499,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
 
         if (code is null)
         {
-            Status = "Connected";
+            Status = RelayConnectionStatus;
             Notify();
             return;
         }
@@ -521,6 +533,26 @@ public sealed class AnimationSyncService : IAsyncDisposable
 
     private static string CleanFingerprint(string value) =>
         new(value.Where(Uri.IsHexDigit).Take(64).Select(char.ToUpperInvariant).ToArray());
+
+    private async Task RefreshOnlineUserCountAsync(HubConnection hub)
+    {
+        try
+        {
+            UpdateOnlineUserCount(await hub.InvokeAsync<int>("GetOnlineUserCount"));
+        }
+        catch (Exception exception)
+        {
+            Interlocked.Exchange(ref onlineUserCount, -1);
+            Diagnostic?.Invoke("The connected relay does not expose an online-user count.", exception);
+        }
+    }
+
+    private void UpdateOnlineUserCount(int count)
+    {
+        Interlocked.Exchange(ref onlineUserCount, Math.Max(0, count));
+        if (IsConnected && !IsInRoom) Status = RelayConnectionStatus;
+        Notify();
+    }
 
     private void Notify() => StateChanged?.Invoke();
     public async ValueTask DisposeAsync() => await DisconnectAsync();

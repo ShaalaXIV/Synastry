@@ -24,14 +24,15 @@ namespace EmoteLink;
 
 public sealed unsafe class Plugin : IDalamudPlugin
 {
-    private const string Command = "/synastry";
+    private const string PrimaryCommand = "/syn";
+    private const string FallbackCommand = "/synastry";
     private const float MaxAlignDistance = 2f;
     private const int LobbyEmoteRefreshDelayMs = 6000;
     private const double RefreshFrameBudgetMilliseconds = 4;
     private static readonly TimeSpan StaleTransferPackageAge = TimeSpan.FromHours(24);
     private const string PublicRelayUrl = "https://emotelink.aethercast.org";
 
-    private sealed record PendingPenumbraInstall(ModTransferOfferDto Offer, string Path);
+    private sealed record PendingPenumbraInstall(ModTransferOfferDto Offer, string Path, string ReceiveFolder);
 
     [PluginService] private static IDalamudPluginInterface PluginInterface { get; set; } = null!;
     [PluginService] private static ICommandManager Commands { get; set; } = null!;
@@ -54,6 +55,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly AnimationSyncService sync;
     private readonly WindowSystem windows = new("Synastry");
     private readonly MainWindow mainWindow;
+    private readonly SettingsWindow settingsWindow;
     private readonly HowToWindow howToWindow;
     private bool waitingForAnimation;
     private long activationTime;
@@ -149,6 +151,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public bool SitDozeAnywhereEnabled => configuration.SitDozeAnywhere;
     public bool SitDozeAnywhereAvailable => anywherePoses is not null;
     public bool IsRefreshingMods => modRefreshCancellation is not null;
+    public string ReceivedModFolder => (configuration.ReceivedModFolder ?? "").Replace('\\', '/').Trim('/');
     public string Status { get; private set; } = "Ready.";
     public AnimationSyncService Sync => sync;
     public string SyncDisplayName => CurrentCharacterName() ?? "Unavailable";
@@ -156,6 +159,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public Plugin()
     {
         configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        var upgradedConfiguration = configuration.Version < 8;
+        if (upgradedConfiguration) configuration.Version = 8;
         animationIndexCache = AnimationIndexCache.Load(
             Path.Combine(PluginInterface.ConfigDirectory.FullName, "animation-index.json"), Log);
         _ = Task.Run(SweepStaleTransferPackages);
@@ -170,7 +175,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             configuration.CatalogReporterId = Guid.NewGuid().ToString("N");
             generatedReporterIdentity = true;
         }
-        if (generatedReporterIdentity) configuration.Save(PluginInterface);
+        if (generatedReporterIdentity || upgradedConfiguration) configuration.Save(PluginInterface);
         penumbra = new PenumbraService(PluginInterface, Log);
         penumbra.ModAdded += OnPenumbraModAdded;
         movement = new MovementService(Interop, Objects);
@@ -197,9 +202,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
             else Log.Warning(exception, "{Message}", message);
         };
         mainWindow = new MainWindow(this);
+        settingsWindow = new SettingsWindow(this);
         howToWindow = new HowToWindow(TextureProvider);
         BuildEmoteLookup();
         windows.AddWindow(mainWindow);
+        windows.AddWindow(settingsWindow);
         windows.AddWindow(howToWindow);
 
         if (!configuration.HasSeenHowTo)
@@ -211,28 +218,34 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         PluginInterface.UiBuilder.Draw += windows.Draw;
         PluginInterface.UiBuilder.OpenMainUi += ToggleWindow;
-        PluginInterface.UiBuilder.OpenConfigUi += ToggleWindow;
+        PluginInterface.UiBuilder.OpenConfigUi += OpenSettings;
         Framework.Update += OnUpdate;
         ContextMenu.OnMenuOpened += OnContextMenuOpened;
         Chat.ChatMessage += OnChatMessage;
-        Commands.AddHandler(Command, new CommandInfo((_, arguments) =>
+        Commands.AddHandler(PrimaryCommand, new CommandInfo(HandleCommand)
         {
-            var match = Regex.Match(arguments, @"^\s*join\s+([A-Za-z0-9]{4,8})\s*$", RegexOptions.IgnoreCase);
-            if (match.Success) JoinSyncRoom(match.Groups[1].Value);
-            else if (Regex.IsMatch(arguments, @"^\s*relay\s+(?:default|reset)\s*$", RegexOptions.IgnoreCase))
-                SetLocalRelayOverride("");
-            else if (Regex.Match(arguments, @"^\s*relay\s+(\S+)\s*$", RegexOptions.IgnoreCase) is
-                     { Success: true } relayMatch)
-                SetLocalRelayOverride(relayMatch.Groups[1].Value);
-            else ToggleWindow();
-        })
+            HelpMessage = "Open Synastry, join with /syn join ROOMCODE, or select a localhost dev relay with /syn relay URL."
+        });
+        Commands.AddHandler(FallbackCommand, new CommandInfo(HandleCommand)
         {
-            HelpMessage = "Open Synastry, join with /synastry join ROOMCODE, or select a localhost dev relay with /synastry relay URL."
+            HelpMessage = "Fallback command for Synastry. The shorter /syn command is also available."
         });
 
         // Recover from an unload/crash that left our tracked overrides behind.
         ClearTemporaryAssignments();
         RefreshMods();
+    }
+
+    private void HandleCommand(string _, string arguments)
+    {
+        var match = Regex.Match(arguments, @"^\s*join\s+([A-Za-z0-9]{4,8})\s*$", RegexOptions.IgnoreCase);
+        if (match.Success) JoinSyncRoom(match.Groups[1].Value);
+        else if (Regex.IsMatch(arguments, @"^\s*relay\s+(?:default|reset)\s*$", RegexOptions.IgnoreCase))
+            SetLocalRelayOverride("");
+        else if (Regex.Match(arguments, @"^\s*relay\s+(\S+)\s*$", RegexOptions.IgnoreCase) is
+                 { Success: true } relayMatch)
+            SetLocalRelayOverride(relayMatch.Groups[1].Value);
+        else ToggleWindow();
     }
 
     public void RefreshMods()
@@ -570,6 +583,37 @@ public sealed unsafe class Plugin : IDalamudPlugin
         addedModDirectories.Enqueue(directory);
     }
 
+    private void OrganizeReceivedMod((string Directory, string Name) mod)
+    {
+        var matches = pendingPenumbraInstalls.Where(pending =>
+                pending.Offer.ModName.Equals(mod.Name, StringComparison.OrdinalIgnoreCase))
+            .ToList();
+        if (matches.Count == 0) return;
+        if (matches.Count > 1)
+        {
+            Log.Warning(
+                "Could not choose a receive folder for {ModName}; {MatchCount} transfers with that name are pending.",
+                mod.Name, matches.Count);
+            return;
+        }
+
+        var moved = penumbra.MoveModToFolder(mod.Directory, mod.Name, matches[0].ReceiveFolder);
+        var destination = matches[0].ReceiveFolder.Length == 0
+            ? "the top level of Penumbra's mod list"
+            : $"Penumbra folder {matches[0].ReceiveFolder}";
+        if (!moved.Success)
+        {
+            Status = $"Installed {mod.Name}, but could not organize it in {destination}: {moved.Error}.";
+            Log.Warning("Could not place received mod {ModName} in {ReceiveFolder}: {Error}",
+                mod.Name, matches[0].ReceiveFolder, moved.Error);
+            return;
+        }
+
+        Status = $"Installed {mod.Name} in {destination}.";
+        Log.Information("Organized received mod {ModName} at Penumbra mod-list path {FullPath}.",
+            mod.Name, moved.FullPath);
+    }
+
     private void ProcessAddedMod()
     {
         if (modRefreshCancellation is not null || !addedModDirectories.TryDequeue(out var directory)) return;
@@ -593,6 +637,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     directory);
                 return;
             }
+
+            foreach (var mod in targets) OrganizeReceivedMod(mod);
 
             var currentDirectories = allMods.Select(mod => mod.Directory)
                 .ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -869,6 +915,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
             : "Automatic room EmoteSync disabled. The footer EmoteSync button remains available.";
     }
 
+    public IReadOnlyList<string> GetPenumbraModFolders() => penumbra.GetModFolders();
+
+    public bool SetReceivedModFolder(string folder)
+    {
+        var result = penumbra.EnsureModFolder(folder);
+        if (!result.Success)
+        {
+            Status = $"Could not use that Penumbra folder: {result.Error}";
+            return false;
+        }
+
+        configuration.ReceivedModFolder = result.Folder;
+        configuration.Save(PluginInterface);
+        Status = result.Folder.Length == 0
+            ? "Received animations will remain at the top level of Penumbra's mod list."
+            : $"Received animations will be organized in Penumbra mod-list folder {result.Folder}.";
+        return true;
+    }
+
     public void ApplyOption(string directory, string name, string group, string option, bool selected)
     {
         var pose = selected ? GetOptionPose(directory, group, option) : null;
@@ -904,7 +969,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public void ConnectSync()
     {
         if (!RequireCharacterName(out _)) return;
-        RunSync(sync.ConnectAsync(EffectiveRelayUrl()), "Connected to animation relay.");
+        RunSync(sync.ConnectAsync(EffectiveRelayUrl()), () => sync.RelayConnectionStatus);
     }
 
     public void DisconnectSync() => RunSync(sync.DisconnectAsync(), "Disconnected from animation relay.");
@@ -1172,11 +1237,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
         chatMessage.Message = $"Synastry invitation: {senderName} invited you to room {code}.";
     }
 
-    private void RunSync(Task operation, string success)
+    private void RunSync(Task operation, string success) => RunSync(operation, () => success);
+
+    private void RunSync(Task operation, Func<string> success)
     {
         _ = operation.ContinueWith(task =>
         {
-            if (task.IsCompletedSuccessfully) Status = success;
+            if (task.IsCompletedSuccessfully) Status = success();
             else if (task.Exception is not null)
             {
                 var ex = task.Exception.GetBaseException();
@@ -1267,6 +1334,45 @@ public sealed unsafe class Plugin : IDalamudPlugin
         return organized;
     }
 
+    public IReadOnlyList<ModCategory> GetChildCategories(string? parentId)
+    {
+        var normalizedParent = string.IsNullOrWhiteSpace(parentId) ? null : parentId;
+        return configuration.Categories.Where(category =>
+                normalizedParent is null
+                    ? string.IsNullOrWhiteSpace(category.ParentId)
+                    : category.ParentId?.Equals(normalizedParent, StringComparison.OrdinalIgnoreCase) == true)
+            .ToList();
+    }
+
+    public int GetCategoryModCount(string categoryId)
+    {
+        var categoryIds = GetCategoryTreeIds(categoryId);
+        return configuration.Categories
+            .Where(category => categoryIds.Contains(category.Id))
+            .SelectMany(category => category.ModDirectories)
+            .Where(modsByDirectory.ContainsKey)
+            .Distinct(StringComparer.OrdinalIgnoreCase)
+            .Count();
+    }
+
+    public string GetCategoryPath(string categoryId)
+    {
+        var byId = configuration.Categories
+            .GroupBy(category => category.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        var parts = new List<string>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var currentId = categoryId;
+        while (seen.Add(currentId) && byId.TryGetValue(currentId, out var category))
+        {
+            parts.Add(category.Name);
+            if (string.IsNullOrWhiteSpace(category.ParentId)) break;
+            currentId = category.ParentId;
+        }
+        parts.Reverse();
+        return string.Join(" / ", parts);
+    }
+
     private int GetMatchSortTier(string directory)
     {
         if (GetRemoteModSelector(directory) is not null) return 0; // Purple: suggested.
@@ -1277,12 +1383,21 @@ public sealed unsafe class Plugin : IDalamudPlugin
         return 4;                                        // White: no shared match.
     }
 
-    public void CreateCategory(string name)
+    public void CreateCategory(string name, string? parentCategoryId = null)
     {
         name = name.Trim();
         if (name.Length == 0) return;
-        configuration.Categories.Add(new ModCategory { Name = name });
+        var hasRequestedParent = !string.IsNullOrWhiteSpace(parentCategoryId);
+        var parent = !hasRequestedParent
+            ? null
+            : configuration.Categories.FirstOrDefault(category =>
+                category.Id.Equals(parentCategoryId, StringComparison.OrdinalIgnoreCase));
+        if (hasRequestedParent && parent is null) return;
+        configuration.Categories.Add(new ModCategory { Name = name, ParentId = parent?.Id });
         SaveOrganization();
+        Status = parent is null
+            ? $"Created folder {name}."
+            : $"Created subfolder {name} inside {parent.Name}.";
     }
 
     public void RenameCategory(string categoryId, string name)
@@ -1297,11 +1412,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void DeleteCategory(string categoryId)
     {
-        var category = configuration.Categories.FirstOrDefault(item => item.Id == categoryId);
+        var category = configuration.Categories.FirstOrDefault(item =>
+            item.Id.Equals(categoryId, StringComparison.OrdinalIgnoreCase));
         if (category is null) return;
+        var parentId = category.ParentId;
+        foreach (var child in configuration.Categories.Where(item =>
+                     item.ParentId?.Equals(category.Id, StringComparison.OrdinalIgnoreCase) == true))
+            child.ParentId = parentId;
         configuration.UncategorizedOrder.AddRange(category.ModDirectories);
         configuration.Categories.Remove(category);
         NormalizeOrganization();
+        Status = "Deleted the folder. Its mods moved to Uncategorized and its subfolders moved up one level.";
     }
 
     public void MoveMod(string directory, string? targetCategoryId, string? beforeDirectory = null)
@@ -1351,20 +1472,100 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = $"Moved {ordered.Count} selected mod(s).";
     }
 
-    public void MoveCategory(string sourceId, string beforeId)
+    public void MoveCategory(string sourceId, string? targetParentId)
     {
-        if (sourceId == beforeId) return;
-        var source = configuration.Categories.FirstOrDefault(item => item.Id == sourceId);
-        var targetIndex = configuration.Categories.FindIndex(item => item.Id == beforeId);
-        if (source is null || targetIndex < 0) return;
+        var source = configuration.Categories.FirstOrDefault(item =>
+            item.Id.Equals(sourceId, StringComparison.OrdinalIgnoreCase));
+        var hasTargetParent = !string.IsNullOrWhiteSpace(targetParentId);
+        var target = !hasTargetParent
+            ? null
+            : configuration.Categories.FirstOrDefault(item =>
+                item.Id.Equals(targetParentId, StringComparison.OrdinalIgnoreCase));
+        if (source is null || hasTargetParent && target is null) return;
+        if (target is not null && (target.Id.Equals(source.Id, StringComparison.OrdinalIgnoreCase) ||
+                                   IsCategoryInside(target.Id, source.Id)))
+        {
+            Status = "A folder cannot be moved inside itself or one of its subfolders.";
+            return;
+        }
+
+        var modCount = GetCategoryModCount(source.Id);
+        source.ParentId = target?.Id;
         configuration.Categories.Remove(source);
-        targetIndex = configuration.Categories.FindIndex(item => item.Id == beforeId);
-        configuration.Categories.Insert(targetIndex, source);
+        configuration.Categories.Add(source);
         SaveOrganization();
+        Status = target is null
+            ? $"Moved {source.Name} to the top level with {modCount} animation mod(s)."
+            : $"Moved {source.Name} inside {target.Name} with {modCount} animation mod(s).";
+    }
+
+    public void MoveCategoryBefore(string sourceId, string beforeId)
+    {
+        if (sourceId.Equals(beforeId, StringComparison.OrdinalIgnoreCase)) return;
+        var source = configuration.Categories.FirstOrDefault(item =>
+            item.Id.Equals(sourceId, StringComparison.OrdinalIgnoreCase));
+        var before = configuration.Categories.FirstOrDefault(item =>
+            item.Id.Equals(beforeId, StringComparison.OrdinalIgnoreCase));
+        if (source is null || before is null) return;
+
+        var targetParentId = before.ParentId;
+        if (!string.IsNullOrWhiteSpace(targetParentId) &&
+            (targetParentId.Equals(source.Id, StringComparison.OrdinalIgnoreCase) ||
+             IsCategoryInside(targetParentId, source.Id)))
+        {
+            Status = "A folder cannot be moved inside itself or one of its subfolders.";
+            return;
+        }
+
+        var modCount = GetCategoryModCount(source.Id);
+        source.ParentId = targetParentId;
+        configuration.Categories.Remove(source);
+        var beforeIndex = configuration.Categories.FindIndex(item =>
+            item.Id.Equals(before.Id, StringComparison.OrdinalIgnoreCase));
+        if (beforeIndex < 0)
+        {
+            configuration.Categories.Add(source);
+            SaveOrganization();
+            return;
+        }
+        configuration.Categories.Insert(beforeIndex, source);
+        SaveOrganization();
+        Status = $"Moved {source.Name} before {before.Name} with {modCount} animation mod(s).";
     }
 
     private void NormalizeOrganization()
     {
+        var categoriesById = configuration.Categories
+            .GroupBy(category => category.Id, StringComparer.OrdinalIgnoreCase)
+            .ToDictionary(group => group.Key, group => group.First(), StringComparer.OrdinalIgnoreCase);
+        foreach (var category in configuration.Categories)
+        {
+            if (string.IsNullOrWhiteSpace(category.ParentId))
+            {
+                category.ParentId = null;
+                continue;
+            }
+            if (category.ParentId.Equals(category.Id, StringComparison.OrdinalIgnoreCase) ||
+                !categoriesById.ContainsKey(category.ParentId))
+                category.ParentId = null;
+        }
+        // Break any malformed parent cycle so every folder remains reachable from the root.
+        foreach (var category in configuration.Categories)
+        {
+            var seenParents = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { category.Id };
+            var current = category;
+            while (!string.IsNullOrWhiteSpace(current.ParentId) &&
+                   categoriesById.TryGetValue(current.ParentId, out var parent))
+            {
+                if (!seenParents.Add(parent.Id))
+                {
+                    category.ParentId = null;
+                    break;
+                }
+                current = parent;
+            }
+        }
+
         var available = Mods.Select(mod => mod.Directory).ToHashSet(StringComparer.OrdinalIgnoreCase);
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         foreach (var category in configuration.Categories)
@@ -1372,6 +1573,37 @@ public sealed unsafe class Plugin : IDalamudPlugin
         configuration.UncategorizedOrder.RemoveAll(directory => !available.Contains(directory) || !seen.Add(directory));
         configuration.UncategorizedOrder.AddRange(Mods.Select(mod => mod.Directory).Where(seen.Add));
         SaveOrganization();
+    }
+
+    private HashSet<string> GetCategoryTreeIds(string rootId)
+    {
+        var result = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var pending = new Stack<string>();
+        pending.Push(rootId);
+        while (pending.TryPop(out var categoryId))
+        {
+            if (!result.Add(categoryId)) continue;
+            foreach (var child in configuration.Categories.Where(category =>
+                         category.ParentId?.Equals(categoryId, StringComparison.OrdinalIgnoreCase) == true))
+                pending.Push(child.Id);
+        }
+        return result;
+    }
+
+    private bool IsCategoryInside(string categoryId, string possibleAncestorId)
+    {
+        var current = configuration.Categories.FirstOrDefault(category =>
+            category.Id.Equals(categoryId, StringComparison.OrdinalIgnoreCase));
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        while (current is not null && seen.Add(current.Id))
+        {
+            if (current.Id.Equals(possibleAncestorId, StringComparison.OrdinalIgnoreCase)) return true;
+            current = string.IsNullOrWhiteSpace(current.ParentId)
+                ? null
+                : configuration.Categories.FirstOrDefault(category =>
+                    category.Id.Equals(current.ParentId, StringComparison.OrdinalIgnoreCase));
+        }
+        return false;
     }
 
     private void SaveOrganization()
@@ -1987,14 +2219,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 Log.Warning(result.Error, "Transferred mod download failed.");
                 continue;
             }
+            var pending = new PendingPenumbraInstall(
+                result.Offer, result.Path, ReceivedModFolder);
+            pendingPenumbraInstalls.Add(pending);
             var installation = penumbra.InstallMod(result.Path);
             if (!installation.Success)
             {
+                pendingPenumbraInstalls.Remove(pending);
                 TryDeleteManagedTransferPackage(result.Path, "after Penumbra rejected the install request");
                 Status = $"Downloaded {result.Offer.ModName}, but installation failed: {installation.Error}.";
                 continue;
             }
-            pendingPenumbraInstalls.Add(new PendingPenumbraInstall(result.Offer, result.Path));
             RunSync(sync.CompleteModTransferAsync(result.Offer.TransferId),
                 $"Downloaded {result.Offer.ModName}; Penumbra is installing it.");
         }
@@ -2506,6 +2741,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void ToggleWindow() => mainWindow.Toggle();
 
+    public void OpenSettings()
+    {
+        settingsWindow.Open();
+    }
+
     public void OpenHowTo() => howToWindow.IsOpen = true;
 
     public void Dispose()
@@ -2525,8 +2765,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Chat.RemoveChatLinkHandler();
         PluginInterface.UiBuilder.Draw -= windows.Draw;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleWindow;
-        PluginInterface.UiBuilder.OpenConfigUi -= ToggleWindow;
-        Commands.RemoveHandler(Command);
+        PluginInterface.UiBuilder.OpenConfigUi -= OpenSettings;
+        Commands.RemoveHandler(PrimaryCommand);
+        Commands.RemoveHandler(FallbackCommand);
         penumbra.ModAdded -= OnPenumbraModAdded;
         penumbra.Dispose();
         movement.Dispose();

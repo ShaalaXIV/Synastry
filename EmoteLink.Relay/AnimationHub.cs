@@ -23,13 +23,24 @@ public sealed class AnimationHub : Hub
     private readonly TransferStore transfers;
     private readonly CommunityRoleLabelStore communityRoles;
     private readonly AnimationCatalogStore animationCatalog;
+    private readonly RelayStatisticsStore statistics;
 
     public AnimationHub(TransferStore transfers, CommunityRoleLabelStore communityRoles,
-        AnimationCatalogStore animationCatalog)
+        AnimationCatalogStore animationCatalog, RelayStatisticsStore statistics)
     {
         this.transfers = transfers;
         this.communityRoles = communityRoles;
         this.animationCatalog = animationCatalog;
+        this.statistics = statistics;
+    }
+
+    public int GetOnlineUserCount() => statistics.GetSnapshot().ActiveUsers;
+
+    public override async Task OnConnectedAsync()
+    {
+        await base.OnConnectedAsync();
+        var snapshot = statistics.ConnectionOpened();
+        await Clients.All.SendAsync("OnlineUserCountChanged", snapshot.ActiveUsers);
     }
 
     public async Task<RoomStateDto> CreateRoom(string displayName)
@@ -38,6 +49,7 @@ public sealed class AnimationHub : Hub
         var code = CreateCode();
         var room = new Room(code);
         while (!Rooms.TryAdd(code, room)) { code = CreateCode(); room = new Room(code); }
+        statistics.IncrementRoomsGenerated();
         lock (room.Gate)
             room.Members[Context.ConnectionId] = new Member(Context.ConnectionId, CleanName(displayName), true);
         ConnectionRooms[Context.ConnectionId] = code;
@@ -176,7 +188,8 @@ public sealed class AnimationHub : Hub
 
     public Task CompleteModTransfer(string transferId)
     {
-        transfers.MarkDownloaded(transferId, Context.ConnectionId);
+        if (transfers.MarkDownloaded(transferId, Context.ConnectionId))
+            statistics.IncrementSharedAnimations();
         return Task.CompletedTask;
     }
 
@@ -477,6 +490,7 @@ public sealed class AnimationHub : Hub
         {
             await Task.WhenAll(plays.Select(play =>
                 Clients.Client(play.ConnectionId).SendAsync("AnimationPlay", play.Signal)));
+            statistics.IncrementAnimationsPerformed(plays.Count);
             await Clients.Group(room.Code).SendAsync("RoomStateChanged", Snapshot(room));
         }
         return readyState;
@@ -520,6 +534,7 @@ public sealed class AnimationHub : Hub
         }
         await Task.WhenAll(plays.Select(play =>
             Clients.Client(play.ConnectionId).SendAsync("AnimationPlay", play.Signal)));
+        statistics.IncrementAnimationsPerformed(plays.Count);
         await Clients.Group(room.Code).SendAsync("RoomStateChanged", state);
         return state;
     }
@@ -547,11 +562,14 @@ public sealed class AnimationHub : Hub
 
     public override async Task OnDisconnectedAsync(Exception? exception)
     {
+        // Adjust the live gauge first so cleanup failures cannot leave a stale active-user count.
+        var relayStatistics = statistics.ConnectionClosed();
         ConnectionCommunityReporterIds.TryRemove(Context.ConnectionId, out _);
         ConnectionCatalogReporterIds.TryRemove(Context.ConnectionId, out _);
         ConnectionCatalogReportCounts.TryRemove(Context.ConnectionId, out _);
         await LeaveRoom();
         await base.OnDisconnectedAsync(exception);
+        await Clients.All.SendAsync("OnlineUserCountChanged", relayStatistics.ActiveUsers);
     }
 
     private Room GetCurrentRoom()

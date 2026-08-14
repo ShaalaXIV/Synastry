@@ -47,7 +47,7 @@ Synastry is not intended for exchanging paid or otherwise restricted animations.
 
 - Automatically lists Penumbra mods containing animation files.
 - Collapsible option groups support large packs with hundreds of choices.
-- Create folders and move mods between them individually or in Shift-selected groups. Folders keep their open/closed state after a move, and mods sort alphabetically within each availability-color tier.
+- Create nested folders and drag complete folder trees or individual mods into them. Folders keep their open/closed state after a move, and mods sort alphabetically within each availability-color tier.
 - Mark mods private from their right-click menu.
 - Temporarily activate animations without disturbing unrelated Penumbra settings.
 - Ready a room for synchronized playback or play an animation locally with **Solo**. Each member keeps their own prepared actor role, even when the roles come from different mod entries. Group playback sends the normal animation trigger once. **Auto EmoteSync** can be disabled in the room controls; when enabled, Synastry runs its lobby-only EmoteSync six seconds later.
@@ -55,6 +55,7 @@ Synastry is not intended for exchanging paid or otherwise restricted animations.
 - Right-click another player to send a room invitation they can accept or decline immediately.
 - Align your character with a nearby target before playback.
 - Optionally enable **Sit/doze anywhere** for furniture-free chair-sit and doze animations.
+- Choose an existing Penumbra mod-list folder for received animations, or create a dedicated folder without leaving Synastry.
 - Green, orange, purple, cyan, and white indicators show room availability, suggestions, and privacy state.
 
 ## Install
@@ -68,10 +69,10 @@ https://plugins.aethercast.org/
 This combined repository contains **AetherPress** and **Synastry**. Save the
 settings, open the Plugin Installer, and search for **Synastry**.
 
-Use `/synastry` to open the plugin. To join a room directly, use:
+Use `/syn` to open the plugin. `/synastry` remains available as a fallback. To join a room directly, use:
 
 ```text
-/synastry join ROOMCODE
+/syn join ROOMCODE
 ```
 
 ## Privacy
