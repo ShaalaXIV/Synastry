@@ -181,6 +181,67 @@ public sealed class AnimationCatalogStore
         return LookupCore(connection, signatures, true);
     }
 
+    public AdminAnimationArtifactPage GetAdminPage(
+        AdminAnimationArtifactView view, int page = 1, int pageSize = 500)
+    {
+        var cleanPageSize = Math.Clamp(pageSize, 25, 500);
+        var conflict =
+            "COALESCE(c.animation_reports, 0) > 0 AND COALESCE(c.non_animation_reports, 0) > 0";
+        var effective = "COALESCE(o.classification, c.classification, 0)";
+        var predicate = view switch
+        {
+            AdminAnimationArtifactView.Animation => $"NOT ({conflict}) AND {effective} = 1",
+            AdminAnimationArtifactView.AnimationOverrides =>
+                $"NOT ({conflict}) AND {effective} = 1 AND o.signature IS NOT NULL",
+            AdminAnimationArtifactView.Other => $"({conflict}) OR {effective} <> 1",
+            AdminAnimationArtifactView.NonAnimation => $"NOT ({conflict}) AND {effective} = 2",
+            AdminAnimationArtifactView.Unknown => $"NOT ({conflict}) AND {effective} = 0",
+            AdminAnimationArtifactView.Conflict => conflict,
+            AdminAnimationArtifactView.OtherOverrides =>
+                $"(({conflict}) OR {effective} <> 1) AND o.signature IS NOT NULL",
+            _ => throw new ArgumentOutOfRangeException(nameof(view))
+        };
+
+        using var connection = database.OpenConnection();
+        using var count = connection.CreateCommand();
+        count.CommandText = $"""
+            SELECT COUNT(*)
+            FROM animation_artifacts a
+            LEFT JOIN animation_artifact_consensus c ON c.signature = a.signature
+            LEFT JOIN animation_artifact_overrides o
+                ON o.signature = a.signature AND o.revoked_utc IS NULL
+            WHERE {predicate};
+            """;
+        var totalCount = Convert.ToInt32(count.ExecuteScalar());
+        var totalPages = Math.Max(1, (totalCount + cleanPageSize - 1) / cleanPageSize);
+        var cleanPage = Math.Clamp(page, 1, totalPages);
+        var offset = (cleanPage - 1) * cleanPageSize;
+
+        using var command = connection.CreateCommand();
+        command.CommandText = $"""
+            SELECT a.signature
+            FROM animation_artifacts a
+            LEFT JOIN animation_artifact_consensus c ON c.signature = a.signature
+            LEFT JOIN animation_artifact_overrides o
+                ON o.signature = a.signature AND o.revoked_utc IS NULL
+            WHERE {predicate}
+            ORDER BY a.last_seen_utc DESC, a.signature COLLATE NOCASE
+            LIMIT $limit OFFSET $offset;
+            """;
+        command.Parameters.AddWithValue("$limit", cleanPageSize);
+        command.Parameters.AddWithValue("$offset", offset);
+        var signatures = new List<string>();
+        using (var reader = command.ExecuteReader())
+            while (reader.Read()) signatures.Add(reader.GetString(0));
+
+        var entriesByKey = LookupCore(connection, signatures, true)
+            .ToDictionary(entry => entry.ArtifactKey, StringComparer.OrdinalIgnoreCase);
+        var entries = signatures.Where(entriesByKey.ContainsKey)
+            .Select(signature => entriesByKey[signature])
+            .ToList();
+        return new AdminAnimationArtifactPage(cleanPage, cleanPageSize, totalCount, entries);
+    }
+
     internal VerifiedUploadedAnimationArtifact? IndexUploadedPackage(string packagePath, string displayName)
     {
         var verified = UploadedAnimationPackageVerifier.Inspect(packagePath);
@@ -1035,6 +1096,17 @@ public enum AnimationArtifactClassification
     NonAnimation = 2
 }
 
+public enum AdminAnimationArtifactView
+{
+    Animation,
+    AnimationOverrides,
+    Other,
+    NonAnimation,
+    Unknown,
+    Conflict,
+    OtherOverrides
+}
+
 public enum AnimationSharingPolicy
 {
     Default = 0,
@@ -1095,3 +1167,9 @@ public sealed record AnimationArtifactCatalogEntry(
     bool IsPayloadModeratorVerified,
     string ApprovedPayloadSha256,
     IReadOnlyList<AnimationPayloadCandidateDto> PayloadCandidates);
+
+public sealed record AdminAnimationArtifactPage(
+    int Page,
+    int PageSize,
+    int TotalCount,
+    IReadOnlyList<AnimationArtifactCatalogEntry> Items);
