@@ -182,9 +182,13 @@ public sealed class AnimationCatalogStore
     }
 
     public AdminAnimationArtifactPage GetAdminPage(
-        AdminAnimationArtifactView view, int page = 1, int pageSize = 500)
+        AdminAnimationArtifactView view, int page = 1, int pageSize = 500, string? query = null)
     {
         var cleanPageSize = Math.Clamp(pageSize, 25, 500);
+        var searchTerms = Clean(query ?? "", 160)
+            .Split((char[]?)null, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            .Take(12)
+            .ToArray();
         var conflict =
             "COALESCE(c.animation_reports, 0) > 0 AND COALESCE(c.non_animation_reports, 0) > 0";
         var effective = "COALESCE(o.classification, c.classification, 0)";
@@ -201,6 +205,56 @@ public sealed class AnimationCatalogStore
                 $"(({conflict}) OR {effective} <> 1) AND o.signature IS NOT NULL",
             _ => throw new ArgumentOutOfRangeException(nameof(view))
         };
+        var searchPredicates = searchTerms.Select((term, index) =>
+        {
+            var textMatches = $"""
+                a.signature LIKE $like{index} ESCAPE '\'
+                OR COALESCE(o.reason_code, '') LIKE $like{index} ESCAPE '\'
+                OR COALESCE(o.note, '') LIKE $like{index} ESCAPE '\'
+                OR COALESCE(o.approved_payload_sha256, '') LIKE $like{index} ESCAPE '\'
+                OR (CASE WHEN {conflict} THEN 'Conflict'
+                         WHEN {effective} = 1 THEN 'Animation'
+                         WHEN {effective} = 2 THEN 'Non-animation'
+                         ELSE 'Unknown' END) LIKE $like{index} ESCAPE '\'
+                OR (CASE COALESCE(o.sharing_policy, 0)
+                         WHEN 1 THEN 'Allowed'
+                         WHEN 2 THEN 'Catalog only blocked'
+                         ELSE 'Default' END) LIKE $like{index} ESCAPE '\'
+                OR EXISTS (
+                    SELECT 1 FROM animation_artifact_payloads p
+                    WHERE p.signature = a.signature
+                      AND p.payload_sha256 LIKE $like{index} ESCAPE '\')
+                """;
+            return CatalogSearchSyntax.TryBuildTrigramQuery(term, out _)
+                ? $"""
+                    (EXISTS (
+                        SELECT 1 FROM animation_artifact_search s
+                        WHERE s.artifact_key = a.signature
+                          AND animation_artifact_search MATCH $fts{index})
+                     OR {textMatches})
+                    """
+                : $"""
+                    (EXISTS (
+                        SELECT 1 FROM animation_artifact_names n
+                        WHERE n.signature = a.signature
+                          AND n.display_name LIKE $like{index} ESCAPE '\')
+                     OR {textMatches})
+                    """;
+        }).ToArray();
+        var searchPredicate = searchPredicates.Length == 0
+            ? ""
+            : " AND " + string.Join(" AND ", searchPredicates);
+
+        void AddSearchParameters(SqliteCommand command)
+        {
+            for (var index = 0; index < searchTerms.Length; index++)
+            {
+                var term = searchTerms[index];
+                command.Parameters.AddWithValue($"$like{index}", $"%{EscapeLike(term)}%");
+                if (CatalogSearchSyntax.TryBuildTrigramQuery(term, out var ftsQuery))
+                    command.Parameters.AddWithValue($"$fts{index}", ftsQuery);
+            }
+        }
 
         using var connection = database.OpenConnection();
         using var count = connection.CreateCommand();
@@ -210,8 +264,9 @@ public sealed class AnimationCatalogStore
             LEFT JOIN animation_artifact_consensus c ON c.signature = a.signature
             LEFT JOIN animation_artifact_overrides o
                 ON o.signature = a.signature AND o.revoked_utc IS NULL
-            WHERE {predicate};
+            WHERE {predicate}{searchPredicate};
             """;
+        AddSearchParameters(count);
         var totalCount = Convert.ToInt32(count.ExecuteScalar());
         var totalPages = Math.Max(1, (totalCount + cleanPageSize - 1) / cleanPageSize);
         var cleanPage = Math.Clamp(page, 1, totalPages);
@@ -224,10 +279,11 @@ public sealed class AnimationCatalogStore
             LEFT JOIN animation_artifact_consensus c ON c.signature = a.signature
             LEFT JOIN animation_artifact_overrides o
                 ON o.signature = a.signature AND o.revoked_utc IS NULL
-            WHERE {predicate}
+            WHERE {predicate}{searchPredicate}
             ORDER BY a.last_seen_utc DESC, a.signature COLLATE NOCASE
             LIMIT $limit OFFSET $offset;
             """;
+        AddSearchParameters(command);
         command.Parameters.AddWithValue("$limit", cleanPageSize);
         command.Parameters.AddWithValue("$offset", offset);
         var signatures = new List<string>();
@@ -1050,6 +1106,9 @@ public sealed class AnimationCatalogStore
         var clean = value.Trim();
         return clean[..Math.Min(maximumLength, clean.Length)];
     }
+
+    private static string EscapeLike(string value) =>
+        value.Replace("\\", "\\\\").Replace("%", "\\%").Replace("_", "\\_");
 
     private static string HashIdentity(string value) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(value)));

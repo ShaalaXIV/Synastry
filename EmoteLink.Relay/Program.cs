@@ -124,7 +124,8 @@ animationAdmin.MapGet("/", (string? query, int? limit, AnimationCatalogStore sto
     string.IsNullOrWhiteSpace(query)
         ? store.GetAll(Math.Clamp(limit ?? 1_000, 1, 10_000))
         : store.Search(query, Math.Clamp(limit ?? 100, 1, 500)));
-animationAdmin.MapGet("/page", (string? view, int? page, int? pageSize, AnimationCatalogStore store) =>
+animationAdmin.MapGet("/page", (string? view, int? page, int? pageSize, string? query,
+    AnimationCatalogStore store) =>
 {
     var requestedView = view?.Trim().ToLowerInvariant() switch
     {
@@ -138,7 +139,7 @@ animationAdmin.MapGet("/page", (string? view, int? page, int? pageSize, Animatio
         _ => (AdminAnimationArtifactView?)null
     };
     return requestedView is { } validView
-        ? Results.Ok(store.GetAdminPage(validView, page ?? 1, pageSize ?? 500))
+        ? Results.Ok(store.GetAdminPage(validView, page ?? 1, pageSize ?? 500, query))
         : Results.BadRequest("Choose an artifact view: animation, animation-overrides, other, " +
                              "non-animation, unknown, conflict, or other-overrides.");
 });
