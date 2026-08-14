@@ -19,6 +19,7 @@ if (publicUrls.Any(url => ConfiguredPort(url) == adminPort))
 builder.WebHost.UseUrls(publicUrls.Append($"http://127.0.0.1:{adminPort}").ToArray());
 builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = TransferStore.MaximumBytes);
 builder.Services.AddSingleton<RelayDatabase>();
+builder.Services.AddSingleton<RelayStatisticsStore>();
 builder.Services.AddSingleton<ITransferModerationRepository, SqliteTransferModerationRepository>();
 builder.Services.AddSingleton<AnimationCatalogStore>();
 builder.Services.AddSingleton<CatalogSearchService>();
@@ -54,6 +55,7 @@ var app = builder.Build();
 // Force durable storage initialization before Kestrel starts accepting clients. In particular,
 // a legacy JSON migration/backup failure must stop startup instead of surfacing on first use.
 _ = app.Services.GetRequiredService<RelayDatabase>();
+_ = app.Services.GetRequiredService<RelayStatisticsStore>();
 _ = app.Services.GetRequiredService<CommunityRoleLabelStore>();
 app.UseForwardedHeaders();
 app.Use(async (context, next) =>
@@ -75,6 +77,12 @@ app.Use(async (context, next) =>
     await next();
 });
 app.MapGet("/health", () => Results.Text("emotelink-relay:ok", "text/plain"));
+// Anonymous aggregate feed for a future Discord bridge. The Synastry plugin does not query it.
+app.MapGet("/statistics", (HttpResponse response, RelayStatisticsStore statistics) =>
+{
+    response.Headers.CacheControl = "no-store";
+    return Results.Ok(statistics.GetSnapshot());
+});
 var adminRoot = app.MapGroup("/admin");
 adminRoot.AddEndpointFilter(async (context, next) =>
 {
@@ -90,6 +98,11 @@ adminRoot.AddEndpointFilter(async (context, next) =>
             SHA256.HashData(Encoding.UTF8.GetBytes(supplied[7..]))))
         return Results.Unauthorized();
     return await next(context);
+});
+adminRoot.MapGet("/statistics", (HttpResponse response, RelayStatisticsStore statistics) =>
+{
+    response.Headers.CacheControl = "no-store";
+    return Results.Ok(statistics.GetSnapshot());
 });
 var admin = adminRoot.MapGroup("/community-labels");
 admin.MapGet("/", (CommunityRoleLabelStore store) => store.GetAll());

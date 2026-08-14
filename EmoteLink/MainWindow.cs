@@ -32,6 +32,7 @@ public sealed class MainWindow : Window
     private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> correctionBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> folderRenameBuffers = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, string> folderChildBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> folderOpenStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> selectedMods = new(StringComparer.OrdinalIgnoreCase);
     private string? selectionAnchor;
@@ -97,9 +98,8 @@ public sealed class MainWindow : Window
 
         var refreshLabel = plugin.IsRefreshingMods ? "Refreshing..." : "Refresh";
         var refreshWidth = ButtonWidth(refreshLabel);
-        var communityWidth = ButtonWidth("Community labels");
-        var howToWidth = ButtonWidth("How to");
-        var totalWidth = refreshWidth + communityWidth + howToWidth + ImGui.GetStyle().ItemSpacing.X * 2;
+        var settingsWidth = ButtonWidth("Settings");
+        var totalWidth = refreshWidth + settingsWidth + ImGui.GetStyle().ItemSpacing.X;
         var actionStart = ImGui.GetWindowContentRegionMax().X - totalWidth;
         if (actionStart > ImGui.GetCursorPosX() + 24f)
         {
@@ -118,11 +118,9 @@ public sealed class MainWindow : Window
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Reuse the local animation index and scan only new or changed Penumbra mods.");
         ImGui.SameLine();
-        if (ImGui.Button("Community labels", new Vector2(communityWidth, 0))) plugin.DownloadCommunityTags();
+        if (ImGui.Button("Settings", new Vector2(settingsWidth, 0))) plugin.OpenSettings();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Download accepted community role labels now. Your manually entered labels are preserved.");
-        ImGui.SameLine();
-        if (ImGui.Button("How to", new Vector2(howToWidth, 0))) plugin.OpenHowTo();
+            ImGui.SetTooltip("Open playback, received-animation, community-label, and tutorial settings.");
 
         ImGui.SetCursorPosX(actionStart);
         ImGui.PushStyleColor(ImGuiCol.Text, AccentColor);
@@ -173,7 +171,7 @@ public sealed class MainWindow : Window
         ImGui.SameLine();
         ImGui.TextUnformatted(plugin.SyncDisplayName);
         ImGui.SameLine();
-        ImGui.TextDisabled($"—  {plugin.Sync.Status}");
+        ImGui.TextDisabled($"—  {plugin.Sync.RelayConnectionStatus}");
 
         if (!plugin.Sync.IsInRoom || room is null)
         {
@@ -272,20 +270,6 @@ public sealed class MainWindow : Window
             plugin.ToggleAlignment();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Match your character's position and facing direction to the current target.");
-        ImGui.SameLine();
-        var automaticSync = plugin.AutomaticEmoteSyncEnabled;
-        if (ImGui.Checkbox("Auto EmoteSync", ref automaticSync)) plugin.SetAutomaticEmoteSync(automaticSync);
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Automatically run lobby-only EmoteSync six seconds after synchronized room playback starts.");
-        ImGui.SameLine();
-        var anywhere = plugin.SitDozeAnywhereEnabled;
-        if (!plugin.SitDozeAnywhereAvailable) ImGui.BeginDisabled();
-        if (ImGui.Checkbox("Sit/doze anywhere", ref anywhere)) plugin.SetSitDozeAnywhere(anywhere);
-        if (!plugin.SitDozeAnywhereAvailable) ImGui.EndDisabled();
-        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip(plugin.SitDozeAnywhereAvailable
-                ? "When enabled, chair-sit and doze animations can start without nearby furniture."
-                : "Unavailable because the required game hooks could not be initialized.");
 
         ImGui.Spacing();
         var hasPendingTransfers = pendingTransferOffers.Count > 0;
@@ -322,6 +306,8 @@ public sealed class MainWindow : Window
         ImGui.InputTextWithHint("##search", "Search animation mods...", ref search, 128);
         ImGui.SameLine();
         if (ImGui.Button("New folder", new Vector2(newFolderWidth, 0))) ImGui.OpenPopup("Create folder");
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Create a top-level folder. Right-click any folder to create a subfolder inside it.");
         ImGui.SameLine();
         if (ImGui.Button("Mark all private", new Vector2(privateWidth, 0)))
             ImGui.OpenPopup("Mark every animation private?");
@@ -338,7 +324,7 @@ public sealed class MainWindow : Window
             : 0f;
         ImGui.PushStyleColor(ImGuiCol.ChildBg, NestedPanelColor);
         ImGui.BeginChild("mods", new Vector2(0, -(38f + selectionFooterHeight)), true);
-        foreach (var category in plugin.Categories.ToList()) DrawCategory(category);
+        foreach (var category in plugin.GetChildCategories(null).ToList()) DrawCategory(category);
         DrawModGroup(null, "Uncategorized", true);
         ImGui.EndChild();
         ImGui.PopStyleColor();
@@ -553,16 +539,18 @@ public sealed class MainWindow : Window
     private void DrawCategory(ModCategory category)
     {
         ImGui.PushID(category.Id);
-        var mods = plugin.GetOrganizedMods(category.Id);
-        var visible = search.Length == 0 || mods.Any(MatchesSearch);
+        var children = plugin.GetChildCategories(category.Id).ToList();
+        var visible = search.Length == 0 || CategoryMatchesSearch(category);
         if (visible)
         {
             var hadOpenState = folderOpenStates.TryGetValue(category.Id, out var previousOpen);
-            if (hadOpenState) ImGui.SetNextItemOpen(previousOpen, ImGuiCond.Always);
-            var open = ImGui.CollapsingHeader($"{category.Name}  {mods.Count}##folderHeader",
+            if (search.Length > 0) ImGui.SetNextItemOpen(true, ImGuiCond.Always);
+            else if (hadOpenState) ImGui.SetNextItemOpen(previousOpen, ImGuiCond.Always);
+            var totalMods = plugin.GetCategoryModCount(category.Id);
+            var open = ImGui.CollapsingHeader($"{category.Name}  {totalMods}##folderHeader",
                 ImGuiTreeNodeFlags.DefaultOpen);
             DrawFolderDragSource(category);
-            var dragHovered = AcceptFolderReorder(category) | AcceptModDrop(category.Id);
+            var dragHovered = AcceptFolderDrop(category) | AcceptModDrop(category.Id);
             // Dear ImGui automatically opens tree headers when a drag payload is held
             // over them. Keep the user's prior state so moving a mod does not expand
             // its destination folder as a side effect.
@@ -582,6 +570,22 @@ public sealed class MainWindow : Window
                     folderRenameBuffers[category.Id] = rename.Trim();
                     ImGui.CloseCurrentPopup();
                 }
+                ImGui.Separator();
+                ImGui.TextDisabled("Create subfolder");
+                if (!folderChildBuffers.TryGetValue(category.Id, out var childName)) childName = "";
+                ImGui.SetNextItemWidth(220f);
+                var submitChild = ImGui.InputText("##childFolderName", ref childName, 80,
+                    ImGuiInputTextFlags.EnterReturnsTrue);
+                folderChildBuffers[category.Id] = childName;
+                ImGui.SameLine();
+                if ((ImGui.SmallButton("Create") || submitChild) && !string.IsNullOrWhiteSpace(childName))
+                {
+                    plugin.CreateCategory(childName, category.Id);
+                    folderChildBuffers[category.Id] = "";
+                    ImGui.CloseCurrentPopup();
+                }
+                if (!string.IsNullOrWhiteSpace(category.ParentId) && ImGui.MenuItem("Move folder to top level"))
+                    plugin.MoveCategory(category.Id, null);
                 if (selectedMods.Count > 0 && ImGui.MenuItem($"Move {selectedMods.Count} selected here"))
                 {
                     plugin.MoveMods(selectedMods, category.Id);
@@ -589,12 +593,27 @@ public sealed class MainWindow : Window
                 }
                 ImGui.Separator();
                 if (ImGui.MenuItem("Delete folder")) plugin.DeleteCategory(category.Id);
-                if (ImGui.IsItemHovered()) ImGui.SetTooltip("Mods will move to Uncategorized.");
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Mods directly in this folder move to Uncategorized. Subfolders move up one level.");
                 ImGui.EndPopup();
             }
-            if (open) DrawModGroup(category.Id, null, false);
+            if (open)
+            {
+                ImGui.Indent(18f);
+                foreach (var child in children) DrawCategory(child);
+                DrawModGroup(category.Id, null, false);
+                ImGui.Unindent(18f);
+            }
         }
         ImGui.PopID();
+    }
+
+    private bool CategoryMatchesSearch(ModCategory category, HashSet<string>? visited = null)
+    {
+        visited ??= new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        if (!visited.Add(category.Id)) return false;
+        if (plugin.GetOrganizedMods(category.Id).Any(MatchesSearch)) return true;
+        return plugin.GetChildCategories(category.Id).Any(child => CategoryMatchesSearch(child, visited));
     }
 
     private void DrawModGroup(string? categoryId, string? heading, bool drawDropTarget)
@@ -604,6 +623,7 @@ public sealed class MainWindow : Window
         {
             var open = ImGui.CollapsingHeader($"{heading}  {mods.Count}##modGroup",
                 ImGuiTreeNodeFlags.DefaultOpen);
+            if (categoryId is null) AcceptFolderRootDrop();
             if (drawDropTarget) AcceptModDrop(categoryId);
             if (!open) return;
         }
@@ -701,7 +721,7 @@ public sealed class MainWindow : Window
                 }
                 foreach (var category in plugin.Categories)
                 {
-                    if (!ImGui.MenuItem(category.Name)) continue;
+                    if (!ImGui.MenuItem(plugin.GetCategoryPath(category.Id))) continue;
                     plugin.MoveMods(targets, category.Id);
                     ClearModSelection();
                 }
@@ -1022,23 +1042,50 @@ public sealed class MainWindow : Window
         _ => $"Idle {pose.Index}"
     };
 
-    private static void DrawFolderDragSource(ModCategory category)
+    private void DrawFolderDragSource(ModCategory category)
     {
         if (!ImGui.BeginDragDropSource()) return;
         ImGui.SetDragDropPayload(FolderPayload, Encoding.UTF8.GetBytes(category.Id));
-        ImGui.TextUnformatted(category.Name);
+        ImGui.TextUnformatted($"{category.Name}  ({plugin.GetCategoryModCount(category.Id)} mods)");
+        if (plugin.GetChildCategories(category.Id).Count > 0)
+            ImGui.TextDisabled("Includes all nested folders");
         ImGui.EndDragDropSource();
     }
 
-    private bool AcceptFolderReorder(ModCategory category)
+    private bool AcceptFolderDrop(ModCategory target)
     {
+        var itemMin = ImGui.GetItemRectMin();
+        var itemMax = ImGui.GetItemRectMax();
         if (!ImGui.BeginDragDropTarget()) return false;
         var payload = ImGui.AcceptDragDropPayload(FolderPayload);
         var source = ReadPayload(payload);
         var hovered = source is not null;
-        if (source is not null && payload.IsDelivery()) plugin.MoveCategory(source, category.Id);
+        if (source is not null)
+        {
+            var topEdge = ImGui.GetIO().MousePos.Y <=
+                          itemMin.Y + MathF.Min(7f, (itemMax.Y - itemMin.Y) * 0.35f);
+            ImGui.SetTooltip(topEdge ? $"Place before {target.Name}" : $"Move inside {target.Name}");
+            if (payload.IsDelivery())
+            {
+                if (topEdge) plugin.MoveCategoryBefore(source, target.Id);
+                else plugin.MoveCategory(source, target.Id);
+            }
+        }
         ImGui.EndDragDropTarget();
         return hovered;
+    }
+
+    private void AcceptFolderRootDrop()
+    {
+        if (!ImGui.BeginDragDropTarget()) return;
+        var payload = ImGui.AcceptDragDropPayload(FolderPayload);
+        var source = ReadPayload(payload);
+        if (source is not null)
+        {
+            ImGui.SetTooltip("Move folder to the top level");
+            if (payload.IsDelivery()) plugin.MoveCategory(source, null);
+        }
+        ImGui.EndDragDropTarget();
     }
 
     private bool AcceptModDrop(string? categoryId)

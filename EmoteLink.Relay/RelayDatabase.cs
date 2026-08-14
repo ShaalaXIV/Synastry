@@ -9,7 +9,7 @@ namespace EmoteLink.Relay;
 /// </summary>
 public sealed class RelayDatabase
 {
-    public const int CurrentSchemaVersion = 6;
+    public const int CurrentSchemaVersion = 7;
     private const int BusyTimeoutMilliseconds = 5_000;
     private readonly string connectionString;
     private readonly ILogger<RelayDatabase> logger;
@@ -494,6 +494,19 @@ public sealed class RelayDatabase
                     + length(CAST(new.payload_json AS BLOB))
                 WHERE singleton = 1;
             END;
+            """),
+        new(7, "anonymous relay statistics", """
+            -- Only relay-wide counters are stored here. There are deliberately no user,
+            -- connection, installation, character, room, or animation identifier columns.
+            CREATE TABLE relay_statistics (
+                singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+                rooms_generated INTEGER NOT NULL DEFAULT 0 CHECK (rooms_generated >= 0),
+                shared_animations INTEGER NOT NULL DEFAULT 0 CHECK (shared_animations >= 0),
+                animations_performed INTEGER NOT NULL DEFAULT 0 CHECK (animations_performed >= 0)
+            );
+            INSERT INTO relay_statistics(
+                singleton, rooms_generated, shared_animations, animations_performed)
+            VALUES (1, 0, 0, 0);
             """)
     ];
 

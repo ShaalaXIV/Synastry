@@ -5,7 +5,7 @@ namespace EmoteLink;
 
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 7;
+    public int Version { get; set; } = 8;
     public bool HasSeenHowTo { get; set; }
     public List<TemporaryAssignment> ActiveAssignments { get; set; } = [];
     public List<ModCategory> Categories { get; set; } = [];
@@ -23,6 +23,8 @@ public sealed class Configuration : IPluginConfiguration
     public string CatalogReporterId { get; set; } = Guid.NewGuid().ToString("N");
     // Localhost-only override for testing a relay build before public deployment.
     public string LocalRelayUrl { get; set; } = "";
+    // Penumbra mod-list organization path. Empty keeps received mods at the top level.
+    public string ReceivedModFolder { get; set; } = "";
     public bool AutomaticEmoteSync { get; set; } = true;
     public bool SitDozeAnywhere { get; set; }
 
@@ -35,6 +37,8 @@ public sealed class ModCategory
 {
     public string Id { get; set; } = Guid.NewGuid().ToString("N");
     public string Name { get; set; } = "New Folder";
+    // Null is a root Animation Library folder. Existing configurations deserialize as roots.
+    public string? ParentId { get; set; }
     public List<string> ModDirectories { get; set; } = [];
 }
 

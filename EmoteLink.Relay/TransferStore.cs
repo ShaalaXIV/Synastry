@@ -354,11 +354,11 @@ public sealed partial class TransferStore : BackgroundService
         return new TransferDownloadHandle(transfer, stream);
     }
 
-    public void MarkDownloaded(string id, string connectionId) =>
+    public bool MarkDownloaded(string id, string connectionId) =>
         MarkRecipientHandled(id, connectionId, TransferRecipientState.Downloaded);
 
     public void Decline(string id, string connectionId) =>
-        MarkRecipientHandled(id, connectionId, TransferRecipientState.Declined);
+        _ = MarkRecipientHandled(id, connectionId, TransferRecipientState.Declined);
 
     public int DetachRecipient(string connectionId)
     {
@@ -383,14 +383,14 @@ public sealed partial class TransferStore : BackgroundService
         return detached;
     }
 
-    private void MarkRecipientHandled(string id, string connectionId, TransferRecipientState state)
+    private bool MarkRecipientHandled(string id, string connectionId, TransferRecipientState state)
     {
-        if (!transfers.TryGetValue(id, out var transfer)) return;
+        if (!transfers.TryGetValue(id, out var transfer)) return false;
         lock (transfer.Gate)
         {
             if (!transfer.Recipients.TryGetValue(connectionId, out var recipient) ||
                 recipient.State != TransferRecipientState.Pending)
-                return;
+                return false;
             recipient.State = state;
             recipient.HandledAt = DateTimeOffset.UtcNow;
             recipient.Token = "";
@@ -398,6 +398,7 @@ public sealed partial class TransferStore : BackgroundService
         logger.LogInformation("Transfer {TransferId} recipient state changed to {RecipientState}", id, state);
         PublishEvent(state == TransferRecipientState.Downloaded ? "recipient-downloaded" : "recipient-declined",
             transfer);
+        return true;
     }
 
     public void RemoveForRoom(string roomCode)
