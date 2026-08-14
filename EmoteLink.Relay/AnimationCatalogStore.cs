@@ -207,38 +207,25 @@ public sealed class AnimationCatalogStore
         };
         var searchPredicates = searchTerms.Select((term, index) =>
         {
-            var textMatches = $"""
-                a.signature LIKE $like{index} ESCAPE '\'
-                OR COALESCE(o.reason_code, '') LIKE $like{index} ESCAPE '\'
-                OR COALESCE(o.note, '') LIKE $like{index} ESCAPE '\'
-                OR COALESCE(o.approved_payload_sha256, '') LIKE $like{index} ESCAPE '\'
-                OR (CASE WHEN {conflict} THEN 'Conflict'
-                         WHEN {effective} = 1 THEN 'Animation'
-                         WHEN {effective} = 2 THEN 'Non-animation'
-                         ELSE 'Unknown' END) LIKE $like{index} ESCAPE '\'
-                OR (CASE COALESCE(o.sharing_policy, 0)
-                         WHEN 1 THEN 'Allowed'
-                         WHEN 2 THEN 'Catalog only blocked'
-                         ELSE 'Default' END) LIKE $like{index} ESCAPE '\'
-                OR EXISTS (
-                    SELECT 1 FROM animation_artifact_payloads p
-                    WHERE p.signature = a.signature
-                      AND p.payload_sha256 LIKE $like{index} ESCAPE '\')
-                """;
             return CatalogSearchSyntax.TryBuildTrigramQuery(term, out _)
                 ? $"""
-                    (EXISTS (
-                        SELECT 1 FROM animation_artifact_search s
-                        WHERE s.artifact_key = a.signature
-                          AND animation_artifact_search MATCH $fts{index})
-                     OR {textMatches})
+                    a.signature IN (
+                        SELECT artifact_key FROM animation_artifact_search
+                        WHERE animation_artifact_search MATCH $fts{index})
                     """
                 : $"""
                     (EXISTS (
                         SELECT 1 FROM animation_artifact_names n
                         WHERE n.signature = a.signature
                           AND n.display_name LIKE $like{index} ESCAPE '\')
-                     OR {textMatches})
+                     OR a.signature LIKE $like{index} ESCAPE '\'
+                     OR COALESCE(o.reason_code, '') LIKE $like{index} ESCAPE '\'
+                     OR COALESCE(o.note, '') LIKE $like{index} ESCAPE '\'
+                     OR COALESCE(o.approved_payload_sha256, '') LIKE $like{index} ESCAPE '\'
+                     OR EXISTS (
+                        SELECT 1 FROM animation_artifact_payloads p
+                        WHERE p.signature = a.signature
+                          AND p.payload_sha256 LIKE $like{index} ESCAPE '\'))
                     """;
         }).ToArray();
         var searchPredicate = searchPredicates.Length == 0
@@ -250,9 +237,10 @@ public sealed class AnimationCatalogStore
             for (var index = 0; index < searchTerms.Length; index++)
             {
                 var term = searchTerms[index];
-                command.Parameters.AddWithValue($"$like{index}", $"%{EscapeLike(term)}%");
                 if (CatalogSearchSyntax.TryBuildTrigramQuery(term, out var ftsQuery))
                     command.Parameters.AddWithValue($"$fts{index}", ftsQuery);
+                else
+                    command.Parameters.AddWithValue($"$like{index}", $"%{EscapeLike(term)}%");
             }
         }
 
