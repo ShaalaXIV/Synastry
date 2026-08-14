@@ -8,16 +8,18 @@ namespace EmoteLink;
 
 public sealed class MainWindow : Window
 {
-    private static readonly Vector4 AccentColor = new(0.88f, 0.62f, 0.18f, 1f);
-    private static readonly Vector4 AccentHoveredColor = new(0.98f, 0.72f, 0.28f, 1f);
-    private static readonly Vector4 AccentActiveColor = new(0.76f, 0.49f, 0.1f, 1f);
-    private static readonly Vector4 PanelColor = new(0.075f, 0.09f, 0.105f, 1f);
-    private static readonly Vector4 NestedPanelColor = new(0.055f, 0.068f, 0.08f, 1f);
-    private static readonly Vector4 FrameColor = new(0.11f, 0.13f, 0.15f, 1f);
-    private static readonly Vector4 FrameHoveredColor = new(0.15f, 0.175f, 0.2f, 1f);
-    private static readonly Vector4 BorderColor = new(0.22f, 0.25f, 0.28f, 1f);
-    private static readonly Vector4 TextColor = new(0.92f, 0.93f, 0.94f, 1f);
-    private static readonly Vector4 MutedColor = new(0.62f, 0.65f, 0.69f, 1f);
+    private static readonly Vector4 AccentColor = new(0.91f, 0.66f, 0.29f, 1f);
+    private static readonly Vector4 AccentHoveredColor = new(0.98f, 0.74f, 0.38f, 1f);
+    private static readonly Vector4 AccentActiveColor = new(0.78f, 0.49f, 0.16f, 1f);
+    private static readonly Vector4 CoralColor = new(0.93f, 0.39f, 0.38f, 1f);
+    private static readonly Vector4 WindowColor = new(0.027f, 0.039f, 0.052f, 1f);
+    private static readonly Vector4 PanelColor = new(0.043f, 0.059f, 0.078f, 1f);
+    private static readonly Vector4 NestedPanelColor = new(0.032f, 0.045f, 0.059f, 1f);
+    private static readonly Vector4 FrameColor = new(0.075f, 0.1f, 0.13f, 1f);
+    private static readonly Vector4 FrameHoveredColor = new(0.11f, 0.145f, 0.18f, 1f);
+    private static readonly Vector4 BorderColor = new(0.18f, 0.23f, 0.28f, 1f);
+    private static readonly Vector4 TextColor = new(0.94f, 0.94f, 0.92f, 1f);
+    private static readonly Vector4 MutedColor = new(0.56f, 0.61f, 0.67f, 1f);
     private static readonly Vector4 EveryoneColor = new(0.42f, 0.78f, 0.28f, 1f);
     private static readonly Vector4 SomeColor = new(1f, 0.56f, 0.16f, 1f);
     private static readonly Vector4 ClaimedColor = new(0.67f, 0.42f, 0.88f, 1f);
@@ -35,22 +37,45 @@ public sealed class MainWindow : Window
     private readonly Dictionary<string, string> folderChildBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, bool> folderOpenStates = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> selectedMods = new(StringComparer.OrdinalIgnoreCase);
+    private LibraryScope libraryScope = LibraryScope.All;
+    private string? activeCategoryId;
     private string? selectionAnchor;
     private string? selectionAnchorGroup;
     private const string ModPayload = "EMOTELINK_MOD";
     private const string FolderPayload = "EMOTELINK_FOLDER";
     private const string DiscordInviteUrl = "https://discord.com/invite/jhPaQcvWW";
 
-    public MainWindow(Plugin plugin) : base("Synastry###EmoteLink")
+    private enum LibraryScope
+    {
+        All,
+        Category,
+        Uncategorized,
+        Private
+    }
+
+    public MainWindow(Plugin plugin) : base("Synastry Constellation DEV###EmoteLink")
     {
         this.plugin = plugin;
-        Size = new Vector2(780, 680);
+        Size = new Vector2(1180, 720);
         SizeCondition = ImGuiCond.FirstUseEver;
         SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new Vector2(620, 540),
+            MinimumSize = new Vector2(900, 600),
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
         };
+        Flags = ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse;
+    }
+
+    public override void PreDraw()
+    {
+        ImGui.PushStyleColor(ImGuiCol.WindowBg, WindowColor);
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(12f, 10f));
+    }
+
+    public override void PostDraw()
+    {
+        ImGui.PopStyleVar();
+        ImGui.PopStyleColor();
     }
 
     public override void Draw()
@@ -59,15 +84,11 @@ public sealed class MainWindow : Window
         PushUiStyle();
         try
         {
-            DrawHeader();
+            DrawDeckHeader();
             ImGui.Spacing();
-            DrawStatusLine();
+            DrawDeckBody();
             ImGui.Spacing();
-            DrawGroupPlay();
-            ImGui.Spacing();
-            DrawLibrary();
-            ImGui.Spacing();
-            DrawFooterActions();
+            DrawDeckFooter();
             DrawRoomInvitePopup();
             DrawTransferInboxWindow();
         }
@@ -75,6 +96,482 @@ public sealed class MainWindow : Window
         {
             PopUiStyle();
         }
+    }
+
+    private void DrawDeckHeader()
+    {
+        var contentRight = ImGui.GetWindowContentRegionMax().X;
+        ImGui.TextColored(AccentColor, "S Y N A S T R Y");
+
+        var settingsWidth = ButtonWidth("Settings");
+        var relayStatus = plugin.Sync.RelayConnectionStatus;
+        var relayWidth = ImGui.CalcTextSize(relayStatus).X + 20f;
+        var relayX = MathF.Max(ImGui.GetCursorPosX() + 220f, (contentRight - relayWidth) * 0.5f);
+        if (relayX + relayWidth < contentRight - settingsWidth - 18f)
+        {
+            ImGui.SameLine();
+            ImGui.SetCursorPosX(relayX);
+            ImGui.TextColored(plugin.Sync.IsConnected ? CoralColor : MutedColor, "\u25CF");
+            ImGui.SameLine();
+            ImGui.TextUnformatted(relayStatus);
+        }
+
+        ImGui.SameLine();
+        ImGui.SetCursorPosX(contentRight - settingsWidth);
+        if (ImGui.Button("Settings", new Vector2(settingsWidth, 0))) plugin.OpenSettings();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Open playback, received-animation, community-label, and tutorial settings.");
+
+        ImGui.TextColored(plugin.PenumbraAvailable ? EveryoneColor : SomeColor, "\u25CF");
+        ImGui.SameLine();
+        ImGui.TextDisabled(plugin.PenumbraAvailable ? "PENUMBRA" : "PENUMBRA UNAVAILABLE");
+        ImGui.SameLine(0, 18f);
+        ImGui.TextColored(plugin.SimpleHeelsAvailable ? EveryoneColor : MutedColor, "\u25CF");
+        ImGui.SameLine();
+        ImGui.TextDisabled(plugin.SimpleHeelsAvailable ? "SIMPLE HEELS" : "SIMPLE HEELS NOT FOUND");
+
+        var refreshLabel = plugin.IsRefreshingMods ? "Refreshing..." : "Refresh library";
+        var refreshWidth = ButtonWidth(refreshLabel);
+        ImGui.SameLine();
+        ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), contentRight - refreshWidth));
+        if (plugin.IsRefreshingMods) ImGui.BeginDisabled();
+        if (ImGui.SmallButton(refreshLabel)) plugin.RefreshMods();
+        if (plugin.IsRefreshingMods) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Reuse the local animation index and scan only new or changed Penumbra mods.");
+
+        if (!string.IsNullOrWhiteSpace(plugin.Status))
+        {
+            ImGui.TextColored(plugin.PenumbraAvailable ? EveryoneColor : SomeColor,
+                plugin.PenumbraAvailable ? "\u25C6" : "!");
+            ImGui.SameLine();
+            ImGui.TextDisabled(plugin.Status);
+        }
+        ImGui.Separator();
+    }
+
+    private void DrawDeckBody()
+    {
+        var footerReserve = ImGui.GetFrameHeightWithSpacing() + 8f;
+        var flags = ImGuiTableFlags.Resizable | ImGuiTableFlags.BordersInnerV |
+                    ImGuiTableFlags.SizingStretchProp;
+        if (!ImGui.BeginTable("constellation-deck", 3, flags,
+                new Vector2(0, -footerReserve))) return;
+
+        ImGui.TableSetupColumn("Library", ImGuiTableColumnFlags.WidthStretch, 0.24f);
+        ImGui.TableSetupColumn("Animations", ImGuiTableColumnFlags.WidthStretch, 0.53f);
+        ImGui.TableSetupColumn("Current link", ImGuiTableColumnFlags.WidthStretch, 0.23f);
+        ImGui.TableNextRow();
+
+        ImGui.TableSetColumnIndex(0);
+        DrawLibraryRail();
+        ImGui.TableSetColumnIndex(1);
+        DrawDeckLibrary();
+        ImGui.TableSetColumnIndex(2);
+        DrawLinkPanel();
+        ImGui.EndTable();
+    }
+
+    private void DrawLibraryRail()
+    {
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, PanelColor);
+        ImGui.BeginChild("library-rail", Vector2.Zero, true);
+        DrawSectionHeading("ANIMATION LIBRARY");
+        ImGui.SameLine();
+        ImGui.TextDisabled($"{plugin.Mods.Count:N0}");
+        ImGui.Spacing();
+
+        var footerHeight = ImGui.GetFrameHeightWithSpacing() * 4f + 18f;
+        ImGui.BeginChild("folder-constellation", new Vector2(0, -footerHeight), false);
+        DrawScopeItem("all", "All animations", plugin.Mods.Count,
+            libraryScope == LibraryScope.All, LibraryScope.All);
+        foreach (var category in plugin.GetChildCategories(null).ToList())
+            DrawCategoryNavigation(category, 0);
+        DrawScopeItem("uncategorized", "Uncategorized", plugin.GetOrganizedMods(null).Count,
+            libraryScope == LibraryScope.Uncategorized, LibraryScope.Uncategorized, acceptMods: true);
+        DrawScopeItem("private", "Private", plugin.Mods.Count(mod => plugin.IsModPrivate(mod.Directory)),
+            libraryScope == LibraryScope.Private, LibraryScope.Private);
+        ImGui.EndChild();
+
+        if (ImGui.Button("New folder", new Vector2(-1, 0))) ImGui.OpenPopup("Create folder");
+        if (ImGui.Button("Mark all private", new Vector2(-1, 0)))
+            ImGui.OpenPopup("Mark every animation private?");
+        var hasPendingTransfers = pendingTransferOffers.Count > 0;
+        if (!hasPendingTransfers) ImGui.BeginDisabled();
+        if (hasPendingTransfers) ImGui.PushStyleColor(ImGuiCol.Text, RainbowTextColor());
+        if (ImGui.Button(hasPendingTransfers
+                ? $"Cloud inbox ({pendingTransferOffers.Count})"
+                : "Cloud inbox", new Vector2(-1, 0))) transferInboxOpen = true;
+        if (hasPendingTransfers) ImGui.PopStyleColor();
+        if (!hasPendingTransfers) ImGui.EndDisabled();
+
+        ImGui.PushStyleColor(ImGuiCol.Text, AccentColor);
+        if (ImGui.Selectable("Need help?  Open Discord", false)) Util.OpenLink(DiscordInviteUrl);
+        ImGui.PopStyleColor();
+        DrawCreateFolderPopup();
+        DrawMarkAllPrivatePopup();
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
+    }
+
+    private void DrawScopeItem(string id, string label, int count, bool selected, LibraryScope scope,
+        bool acceptMods = false)
+    {
+        ImGui.PushID(id);
+        ImGui.PushStyleColor(ImGuiCol.Header, new Vector4(AccentColor.X, AccentColor.Y, AccentColor.Z, 0.16f));
+        if (ImGui.Selectable($"     {label}  {count:N0}", selected, ImGuiSelectableFlags.None,
+                new Vector2(0, 30f)))
+        {
+            libraryScope = scope;
+            activeCategoryId = null;
+            ClearModSelection();
+        }
+        ImGui.PopStyleColor();
+        DrawConstellationMarker(selected, 0);
+        if (scope == LibraryScope.All) AcceptFolderRootDrop();
+        if (acceptMods) AcceptModDrop(null);
+        ImGui.PopID();
+    }
+
+    private void DrawCategoryNavigation(ModCategory category, int depth)
+    {
+        ImGui.PushID(category.Id);
+        var children = plugin.GetChildCategories(category.Id).ToList();
+        var selected = libraryScope == LibraryScope.Category &&
+                       activeCategoryId?.Equals(category.Id, StringComparison.OrdinalIgnoreCase) == true;
+        var flags = ImGuiTreeNodeFlags.OpenOnArrow | ImGuiTreeNodeFlags.SpanAvailWidth |
+                    ImGuiTreeNodeFlags.FramePadding | ImGuiTreeNodeFlags.DefaultOpen |
+                    (selected ? ImGuiTreeNodeFlags.Selected : ImGuiTreeNodeFlags.None) |
+                    (children.Count == 0 ? ImGuiTreeNodeFlags.Leaf : ImGuiTreeNodeFlags.None);
+        var open = ImGui.TreeNodeEx($"{category.Name}  {plugin.GetCategoryModCount(category.Id):N0}##folder", flags);
+        if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
+        {
+            libraryScope = LibraryScope.Category;
+            activeCategoryId = category.Id;
+            ClearModSelection();
+        }
+        DrawConstellationMarker(selected, depth + 1);
+        DrawFolderContextMenu(category);
+        DrawFolderDragSource(category);
+        AcceptFolderDrop(category);
+        AcceptModDrop(category.Id);
+        if (open)
+        {
+            foreach (var child in children) DrawCategoryNavigation(child, depth + 1);
+            ImGui.TreePop();
+        }
+        ImGui.PopID();
+    }
+
+    private static void DrawConstellationMarker(bool selected, int depth)
+    {
+        var min = ImGui.GetItemRectMin();
+        var max = ImGui.GetItemRectMax();
+        var center = new Vector2(min.X + 12f + depth * 2f, (min.Y + max.Y) * 0.5f);
+        var drawList = ImGui.GetWindowDrawList();
+        var lineColor = ImGui.GetColorU32(new Vector4(AccentColor.X, AccentColor.Y, AccentColor.Z, 0.3f));
+        var nodeColor = ImGui.GetColorU32(selected ? AccentColor : new Vector4(0.72f, 0.75f, 0.78f, 0.9f));
+        drawList.AddLine(new Vector2(center.X, min.Y - 3f), new Vector2(center.X, max.Y + 3f), lineColor, 1f);
+        drawList.AddCircleFilled(center, selected ? 4f : 2.5f, nodeColor);
+        if (selected) drawList.AddCircle(center, 7f, lineColor, 16, 1f);
+    }
+
+    private void DrawFolderContextMenu(ModCategory category)
+    {
+        if (!ImGui.BeginPopupContextItem("folderMenu")) return;
+        ImGui.TextDisabled("Folder options");
+        if (!folderRenameBuffers.TryGetValue(category.Id, out var rename)) rename = category.Name;
+        ImGui.SetNextItemWidth(220f);
+        var submitRename = ImGui.InputText("##folderRename", ref rename, 80,
+            ImGuiInputTextFlags.EnterReturnsTrue);
+        folderRenameBuffers[category.Id] = rename;
+        ImGui.SameLine();
+        if ((ImGui.SmallButton("Rename") || submitRename) && !string.IsNullOrWhiteSpace(rename))
+        {
+            plugin.RenameCategory(category.Id, rename);
+            folderRenameBuffers[category.Id] = rename.Trim();
+            ImGui.CloseCurrentPopup();
+        }
+        ImGui.Separator();
+        ImGui.TextDisabled("Create subfolder");
+        if (!folderChildBuffers.TryGetValue(category.Id, out var childName)) childName = "";
+        ImGui.SetNextItemWidth(220f);
+        var submitChild = ImGui.InputText("##childFolderName", ref childName, 80,
+            ImGuiInputTextFlags.EnterReturnsTrue);
+        folderChildBuffers[category.Id] = childName;
+        ImGui.SameLine();
+        if ((ImGui.SmallButton("Create") || submitChild) && !string.IsNullOrWhiteSpace(childName))
+        {
+            plugin.CreateCategory(childName, category.Id);
+            folderChildBuffers[category.Id] = "";
+            ImGui.CloseCurrentPopup();
+        }
+        if (!string.IsNullOrWhiteSpace(category.ParentId) && ImGui.MenuItem("Move folder to top level"))
+            plugin.MoveCategory(category.Id, null);
+        if (selectedMods.Count > 0 && ImGui.MenuItem($"Move {selectedMods.Count} selected here"))
+        {
+            plugin.MoveMods(selectedMods, category.Id);
+            ClearModSelection();
+        }
+        ImGui.Separator();
+        if (ImGui.MenuItem("Delete folder"))
+        {
+            if (activeCategoryId?.Equals(category.Id, StringComparison.OrdinalIgnoreCase) == true)
+            {
+                libraryScope = LibraryScope.All;
+                activeCategoryId = null;
+            }
+            plugin.DeleteCategory(category.Id);
+        }
+        ImGui.EndPopup();
+    }
+
+    private void DrawDeckLibrary()
+    {
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, NestedPanelColor);
+        ImGui.BeginChild("animation-deck", Vector2.Zero, true);
+        var mods = VisibleDeckMods();
+        var availableWidth = ImGui.GetContentRegionAvail().X;
+        var searchWidth = MathF.Min(320f, MathF.Max(150f, availableWidth * 0.46f));
+        var titleWidth = MathF.Max(90f, availableWidth - searchWidth - 105f);
+        DrawSectionHeading(TruncateText(CurrentLibraryTitle(), titleWidth));
+        ImGui.SameLine();
+        ImGui.TextDisabled($"{mods.Count:N0} MODS");
+
+        ImGui.SameLine();
+        ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), ImGui.GetWindowContentRegionMax().X - searchWidth));
+        ImGui.SetNextItemWidth(searchWidth);
+        ImGui.InputTextWithHint("##deck-search", "Search animations...", ref search, 128);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Search the entire animation library, regardless of the selected folder.");
+
+        selectedMods.RemoveWhere(directory => !plugin.Mods.Any(mod =>
+            mod.Directory.Equals(directory, StringComparison.OrdinalIgnoreCase)));
+        if (selectedMods.Count > 0)
+        {
+            ImGui.TextColored(AccentColor, $"{selectedMods.Count} SELECTED");
+            ImGui.SameLine();
+            ImGui.TextDisabled("Shift-click selects a range");
+            ImGui.SameLine();
+            if (ImGui.SmallButton("Clear")) ClearModSelection();
+        }
+        else
+        {
+            ImGui.TextDisabled(search.Length > 0
+                ? "Searching every folder"
+                : "Open a row to choose an animation, pose, or option");
+        }
+        ImGui.Separator();
+
+        ImGui.BeginChild("animation-rows", Vector2.Zero, false);
+        if (mods.Count == 0)
+        {
+            ImGui.Spacing();
+            ImGui.TextDisabled(search.Length > 0
+                ? "No animations match this search."
+                : "This view does not contain any animation mods yet.");
+        }
+        foreach (var mod in mods)
+        {
+            var categoryId = FindCategoryForMod(mod.Directory);
+            DrawModRow(mod, categoryId, mods);
+            ImGui.Spacing();
+        }
+        ImGui.EndChild();
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
+    }
+
+    private List<(string Directory, string Name)> VisibleDeckMods()
+    {
+        IEnumerable<(string Directory, string Name)> source;
+        if (search.Length > 0)
+        {
+            source = plugin.Mods.Where(MatchesSearch);
+        }
+        else
+        {
+            source = libraryScope switch
+            {
+                LibraryScope.Category when activeCategoryId is not null =>
+                    plugin.GetOrganizedMods(activeCategoryId),
+                LibraryScope.Uncategorized => plugin.GetOrganizedMods(null),
+                LibraryScope.Private => plugin.Mods.Where(mod => plugin.IsModPrivate(mod.Directory)),
+                _ => plugin.Mods
+            };
+        }
+        return source.DistinctBy(mod => mod.Directory, StringComparer.OrdinalIgnoreCase)
+            .OrderBy(mod => mod.Name, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(mod => mod.Directory, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    private string CurrentLibraryTitle()
+    {
+        if (search.Length > 0) return "SEARCH RESULTS";
+        return libraryScope switch
+        {
+            LibraryScope.Category when activeCategoryId is not null =>
+                plugin.GetCategoryPath(activeCategoryId).ToUpperInvariant(),
+            LibraryScope.Uncategorized => "UNCATEGORIZED",
+            LibraryScope.Private => "PRIVATE",
+            _ => "ALL ANIMATIONS"
+        };
+    }
+
+    private string? FindCategoryForMod(string directory) => plugin.Categories.FirstOrDefault(category =>
+        category.ModDirectories.Any(item => item.Equals(directory, StringComparison.OrdinalIgnoreCase)))?.Id;
+
+    private void DrawLinkPanel()
+    {
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, PanelColor);
+        ImGui.BeginChild("current-link", Vector2.Zero, true);
+        DrawSectionHeading("CURRENT LINK");
+        ImGui.Separator();
+        ImGui.Spacing();
+
+        if (!plugin.Sync.IsConnected)
+        {
+            ImGui.TextColored(MutedColor, "NO ACTIVE LINK");
+            ImGui.TextWrapped("Connect to create or join a synchronized animation room.");
+            ImGui.Spacing();
+            if (DrawPrimaryButton("Connect", -1f)) plugin.ConnectSync();
+            ImGui.TextDisabled($"Character: {plugin.SyncDisplayName}");
+            DrawCloudInboxButton();
+            ImGui.EndChild();
+            ImGui.PopStyleColor();
+            return;
+        }
+
+        ImGui.TextColored(EveryoneColor, "\u25CF  CONNECTED");
+        ImGui.TextDisabled(plugin.SyncDisplayName);
+        ImGui.TextWrapped(plugin.Sync.RelayConnectionStatus);
+        ImGui.Spacing();
+
+        var room = plugin.Sync.Room;
+        if (!plugin.Sync.IsInRoom || room is null)
+        {
+            ImGui.Separator();
+            ImGui.TextDisabled("ROOM CODE");
+            ImGui.SetNextItemWidth(-1);
+            ImGui.InputTextWithHint("##deck-room", "Enter a room code", ref roomCode, 8);
+            if (DrawPrimaryButton("Join room", -1f)) plugin.JoinSyncRoom(roomCode);
+            if (ImGui.Button("Create a new room", new Vector2(-1, 0))) plugin.CreateSyncRoom();
+            if (ImGui.Button("Disconnect", new Vector2(-1, 0))) plugin.DisconnectSync();
+            DrawCloudInboxButton();
+            ImGui.EndChild();
+            ImGui.PopStyleColor();
+            return;
+        }
+
+        ImGui.Separator();
+        ImGui.TextDisabled("ROOM CODE");
+        ImGui.TextColored(AccentColor, room.RoomCode);
+        ImGui.SameLine();
+        if (ImGui.SmallButton("Copy"))
+        {
+            ImGui.SetClipboardText(room.RoomCode);
+            plugin.NotifyRoomCodeCopied(room.RoomCode);
+        }
+
+        DrawMemberConstellation(room);
+        if (plugin.Sync.IsRoomLeader)
+        {
+            foreach (var member in room.Members.Where(member =>
+                         !plugin.Sync.IsCurrentMember(member.ConnectionId)))
+            {
+                ImGui.PushID(member.ConnectionId);
+                if (ImGui.SmallButton($"Remove {member.DisplayName}")) plugin.RemoveSyncMember(member);
+                ImGui.PopID();
+            }
+        }
+        ImGui.Separator();
+        var readyMembers = room.Members.Count(member => member.Ready);
+        var allReady = room.Members.Count > 0 && readyMembers == room.Members.Count;
+        ImGui.TextColored(allReady ? EveryoneColor : SomeColor,
+            allReady ? "\u25CF  READY TO PLAY" : $"\u25CF  {readyMembers}/{room.Members.Count} READY");
+        ImGui.TextWrapped("Choose an animation in the center deck. Playback begins when each assigned member is ready.");
+
+        if (ImGui.Button("Cancel ready", new Vector2(-1, 0))) plugin.CancelSyncReady();
+        if (plugin.Sync.IsRoomLeader && DrawPrimaryButton("Force start", -1f)) plugin.ForceSyncStart();
+        if (ImGui.Button("Leave room", new Vector2(-1, 0))) plugin.LeaveSyncRoom();
+        DrawCloudInboxButton();
+        ImGui.EndChild();
+        ImGui.PopStyleColor();
+    }
+
+    private void DrawMemberConstellation(RoomStateDto room)
+    {
+        var members = room.Members.Take(8).ToList();
+        var height = Math.Clamp(70f + members.Count * 35f, 120f, 300f);
+        var size = new Vector2(ImGui.GetContentRegionAvail().X, height);
+        var origin = ImGui.GetCursorScreenPos();
+        ImGui.InvisibleButton("##member-constellation", size);
+        var drawList = ImGui.GetWindowDrawList();
+        var x = origin.X + size.X * 0.5f;
+        var top = origin.Y + 24f;
+        var step = members.Count <= 1 ? 0f : (height - 48f) / (members.Count - 1);
+        for (var index = 0; index < members.Count; index++)
+        {
+            var member = members[index];
+            var center = new Vector2(x, top + step * index);
+            var isCurrentMember = plugin.Sync.IsCurrentMember(member.ConnectionId);
+            var color = member.Ready ? EveryoneColor : isCurrentMember ? AccentColor : CoralColor;
+            var packed = ImGui.GetColorU32(color);
+            var faint = ImGui.GetColorU32(new Vector4(color.X, color.Y, color.Z, 0.28f));
+            if (index > 0)
+            {
+                var previous = new Vector2(x, top + step * (index - 1));
+                drawList.AddLine(previous, center, faint, 1f);
+            }
+            drawList.AddCircle(center, 13f, faint, 24, 1f);
+            drawList.AddCircleFilled(center, member.Ready ? 4f : 3f, packed);
+            drawList.AddLine(new Vector2(center.X - 7f, center.Y), new Vector2(center.X + 7f, center.Y), packed, 1f);
+            drawList.AddLine(new Vector2(center.X, center.Y - 7f), new Vector2(center.X, center.Y + 7f), packed, 1f);
+            var suffix = member.IsLeader ? "  HOST" : member.Ready ? "  READY" : isCurrentMember ? "  YOU" : "  WAITING";
+            var label = member.DisplayName + suffix;
+            var labelSize = ImGui.CalcTextSize(label);
+            drawList.AddText(new Vector2(x - labelSize.X * 0.5f, center.Y + 17f),
+                ImGui.GetColorU32(member.Ready ? TextColor : MutedColor), label);
+        }
+        if (room.Members.Count > members.Count)
+            ImGui.TextDisabled($"+{room.Members.Count - members.Count} more room member(s)");
+    }
+
+    private void DrawCloudInboxButton()
+    {
+        ImGui.Spacing();
+        var hasPendingTransfers = pendingTransferOffers.Count > 0;
+        if (!hasPendingTransfers) ImGui.BeginDisabled();
+        if (hasPendingTransfers) ImGui.PushStyleColor(ImGuiCol.Text, RainbowTextColor());
+        if (ImGui.Button(hasPendingTransfers
+                ? $"Animations in cloud ({pendingTransferOffers.Count})"
+                : "No animations in cloud", new Vector2(-1, 0))) transferInboxOpen = true;
+        if (hasPendingTransfers) ImGui.PopStyleColor();
+        if (!hasPendingTransfers) ImGui.EndDisabled();
+    }
+
+    private void DrawDeckFooter()
+    {
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        var width = MathF.Max(90f, (ImGui.GetContentRegionAvail().X - spacing * 3f) / 4f);
+        if (!plugin.Sync.IsInRoom) ImGui.BeginDisabled();
+        if (ImGui.Button("EmoteSync", new Vector2(width, 34f))) plugin.SyncLobbyEmotes();
+        if (!plugin.Sync.IsInRoom) ImGui.EndDisabled();
+
+        ImGui.SameLine();
+        if (ImGui.Button(plugin.IsAligning ? "Cancel alignment" : "Align to target", new Vector2(width, 34f)))
+            plugin.ToggleAlignment();
+
+        ImGui.SameLine();
+        if (!plugin.SimpleHeelsAvailable) ImGui.BeginDisabled();
+        if (ImGui.Button("Temp Offset", new Vector2(width, 34f))) plugin.OpenSimpleHeelsTempOffset();
+        if (!plugin.SimpleHeelsAvailable) ImGui.EndDisabled();
+
+        ImGui.SameLine();
+        if (!plugin.SimpleHeelsAvailable) ImGui.BeginDisabled();
+        if (ImGui.Button("Livepose", new Vector2(width, 34f))) plugin.OpenSimpleHeelsLivePose();
+        if (!plugin.SimpleHeelsAvailable) ImGui.EndDisabled();
     }
 
     private void DrawHeader()
@@ -685,10 +1182,21 @@ public sealed class MainWindow : Window
         var displayName = TruncateText(mod.Name, labelWidth);
         var selected = selectedMods.Contains(mod.Directory);
         var treeFlags = ImGuiTreeNodeFlags.OpenOnArrow | ImGuiTreeNodeFlags.OpenOnDoubleClick |
+                        ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.FramePadding |
+                        ImGuiTreeNodeFlags.SpanAvailWidth |
                         (selected ? ImGuiTreeNodeFlags.Selected : ImGuiTreeNodeFlags.None);
+        ImGui.PushStyleColor(ImGuiCol.Header,
+            selected
+                ? new Vector4(AccentColor.X, AccentColor.Y, AccentColor.Z, 0.22f)
+                : new Vector4(FrameColor.X, FrameColor.Y, FrameColor.Z, 0.92f));
+        ImGui.PushStyleColor(ImGuiCol.HeaderHovered,
+            new Vector4(AccentColor.X, AccentColor.Y, AccentColor.Z, 0.14f));
+        ImGui.PushStyleColor(ImGuiCol.HeaderActive,
+            new Vector4(AccentColor.X, AccentColor.Y, AccentColor.Z, 0.2f));
         var open = hasDetails
             ? ImGui.TreeNodeEx(displayName, treeFlags)
             : ImGui.Selectable(displayName, selected, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(labelWidth, 0));
+        ImGui.PopStyleColor(3);
         if (selectedBy is not null || isPrivate || hasMatchColor) ImGui.PopStyleColor();
         if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
             HandleModSelection(mod.Directory, categoryId, groupOrder);
@@ -762,6 +1270,15 @@ public sealed class MainWindow : Window
                     ImGui.SetTooltip("Offer this public mod to the room (75 MB maximum).");
             }
         }
+        var detailParts = new List<string>();
+        if (groups.Count > 0) detailParts.Add($"{groups.Count} option group{(groups.Count == 1 ? "" : "s")}");
+        if (detectedPoses.Count > 0) detailParts.Add($"{detectedPoses.Count} pose{(detectedPoses.Count == 1 ? "" : "s")}");
+        if (detectedEmotes.Count > 0) detailParts.Add($"{detectedEmotes.Count} emote{(detectedEmotes.Count == 1 ? "" : "s")}");
+        if (detailParts.Count == 0) detailParts.Add("Open to inspect animations and options");
+        if (!open) ImGui.Indent(25f);
+        ImGui.TextDisabled(string.Join("  \u00B7  ", detailParts));
+        if (!open) ImGui.Unindent(25f);
+
         if (hasDetails && open)
         {
             plugin.EnsureDetectedEmotes(mod.Directory, mod.Name);
