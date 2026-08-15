@@ -87,8 +87,6 @@ public sealed class MainWindow : Window
             DrawDeckHeader();
             ImGui.Spacing();
             DrawDeckBody();
-            ImGui.Spacing();
-            DrawDeckFooter();
             DrawRoomInvitePopup();
             DrawTransferInboxWindow();
         }
@@ -152,11 +150,9 @@ public sealed class MainWindow : Window
 
     private void DrawDeckBody()
     {
-        var footerReserve = ImGui.GetFrameHeightWithSpacing() + 8f;
         var flags = ImGuiTableFlags.Resizable | ImGuiTableFlags.BordersInnerV |
                     ImGuiTableFlags.SizingStretchProp;
-        if (!ImGui.BeginTable("constellation-deck", 3, flags,
-                new Vector2(0, -footerReserve))) return;
+        if (!ImGui.BeginTable("constellation-deck", 3, flags, Vector2.Zero)) return;
 
         ImGui.TableSetupColumn("Library", ImGuiTableColumnFlags.WidthStretch, 0.24f);
         ImGui.TableSetupColumn("Animations", ImGuiTableColumnFlags.WidthStretch, 0.53f);
@@ -181,8 +177,31 @@ public sealed class MainWindow : Window
         ImGui.TextDisabled($"{plugin.Mods.Count:N0}");
         ImGui.Spacing();
 
-        var footerHeight = ImGui.GetFrameHeightWithSpacing() * 4f + 18f;
-        ImGui.BeginChild("folder-constellation", new Vector2(0, -footerHeight), false);
+        var spacing = ImGui.GetStyle().ItemSpacing.X;
+        var buttonWidth = MathF.Max(80f, (ImGui.GetContentRegionAvail().X - spacing) * 0.5f);
+        if (ImGui.Button("New folder", new Vector2(buttonWidth, 0))) ImGui.OpenPopup("Create folder");
+        ImGui.SameLine();
+        if (ImGui.Button("Mark all private", new Vector2(buttonWidth, 0)))
+            ImGui.OpenPopup("Mark every animation private?");
+        var hasPendingTransfers = pendingTransferOffers.Count > 0;
+        if (!hasPendingTransfers) ImGui.BeginDisabled();
+        if (hasPendingTransfers) ImGui.PushStyleColor(ImGuiCol.Text, RainbowTextColor());
+        if (ImGui.Button(hasPendingTransfers
+                ? $"Inbox ({pendingTransferOffers.Count})"
+                : "Inbox", new Vector2(-1, 0))) transferInboxOpen = true;
+        if (hasPendingTransfers) ImGui.PopStyleColor();
+        if (!hasPendingTransfers) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(hasPendingTransfers
+                ? "Open animation transfers waiting for retrieval."
+                : "No animation transfers are waiting for retrieval.");
+        DrawCreateFolderPopup();
+        DrawMarkAllPrivatePopup();
+
+        ImGui.Separator();
+        var toolsHeight = ImGui.GetFrameHeightWithSpacing() * 8f + 24f;
+        ImGui.BeginChild("folder-constellation", new Vector2(0, -(toolsHeight + ImGui.GetFrameHeightWithSpacing())),
+            false);
         DrawScopeItem("all", "All animations", plugin.Mods.Count,
             libraryScope == LibraryScope.All, LibraryScope.All);
         foreach (var category in plugin.GetChildCategories(null).ToList())
@@ -193,25 +212,84 @@ public sealed class MainWindow : Window
             libraryScope == LibraryScope.Private, LibraryScope.Private);
         ImGui.EndChild();
 
-        if (ImGui.Button("New folder", new Vector2(-1, 0))) ImGui.OpenPopup("Create folder");
-        if (ImGui.Button("Mark all private", new Vector2(-1, 0)))
-            ImGui.OpenPopup("Mark every animation private?");
-        var hasPendingTransfers = pendingTransferOffers.Count > 0;
-        if (!hasPendingTransfers) ImGui.BeginDisabled();
-        if (hasPendingTransfers) ImGui.PushStyleColor(ImGuiCol.Text, RainbowTextColor());
-        if (ImGui.Button(hasPendingTransfers
-                ? $"Cloud inbox ({pendingTransferOffers.Count})"
-                : "Cloud inbox", new Vector2(-1, 0))) transferInboxOpen = true;
-        if (hasPendingTransfers) ImGui.PopStyleColor();
-        if (!hasPendingTransfers) ImGui.EndDisabled();
+        DrawCharacterTools();
 
         ImGui.PushStyleColor(ImGuiCol.Text, AccentColor);
         if (ImGui.Selectable("Need help?  Open Discord", false)) Util.OpenLink(DiscordInviteUrl);
         ImGui.PopStyleColor();
-        DrawCreateFolderPopup();
-        DrawMarkAllPrivatePopup();
         ImGui.EndChild();
         ImGui.PopStyleColor();
+    }
+
+    private void DrawCharacterTools()
+    {
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, NestedPanelColor);
+        ImGui.PushStyleColor(ImGuiCol.Border, BorderColor);
+        ImGui.BeginChild("character-tools", new Vector2(0, ImGui.GetFrameHeightWithSpacing() * 8f + 16f), true);
+        ImGui.TextDisabled("CHARACTER TOOLS");
+
+        ImGui.TextColored(AccentColor, "ANIMATION SPEED");
+        var resetWidth = ButtonWidth("Reset");
+        ImGui.SameLine();
+        ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), ImGui.GetWindowContentRegionMax().X - resetWidth));
+        if (ImGui.SmallButton("Reset")) plugin.ResetAnimationSpeed();
+
+        var speedPercent = plugin.AnimationSpeedPercent;
+        if (plugin.IsAnimationSpeedMatching) ImGui.BeginDisabled();
+        ImGui.SetNextItemWidth(-1);
+        if (ImGui.SliderInt("##animation-speed", ref speedPercent, -200, 200, "%d%%"))
+            plugin.SetAnimationSpeedPercent(speedPercent);
+        if (plugin.IsAnimationSpeedMatching) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(plugin.IsAnimationSpeedMatching
+                ? "Stop target matching before setting a manual animation speed."
+                : "Match Simple Heels LivePose: -200% reverse, 0% freeze, 100% normal, 200% double speed.");
+
+        if (!plugin.CanMatchAnimationSpeed) ImGui.BeginDisabled();
+        if (plugin.IsAnimationSpeedMatching)
+            ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(AccentColor.X, AccentColor.Y, AccentColor.Z, 0.35f));
+        if (ImGui.Button(plugin.AnimationSpeedMatchButtonLabel, new Vector2(-1, 0)))
+            plugin.ToggleAnimationSpeedMatch();
+        if (plugin.IsAnimationSpeedMatching) ImGui.PopStyleColor();
+        if (!plugin.CanMatchAnimationSpeed) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(plugin.CanMatchAnimationSpeed
+                ? "Continuously match the targeted player's current animation speed. Click again to stop."
+                : "Target another player to match their animation speed.");
+
+        ImGui.Separator();
+
+        if (ImGui.Button(plugin.IsAligning ? "Cancel alignment" : "Align to Target", new Vector2(-1, 0)))
+            plugin.ToggleAlignment();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Match your position and facing direction to the current target.");
+
+        if (!plugin.Sync.IsInRoom) ImGui.BeginDisabled();
+        if (ImGui.Button("Emote Sync", new Vector2(-1, 0))) plugin.SyncLobbyEmotes();
+        if (!plugin.Sync.IsInRoom) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(plugin.Sync.IsInRoom
+                ? "Reset animation time for visible members of this Synastry room."
+                : "Join a Synastry room to use Emote Sync.");
+
+        if (!plugin.SimpleHeelsAvailable) ImGui.BeginDisabled();
+        if (ImGui.Button("Livepose", new Vector2(-1, 0))) plugin.OpenSimpleHeelsLivePose();
+        if (!plugin.SimpleHeelsAvailable) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(plugin.SimpleHeelsAvailable
+                ? "Open /heels livepose."
+                : "Simple Heels is not installed or loaded.");
+
+        if (!plugin.SimpleHeelsAvailable) ImGui.BeginDisabled();
+        if (ImGui.Button("Temp Pose", new Vector2(-1, 0))) plugin.OpenSimpleHeelsTempOffset();
+        if (!plugin.SimpleHeelsAvailable) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(plugin.SimpleHeelsAvailable
+                ? "Open /heels temp."
+                : "Simple Heels is not installed or loaded.");
+
+        ImGui.EndChild();
+        ImGui.PopStyleColor(2);
     }
 
     private void DrawScopeItem(string id, string label, int count, bool selected, LibraryScope scope,
@@ -437,7 +515,6 @@ public sealed class MainWindow : Window
             ImGui.Spacing();
             if (DrawPrimaryButton("Connect", -1f)) plugin.ConnectSync();
             ImGui.TextDisabled($"Character: {plugin.SyncDisplayName}");
-            DrawCloudInboxButton();
             ImGui.EndChild();
             ImGui.PopStyleColor();
             return;
@@ -458,7 +535,6 @@ public sealed class MainWindow : Window
             if (DrawPrimaryButton("Join room", -1f)) plugin.JoinSyncRoom(roomCode);
             if (ImGui.Button("Create a new room", new Vector2(-1, 0))) plugin.CreateSyncRoom();
             if (ImGui.Button("Disconnect", new Vector2(-1, 0))) plugin.DisconnectSync();
-            DrawCloudInboxButton();
             ImGui.EndChild();
             ImGui.PopStyleColor();
             return;
@@ -495,7 +571,6 @@ public sealed class MainWindow : Window
         if (ImGui.Button("Cancel ready", new Vector2(-1, 0))) plugin.CancelSyncReady();
         if (plugin.Sync.IsRoomLeader && DrawPrimaryButton("Force start", -1f)) plugin.ForceSyncStart();
         if (ImGui.Button("Leave room", new Vector2(-1, 0))) plugin.LeaveSyncRoom();
-        DrawCloudInboxButton();
         ImGui.EndChild();
         ImGui.PopStyleColor();
     }

@@ -95,6 +95,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private nint alignmentTargetAddress;
     private int alignmentFramesRemaining;
     private int alignmentStableFrames;
+    private float? animationSpeedOverride;
+    private System.Numerics.Vector3? animationSpeedPosition;
+    private nint animationSpeedMatchTargetAddress;
+    private string animationSpeedMatchTargetName = "";
     private readonly ConcurrentQueue<ModTransferOfferDto> incomingTransferOffers = new();
     private readonly ConcurrentQueue<ModTransferOfferDto> transferOffers = new();
     private readonly ConcurrentQueue<RoomInvite> roomInvites = new();
@@ -2042,6 +2046,165 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = "Opened Simple Heels LivePose.";
     }
 
+    public bool IsAnimationSpeedMatching => animationSpeedMatchTargetAddress != 0;
+
+    public int AnimationSpeedPercent
+    {
+        get
+        {
+            if (TryGetAnimationSpeedMatchTarget(out var target))
+                return ReadAnimationSpeedPercent(target.Address);
+            return (int)MathF.Round((animationSpeedOverride ?? 1f) * 100f);
+        }
+    }
+
+    public string AnimationSpeedMatchButtonLabel
+    {
+        get
+        {
+            if (TryGetAnimationSpeedMatchTarget(out var matchedTarget))
+                return $"Match {matchedTarget.Name.TextValue} ({ReadAnimationSpeedPercent(matchedTarget.Address)}%)";
+
+            var target = Targets.SoftTarget ?? Targets.Target;
+            return target is IPlayerCharacter player
+                ? $"Match {player.Name.TextValue} ({ReadAnimationSpeedPercent(player.Address)}%)"
+                : "Match target";
+        }
+    }
+
+    public bool CanMatchAnimationSpeed => IsAnimationSpeedMatching ||
+                                          (Targets.SoftTarget ?? Targets.Target) is IPlayerCharacter;
+
+    public void SetAnimationSpeedPercent(int percent)
+    {
+        animationSpeedMatchTargetAddress = 0;
+        animationSpeedMatchTargetName = "";
+        percent = Math.Clamp(percent, -200, 200);
+        if (percent == 100)
+        {
+            ResetAnimationSpeed();
+            return;
+        }
+
+        var player = Objects.LocalPlayer;
+        if (player is null) return;
+        animationSpeedOverride = percent / 100f;
+        animationSpeedPosition = player.Position;
+        ApplyAnimationSpeed(player.Address, animationSpeedOverride.Value);
+        Status = $"Animation speed set to {percent}%.";
+    }
+
+    public void ResetAnimationSpeed()
+    {
+        animationSpeedOverride = null;
+        animationSpeedPosition = null;
+        animationSpeedMatchTargetAddress = 0;
+        animationSpeedMatchTargetName = "";
+        if (Objects.LocalPlayer is { } player) ApplyAnimationSpeed(player.Address, 1f);
+        Status = "Animation speed reset to 100%.";
+    }
+
+    public void ToggleAnimationSpeedMatch()
+    {
+        if (IsAnimationSpeedMatching)
+        {
+            var previousName = animationSpeedMatchTargetName;
+            ResetAnimationSpeed();
+            Status = string.IsNullOrWhiteSpace(previousName)
+                ? "Animation speed target matching stopped."
+                : $"Stopped matching {previousName}'s animation speed.";
+            return;
+        }
+
+        var target = Targets.SoftTarget ?? Targets.Target;
+        if (target is not IPlayerCharacter player)
+        {
+            Status = "Target another player to match their animation speed.";
+            return;
+        }
+
+        animationSpeedOverride = null;
+        animationSpeedPosition = null;
+        animationSpeedMatchTargetAddress = player.Address;
+        animationSpeedMatchTargetName = player.Name.TextValue;
+        ApplyMatchedAnimationSpeed(player);
+        Status = $"Matching {animationSpeedMatchTargetName}'s animation speed.";
+    }
+
+    private bool TryGetAnimationSpeedMatchTarget(out IPlayerCharacter target)
+    {
+        target = null!;
+        if (animationSpeedMatchTargetAddress == 0) return false;
+        target = Objects.OfType<IPlayerCharacter>()
+            .FirstOrDefault(candidate => candidate.Address == animationSpeedMatchTargetAddress)!;
+        return target is not null;
+    }
+
+    private static int ReadAnimationSpeedPercent(nint address)
+    {
+        var character = (Character*)address;
+        return character is null
+            ? 100
+            : (int)MathF.Round(Math.Clamp(character->Timeline.OverallSpeed, -2f, 2f) * 100f);
+    }
+
+    private static void ApplyAnimationSpeed(nint address, float speed)
+    {
+        var character = (Character*)address;
+        if (character is null) return;
+        character->Timeline.OverallSpeed = Math.Clamp(speed, -2f, 2f);
+    }
+
+    private void ApplyMatchedAnimationSpeed(IPlayerCharacter target)
+    {
+        if (Objects.LocalPlayer is not { } player) return;
+        var targetCharacter = (Character*)target.Address;
+        if (targetCharacter is null) return;
+        ApplyAnimationSpeed(player.Address, targetCharacter->Timeline.OverallSpeed);
+    }
+
+    private void UpdateAnimationSpeed()
+    {
+        var player = Objects.LocalPlayer;
+        if (player is null)
+        {
+            animationSpeedOverride = null;
+            animationSpeedPosition = null;
+            animationSpeedMatchTargetAddress = 0;
+            animationSpeedMatchTargetName = "";
+            return;
+        }
+
+        if (animationSpeedMatchTargetAddress != 0)
+        {
+            if (TryGetAnimationSpeedMatchTarget(out var target))
+            {
+                ApplyMatchedAnimationSpeed(target);
+                return;
+            }
+
+            var lostName = animationSpeedMatchTargetName;
+            animationSpeedMatchTargetAddress = 0;
+            animationSpeedMatchTargetName = "";
+            ApplyAnimationSpeed(player.Address, 1f);
+            Status = string.IsNullOrWhiteSpace(lostName)
+                ? "Animation speed matching stopped because the target was lost."
+                : $"Animation speed matching stopped because {lostName} was lost.";
+            return;
+        }
+
+        if (!animationSpeedOverride.HasValue) return;
+        if (!animationSpeedPosition.HasValue ||
+            System.Numerics.Vector3.DistanceSquared(animationSpeedPosition.Value, player.Position) > 0.01f)
+        {
+            ResetAnimationSpeed();
+            Status = "Animation speed reset after movement.";
+            return;
+        }
+
+        ApplyAnimationSpeed(player.Address, animationSpeedOverride.Value);
+    }
+
     private int RefreshLobbyEmotes()
     {
         var room = sync.Room;
@@ -2144,6 +2307,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (roleSyncPending) StartRoleLabelSync();
         if (communityRoleSyncPending) StartCommunityRoleLabelSync();
         UpdateAlignment();
+        UpdateAnimationSpeed();
         ProcessCompletedDownloads();
         ProcessAddedMod();
         ProcessSyncPlaySignals();
@@ -2759,6 +2923,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         modRefreshWorker = null;
         modScanFramePermit.Dispose();
         ClearTemporaryAssignments();
+        ResetAnimationSpeed();
         Framework.Update -= OnUpdate;
         ContextMenu.OnMenuOpened -= OnContextMenuOpened;
         Chat.ChatMessage -= OnChatMessage;
