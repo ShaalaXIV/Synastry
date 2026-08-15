@@ -132,9 +132,10 @@ public sealed class MainWindow : Window
         var refreshWidth = ButtonWidth(refreshLabel);
         ImGui.SameLine();
         ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), contentRight - refreshWidth));
-        if (plugin.IsRefreshingMods) ImGui.BeginDisabled();
+        var refreshDisabled = plugin.IsRefreshingMods;
+        if (refreshDisabled) ImGui.BeginDisabled();
         if (ImGui.SmallButton(refreshLabel)) plugin.RefreshMods();
-        if (plugin.IsRefreshingMods) ImGui.EndDisabled();
+        if (refreshDisabled) ImGui.EndDisabled();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Reuse the local animation index and scan only new or changed Penumbra mods.");
 
@@ -247,13 +248,15 @@ public sealed class MainWindow : Window
                 ? "Stop target matching before setting a manual animation speed."
                 : "Synastry animation speed: -200% reverse, 0% freeze, 100% normal, 200% double speed.");
 
-        if (!plugin.AnimationSpeedAvailable || !plugin.CanMatchAnimationSpeed) ImGui.BeginDisabled();
-        if (plugin.IsAnimationSpeedMatching)
+        var wasMatchingSpeed = plugin.IsAnimationSpeedMatching;
+        var matchSpeedDisabled = !plugin.AnimationSpeedAvailable || !plugin.CanMatchAnimationSpeed;
+        if (matchSpeedDisabled) ImGui.BeginDisabled();
+        if (wasMatchingSpeed)
             ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(AccentColor.X, AccentColor.Y, AccentColor.Z, 0.35f));
         if (ImGui.Button(plugin.AnimationSpeedMatchButtonLabel, new Vector2(-1, 0)))
             plugin.ToggleAnimationSpeedMatch();
-        if (plugin.IsAnimationSpeedMatching) ImGui.PopStyleColor();
-        if (!plugin.AnimationSpeedAvailable || !plugin.CanMatchAnimationSpeed) ImGui.EndDisabled();
+        if (wasMatchingSpeed) ImGui.PopStyleColor();
+        if (matchSpeedDisabled) ImGui.EndDisabled();
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             ImGui.SetTooltip(!plugin.AnimationSpeedAvailable
                 ? "Synastry's animation-speed hook is unavailable for this game version."
@@ -687,10 +690,11 @@ public sealed class MainWindow : Window
             ImGui.Spacing();
         }
 
-        if (plugin.IsRefreshingMods) ImGui.BeginDisabled();
+        var refreshDisabled = plugin.IsRefreshingMods;
+        if (refreshDisabled) ImGui.BeginDisabled();
         if (ImGui.Button(refreshLabel, new Vector2(refreshWidth, 0)))
             plugin.RefreshMods();
-        if (plugin.IsRefreshingMods) ImGui.EndDisabled();
+        if (refreshDisabled) ImGui.EndDisabled();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Reuse the local animation index and scan only new or changed Penumbra mods.");
         ImGui.SameLine();

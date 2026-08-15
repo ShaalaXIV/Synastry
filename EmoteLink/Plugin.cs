@@ -2107,12 +2107,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void ResetAnimationSpeed()
     {
+        ClearAnimationSpeedState();
+        if (Objects.LocalPlayer is { } player) ApplyAnimationSpeed(player.Address, 1f);
+        Status = "Animation speed reset to 100%.";
+    }
+
+    private void ClearAnimationSpeedState()
+    {
         animationSpeedOverride = null;
         animationSpeedPosition = null;
         animationSpeedMatchTargetAddress = 0;
         animationSpeedMatchTargetName = "";
-        if (Objects.LocalPlayer is { } player) ApplyAnimationSpeed(player.Address, 1f);
-        Status = "Animation speed reset to 100%.";
     }
 
     public void ToggleAnimationSpeedMatch()
@@ -2947,9 +2952,18 @@ public sealed unsafe class Plugin : IDalamudPlugin
         refreshCancellation?.Dispose();
         modRefreshWorker = null;
         modScanFramePermit.Dispose();
-        ClearTemporaryAssignments();
-        ResetAnimationSpeed();
+        ClearAnimationSpeedState();
         animationSpeedController?.Dispose();
+        movement.Dispose();
+        anywherePoses?.Dispose();
+        try
+        {
+            ClearTemporaryAssignments();
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "Temporary assignments could not be cleared while Synastry was unloading.");
+        }
         Framework.Update -= OnUpdate;
         ContextMenu.OnMenuOpened -= OnContextMenuOpened;
         Chat.ChatMessage -= OnChatMessage;
@@ -2961,8 +2975,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Commands.RemoveHandler(FallbackCommand);
         penumbra.ModAdded -= OnPenumbraModAdded;
         penumbra.Dispose();
-        movement.Dispose();
-        anywherePoses?.Dispose();
         sync.DisposeAsync().AsTask().GetAwaiter().GetResult();
         windows.RemoveAllWindows();
     }
