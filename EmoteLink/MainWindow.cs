@@ -1262,9 +1262,9 @@ public sealed class MainWindow : Window
         var labelWidth = MathF.Max(80f, ImGui.GetContentRegionAvail().X - controlsWidth - 42f);
         var displayName = TruncateText(mod.Name, labelWidth);
         var selected = selectedMods.Contains(mod.Directory);
+        // Keep the tree hitbox confined to the animation label. A framed/span row owns the
+        // trailing pixels too, which prevents the Send button from receiving mouse input.
         var treeFlags = ImGuiTreeNodeFlags.OpenOnArrow | ImGuiTreeNodeFlags.OpenOnDoubleClick |
-                        ImGuiTreeNodeFlags.Framed | ImGuiTreeNodeFlags.FramePadding |
-                        ImGuiTreeNodeFlags.SpanAvailWidth |
                         (selected ? ImGuiTreeNodeFlags.Selected : ImGuiTreeNodeFlags.None);
         ImGui.PushStyleColor(ImGuiCol.Header,
             selected
@@ -1277,7 +1277,6 @@ public sealed class MainWindow : Window
         var open = hasDetails
             ? ImGui.TreeNodeEx(displayName, treeFlags)
             : ImGui.Selectable(displayName, selected, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(labelWidth, 0));
-        ImGui.SetItemAllowOverlap();
         ImGui.PopStyleColor(3);
         if (selectedBy is not null || isPrivate || hasMatchColor) ImGui.PopStyleColor();
         if (ImGui.IsItemClicked(ImGuiMouseButton.Left))

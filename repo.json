@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.59.0",
+    "AssemblyVersion": "1.0.60.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -13,9 +13,9 @@
     "Tags": [ "penumbra", "animation", "emote", "sync" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.59/Synastry-1.0.59.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.59/Synastry-1.0.59.zip",
-    "Changelog": "Fixes animation sending, restores green-match-first library sorting, and uses normal networked emotes whenever unlocked while reserving relayed direct playback for locked-emote fallback.",
-    "LastUpdate": "1786766622"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.60/Synastry-1.0.60.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.60/Synastry-1.0.60.zip",
+    "Changelog": "Restores the animation Send workflow by separating the Send button from the animation row hitbox, allowing transfer offers to reach the relay and recipient inbox again.",
+    "LastUpdate": "1786767758"
   }
 ]
