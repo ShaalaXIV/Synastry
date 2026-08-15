@@ -52,6 +52,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly MovementService movement;
     private readonly PoseService poses;
     private readonly AnywherePoseService? anywherePoses;
+    private readonly AnimationSpeedService? animationSpeedController;
     private readonly AnimationSyncService sync;
     private readonly WindowSystem windows = new("Synastry");
     private readonly MainWindow mainWindow;
@@ -191,6 +192,15 @@ public sealed unsafe class Plugin : IDalamudPlugin
         catch (Exception exception)
         {
             Log.Warning(exception, "Anywhere pose hooks could not be initialized; normal-pose fallbacks remain available.");
+        }
+        try
+        {
+            animationSpeedController = new AnimationSpeedService(
+                Interop, Objects, DataManager, GetAnimationSpeedHookOverride);
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "Animation-speed hook could not be initialized.");
         }
         sync = new AnimationSyncService();
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
@@ -2047,6 +2057,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     }
 
     public bool IsAnimationSpeedMatching => animationSpeedMatchTargetAddress != 0;
+    public bool AnimationSpeedAvailable => animationSpeedController is not null;
 
     public int AnimationSpeedPercent
     {
@@ -2153,6 +2164,20 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var character = (Character*)address;
         if (character is null) return;
         character->Timeline.OverallSpeed = Math.Clamp(speed, -2f, 2f);
+    }
+
+    private float? GetAnimationSpeedHookOverride()
+    {
+        if (animationSpeedMatchTargetAddress != 0)
+        {
+            if (!TryGetAnimationSpeedMatchTarget(out var target)) return null;
+            var targetCharacter = (Character*)target.Address;
+            return targetCharacter is null
+                ? null
+                : Math.Clamp(targetCharacter->Timeline.OverallSpeed, -2f, 2f);
+        }
+
+        return animationSpeedOverride;
     }
 
     private void ApplyMatchedAnimationSpeed(IPlayerCharacter target)
@@ -2924,6 +2949,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         modScanFramePermit.Dispose();
         ClearTemporaryAssignments();
         ResetAnimationSpeed();
+        animationSpeedController?.Dispose();
         Framework.Update -= OnUpdate;
         ContextMenu.OnMenuOpened -= OnContextMenuOpened;
         Chat.ChatMessage -= OnChatMessage;

@@ -53,7 +53,7 @@ public sealed class MainWindow : Window
         Private
     }
 
-    public MainWindow(Plugin plugin) : base("Synastry Constellation DEV###EmoteLink")
+    public MainWindow(Plugin plugin) : base("Synastry###EmoteLink")
     {
         this.plugin = plugin;
         Size = new Vector2(1180, 720);
@@ -235,25 +235,29 @@ public sealed class MainWindow : Window
         if (ImGui.SmallButton("Reset")) plugin.ResetAnimationSpeed();
 
         var speedPercent = plugin.AnimationSpeedPercent;
-        if (plugin.IsAnimationSpeedMatching) ImGui.BeginDisabled();
+        if (!plugin.AnimationSpeedAvailable || plugin.IsAnimationSpeedMatching) ImGui.BeginDisabled();
         ImGui.SetNextItemWidth(-1);
         if (ImGui.SliderInt("##animation-speed", ref speedPercent, -200, 200, "%d%%"))
             plugin.SetAnimationSpeedPercent(speedPercent);
-        if (plugin.IsAnimationSpeedMatching) ImGui.EndDisabled();
+        if (!plugin.AnimationSpeedAvailable || plugin.IsAnimationSpeedMatching) ImGui.EndDisabled();
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip(plugin.IsAnimationSpeedMatching
+            ImGui.SetTooltip(!plugin.AnimationSpeedAvailable
+                ? "Synastry's animation-speed hook is unavailable for this game version."
+                : plugin.IsAnimationSpeedMatching
                 ? "Stop target matching before setting a manual animation speed."
-                : "Match Simple Heels LivePose: -200% reverse, 0% freeze, 100% normal, 200% double speed.");
+                : "Synastry animation speed: -200% reverse, 0% freeze, 100% normal, 200% double speed.");
 
-        if (!plugin.CanMatchAnimationSpeed) ImGui.BeginDisabled();
+        if (!plugin.AnimationSpeedAvailable || !plugin.CanMatchAnimationSpeed) ImGui.BeginDisabled();
         if (plugin.IsAnimationSpeedMatching)
             ImGui.PushStyleColor(ImGuiCol.Button, new Vector4(AccentColor.X, AccentColor.Y, AccentColor.Z, 0.35f));
         if (ImGui.Button(plugin.AnimationSpeedMatchButtonLabel, new Vector2(-1, 0)))
             plugin.ToggleAnimationSpeedMatch();
         if (plugin.IsAnimationSpeedMatching) ImGui.PopStyleColor();
-        if (!plugin.CanMatchAnimationSpeed) ImGui.EndDisabled();
+        if (!plugin.AnimationSpeedAvailable || !plugin.CanMatchAnimationSpeed) ImGui.EndDisabled();
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip(plugin.CanMatchAnimationSpeed
+            ImGui.SetTooltip(!plugin.AnimationSpeedAvailable
+                ? "Synastry's animation-speed hook is unavailable for this game version."
+                : plugin.CanMatchAnimationSpeed
                 ? "Continuously match the targeted player's current animation speed. Click again to stop."
                 : "Target another player to match their animation speed.");
 
