@@ -485,10 +485,8 @@ public sealed class MainWindow : Window
                 _ => plugin.Mods
             };
         }
-        return source.DistinctBy(mod => mod.Directory, StringComparer.OrdinalIgnoreCase)
-            .OrderBy(mod => mod.Name, StringComparer.OrdinalIgnoreCase)
-            .ThenBy(mod => mod.Directory, StringComparer.OrdinalIgnoreCase)
-            .ToList();
+        return plugin.OrderModsForLibrary(
+            source.DistinctBy(mod => mod.Directory, StringComparer.OrdinalIgnoreCase));
     }
 
     private string CurrentLibraryTitle()
@@ -1279,6 +1277,7 @@ public sealed class MainWindow : Window
         var open = hasDetails
             ? ImGui.TreeNodeEx(displayName, treeFlags)
             : ImGui.Selectable(displayName, selected, ImGuiSelectableFlags.AllowDoubleClick, new Vector2(labelWidth, 0));
+        ImGui.SetItemAllowOverlap();
         ImGui.PopStyleColor(3);
         if (selectedBy is not null || isPrivate || hasMatchColor) ImGui.PopStyleColor();
         if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
@@ -1342,8 +1341,9 @@ public sealed class MainWindow : Window
         if (controlsWidth > 0)
         {
             ImGui.SameLine();
-            ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(),
-                ImGui.GetWindowContentRegionMax().X - controlsWidth));
+            // The full-width framed tree row leaves its same-line cursor at the far edge.
+            // Anchor the controls to the content edge directly so Send remains visible.
+            ImGui.SetCursorPosX(ImGui.GetWindowContentRegionMax().X - controlsWidth);
             if (statusWidth > 0) ImGui.TextColored(statusColor, statusLabel);
             if (sendWidth > 0)
             {
