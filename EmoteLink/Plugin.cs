@@ -26,6 +26,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
 {
     private const string PrimaryCommand = "/syn";
     private const string FallbackCommand = "/synastry";
+    private const string LoopCarrierCommand = "/beesknees";
+    private const string OneShotCarrierCommand = "/cheer";
+    private const string CarrierTag = "Synastry Carrier";
+    private const int CarrierPriority = 10_000;
     private const float MaxAlignDistance = 2f;
     private const float MaxMidEmoteAlignDistance = 0.5f;
     private const int LobbyEmoteRefreshDelayMs = 6000;
@@ -34,6 +38,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private const string PublicRelayUrl = "https://emotelink.aethercast.org";
 
     private sealed record PendingPenumbraInstall(ModTransferOfferDto Offer, string Path, string ReceiveFolder);
+    private sealed record EmoteTimelineInfo(uint RowId, string Key, bool IsLoop);
+    private sealed record EmotePlaybackInfo(IReadOnlyList<EmoteTimelineInfo> Timelines);
+    private sealed record ActiveCarrier(
+        Guid CollectionId,
+        string Tag,
+        int Priority,
+        string Command,
+        IReadOnlySet<uint> TimelineIds,
+        long CreatedAt)
+    {
+        public bool AnimationStarted { get; set; }
+        public long LastSeenAt { get; set; }
+    }
 
     [PluginService] private static IDalamudPluginInterface PluginInterface { get; set; } = null!;
     [PluginService] private static ICommandManager Commands { get; set; } = null!;
@@ -63,6 +80,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private long activationTime;
     private readonly Dictionary<string, string> emoteCommandsByName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, EmoteTarget> emoteTargetsByName = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, EmotePlaybackInfo> emotePlaybackByCommand =
+        new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<ModOptionGroup>> optionGroups =
         new(StringComparer.OrdinalIgnoreCase);
     private string? pendingCommand;
@@ -94,6 +113,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private string? preparedModKey;
     private string? preparedCommand;
     private PoseTarget? preparedPose;
+    private ActiveCarrier? activeCarrier;
     private nint alignmentTargetAddress;
     private int alignmentFramesRemaining;
     private int alignmentStableFrames;
@@ -1681,8 +1701,119 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
 
-        if (allowGroupPlay && PrepareForGroupPlay(directory, name, command, null)) return;
-        ScheduleCommand(name, command, 300);
+        var playbackCommand = TryActivateEmoteCarrier(collection.Value.Id, directory, command, out var carrierCommand)
+            ? carrierCommand
+            : command;
+        if (allowGroupPlay && PrepareForGroupPlay(directory, name, playbackCommand, null)) return;
+        ScheduleCommand(name, playbackCommand, 300);
+    }
+
+    private bool TryActivateEmoteCarrier(
+        Guid collectionId,
+        string directory,
+        string sourceCommand,
+        out string carrierCommand)
+    {
+        carrierCommand = sourceCommand;
+        if (!emotePlaybackByCommand.TryGetValue(sourceCommand, out var sourceInfo) ||
+            sourceInfo.Timelines.Count == 0) return false;
+
+        carrierCommand = sourceInfo.Timelines.Any(timeline => timeline.IsLoop)
+            ? LoopCarrierCommand
+            : OneShotCarrierCommand;
+        if (sourceCommand.Equals(carrierCommand, StringComparison.OrdinalIgnoreCase)) return false;
+        if (!emotePlaybackByCommand.TryGetValue(carrierCommand, out var carrierInfo) ||
+            carrierInfo.Timelines.Count == 0)
+        {
+            Log.Warning("Carrier command {CarrierCommand} was not found in the current Emote sheet.", carrierCommand);
+            carrierCommand = sourceCommand;
+            return false;
+        }
+
+        var root = penumbra.GetModRoot();
+        if (string.IsNullOrWhiteSpace(root))
+        {
+            carrierCommand = sourceCommand;
+            return false;
+        }
+
+        var modPath = Path.Combine(root, directory);
+        if (!Directory.Exists(modPath))
+        {
+            carrierCommand = sourceCommand;
+            return false;
+        }
+
+        var candidates = new List<(string SourceGamePath, string CarrierGamePath)>();
+        foreach (var sourceGamePath in ReadPapGamePaths(modPath))
+        {
+            var normalized = sourceGamePath.Replace('\\', '/').ToLowerInvariant();
+            const string commonMarker = "/bt_common/";
+            var commonIndex = normalized.IndexOf(commonMarker, StringComparison.Ordinal);
+            if (commonIndex < 0 || !normalized.EndsWith(".pap", StringComparison.Ordinal)) continue;
+            var relativeSourcePath = normalized[(commonIndex + commonMarker.Length)..^4];
+            if (!relativeSourcePath.StartsWith("emote", StringComparison.Ordinal)) continue;
+            var sourceLeaf = TimelineLeaf(relativeSourcePath);
+            var sourceTimeline = sourceInfo.Timelines.FirstOrDefault(timeline =>
+                relativeSourcePath.Equals(timeline.Key, StringComparison.OrdinalIgnoreCase) ||
+                sourceLeaf.Equals(TimelineLeaf(timeline.Key), StringComparison.OrdinalIgnoreCase));
+            if (sourceTimeline is null) continue;
+            var targetTimeline = carrierInfo.Timelines.FirstOrDefault(timeline =>
+                                     timeline.IsLoop == sourceTimeline.IsLoop) ??
+                                 carrierInfo.Timelines.First();
+            var carrierTimelinePath = targetTimeline.Key.Contains('/')
+                ? targetTimeline.Key
+                : "emote/" + targetTimeline.Key;
+            candidates.Add((normalized,
+                normalized[..(commonIndex + commonMarker.Length)] + carrierTimelinePath + ".pap"));
+        }
+
+        if (candidates.Count == 0)
+        {
+            carrierCommand = sourceCommand;
+            return false;
+        }
+
+        var resolvedPaths = penumbra.ResolvePlayerPaths(candidates.Select(candidate => candidate.SourceGamePath).ToList());
+        if (resolvedPaths.Count != candidates.Count)
+        {
+            carrierCommand = sourceCommand;
+            return false;
+        }
+
+        var mappings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        for (var index = 0; index < candidates.Count; index++)
+        {
+            var resolvedPath = resolvedPaths[index];
+            if (!Path.IsPathFullyQualified(resolvedPath) || !File.Exists(resolvedPath)) continue;
+            mappings[candidates[index].CarrierGamePath] = resolvedPath;
+        }
+
+        if (mappings.Count == 0)
+        {
+            carrierCommand = sourceCommand;
+            return false;
+        }
+
+        if (!penumbra.AddCarrierMod(CarrierTag, collectionId, mappings, CarrierPriority))
+        {
+            carrierCommand = sourceCommand;
+            return false;
+        }
+
+        activeCarrier = new ActiveCarrier(
+            collectionId,
+            CarrierTag,
+            CarrierPriority,
+            carrierCommand,
+            carrierInfo.Timelines.Select(timeline => timeline.RowId).ToHashSet(),
+            Environment.TickCount64);
+        Log.Information(
+            "Mapped {MappingCount} selected PAP path(s) from {SourceCommand} to carrier {CarrierCommand}.",
+            mappings.Count,
+            sourceCommand,
+            carrierCommand);
+        return true;
     }
 
     private bool PrepareForGroupPlay(string directory, string modName, string? command, PoseTarget? pose)
@@ -1925,6 +2056,26 @@ public sealed unsafe class Plugin : IDalamudPlugin
             var name = row.Name.ExtractText();
             if (command.Length == 0 || name.Length == 0) continue;
             AddEmoteName(row.RowId, name, command);
+            var timelines = row.ActionTimeline
+                .Where(timeline => timeline is { RowId: > 0, IsValid: true })
+                .Select(timeline => new EmoteTimelineInfo(
+                    timeline.RowId,
+                    NormalizeTimelineKey(timeline.Value.Key.ExtractText()),
+                    timeline.Value.IsLoop))
+                .Where(timeline => timeline.Key.Length > 0)
+                .DistinctBy(timeline => (timeline.RowId, timeline.Key.ToUpperInvariant(), timeline.IsLoop))
+                .ToList();
+            if (timelines.Count > 0)
+                emotePlaybackByCommand.TryAdd(command, new EmotePlaybackInfo(timelines));
+        }
+        foreach (var carrierCommand in new[] { LoopCarrierCommand, OneShotCarrierCommand })
+        {
+            if (emotePlaybackByCommand.TryGetValue(carrierCommand, out var carrier))
+                Log.Information("Carrier {CarrierCommand} timelines: {Timelines}.", carrierCommand,
+                    string.Join(", ", carrier.Timelines.Select(timeline =>
+                        $"{timeline.RowId}:{timeline.Key}{(timeline.IsLoop ? " [loop]" : "")}")));
+            else
+                Log.Warning("Carrier {CarrierCommand} was not found in the current Emote sheet.", carrierCommand);
         }
         Log.Information("Loaded {Count} emote names for automatic playback.", emoteCommandsByName.Count);
     }
@@ -2010,6 +2161,24 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private static string NormalizeEmoteName(string value) =>
         string.Join(' ', value.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries));
+
+    private static string NormalizeTimelineKey(string value)
+    {
+        var normalized = value.Replace('\\', '/').Trim().Trim('/').ToLowerInvariant();
+        if (normalized.EndsWith(".pap", StringComparison.Ordinal)) normalized = normalized[..^4];
+        const string actionPrefix = "chara/action/";
+        if (normalized.StartsWith(actionPrefix, StringComparison.Ordinal))
+            normalized = normalized[actionPrefix.Length..];
+        const string commonMarker = "bt_common/";
+        var commonIndex = normalized.IndexOf(commonMarker, StringComparison.Ordinal);
+        return commonIndex >= 0 ? normalized[(commonIndex + commonMarker.Length)..] : normalized;
+    }
+
+    private static string TimelineLeaf(string timelinePath)
+    {
+        var slash = timelinePath.LastIndexOf('/');
+        return slash >= 0 ? timelinePath[(slash + 1)..] : timelinePath;
+    }
 
     private static void ExecuteCommand(string command)
     {
@@ -2279,6 +2448,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void ClearTemporaryAssignmentsInternal(bool cancelGroupReady)
     {
+        if (activeCarrier is { } carrier)
+        {
+            penumbra.RemoveCarrierMod(carrier.Tag, carrier.CollectionId, carrier.Priority);
+            activeCarrier = null;
+        }
         foreach (var assignment in configuration.ActiveAssignments.ToList())
             if (penumbra.Remove(assignment)) configuration.ActiveAssignments.Remove(assignment);
 
@@ -2424,9 +2598,35 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Log.Information("Ran lobby EmoteSync after {DelayMilliseconds} ms for {ActorCount} visible actors.",
                 LobbyEmoteRefreshDelayMs, refreshed);
         }
+        UpdateCarrierLifecycle();
         UpdatePoseCycling();
         if (!waitingForAnimation) return;
         UpdateMovementCleanup();
+    }
+
+    private void UpdateCarrierLifecycle()
+    {
+        var carrier = activeCarrier;
+        if (carrier is null) return;
+        if (string.Equals(pendingCommand, carrier.Command, StringComparison.OrdinalIgnoreCase) ||
+            string.Equals(preparedCommand, carrier.Command, StringComparison.OrdinalIgnoreCase)) return;
+
+        var player = (Character*)(Objects.LocalPlayer?.Address ?? 0);
+        var timelineId = player is null ? 0u : player->Timeline.TimelineSequencer.TimelineIds[0];
+        if (carrier.TimelineIds.Contains(timelineId))
+        {
+            carrier.AnimationStarted = true;
+            carrier.LastSeenAt = Environment.TickCount64;
+            return;
+        }
+
+        if (!carrier.AnimationStarted && Environment.TickCount64 - carrier.CreatedAt < 5000) return;
+        if (carrier.AnimationStarted && Environment.TickCount64 - carrier.LastSeenAt < 500) return;
+        var status = carrier.AnimationStarted
+            ? "Carrier animation finished; removed Synastry's temporary emote mapping."
+            : "Carrier animation did not start; removed Synastry's temporary emote mapping.";
+        ClearTemporaryAssignmentsInternal(false);
+        Status = status;
     }
 
     private void ProcessTransferOffers()

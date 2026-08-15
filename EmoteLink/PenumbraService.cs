@@ -29,6 +29,9 @@ public sealed class PenumbraService : IDisposable
     private readonly ICallGateSubscriber<string, string,
         IReadOnlyDictionary<string, (string[] Options, int GroupType)>?> getAvailableSettings;
     private readonly ICallGateSubscriber<string, int> installMod;
+    private readonly ICallGateSubscriber<string[], string[], (string[], string[][])> resolvePlayerPaths;
+    private readonly ICallGateSubscriber<string, Guid, Dictionary<string, string>, string, int, int> addTemporaryMod;
+    private readonly ICallGateSubscriber<string, Guid, int, int> removeTemporaryMod;
     private readonly ICallGateSubscriber<string, string, string, int> setModPath;
     private readonly ICallGateSubscriber<string, object?> modAdded;
 
@@ -54,6 +57,11 @@ public sealed class PenumbraService : IDisposable
         getAvailableSettings = pi.GetIpcSubscriber<string, string,
             IReadOnlyDictionary<string, (string[] Options, int GroupType)>?>("Penumbra.GetAvailableModSettings.V5");
         installMod = pi.GetIpcSubscriber<string, int>("Penumbra.InstallMod.V5");
+        resolvePlayerPaths = pi.GetIpcSubscriber<string[], string[], (string[], string[][])>(
+            "Penumbra.ResolvePlayerPaths");
+        addTemporaryMod = pi.GetIpcSubscriber<string, Guid, Dictionary<string, string>, string, int, int>(
+            "Penumbra.AddTemporaryMod.V5");
+        removeTemporaryMod = pi.GetIpcSubscriber<string, Guid, int, int>("Penumbra.RemoveTemporaryMod.V5");
         setModPath = pi.GetIpcSubscriber<string, string, string, int>("Penumbra.SetModPath.V5");
         modAdded = pi.GetIpcSubscriber<string, object?>("Penumbra.ModAdded");
         modAdded.Subscribe(OnModAdded);
@@ -202,6 +210,57 @@ public sealed class PenumbraService : IDisposable
         {
             log.Error(ex, "Could not queue transferred mod for Penumbra installation.");
             return (false, ex.GetBaseException().Message);
+        }
+    }
+
+    public IReadOnlyList<string> ResolvePlayerPaths(IReadOnlyList<string> gamePaths)
+    {
+        try
+        {
+            return resolvePlayerPaths.InvokeFunc(gamePaths.ToArray(), []).Item1;
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "Could not resolve animation paths for Synastry's emote carrier.");
+            return [];
+        }
+    }
+
+    public bool AddCarrierMod(
+        string tag,
+        Guid collectionId,
+        IReadOnlyDictionary<string, string> paths,
+        int priority)
+    {
+        try
+        {
+            var result = addTemporaryMod.InvokeFunc(
+                tag,
+                collectionId,
+                paths.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
+                "",
+                priority);
+            if (result != 0)
+                log.Warning("Penumbra rejected Synastry carrier {CarrierTag}; error code {ErrorCode}.", tag, result);
+            return result == 0;
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "Could not register Synastry carrier {CarrierTag}.", tag);
+            return false;
+        }
+    }
+
+    public bool RemoveCarrierMod(string tag, Guid collectionId, int priority)
+    {
+        try
+        {
+            return removeTemporaryMod.InvokeFunc(tag, collectionId, priority) is 0 or 1;
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "Could not remove Synastry carrier {CarrierTag}.", tag);
+            return false;
         }
     }
 
