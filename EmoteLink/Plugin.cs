@@ -64,6 +64,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] private static IContextMenu ContextMenu { get; set; } = null!;
     [PluginService] private static ITextureProvider TextureProvider { get; set; } = null!;
     [PluginService] private static IClientState ClientState { get; set; } = null!;
+    [PluginService] private static IUnlockState UnlockState { get; set; } = null!;
 
     private readonly Configuration configuration;
     private readonly AnimationIndexCache animationIndexCache;
@@ -118,6 +119,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly List<ActiveRemotePlayback> activeRemotePlaybacks = [];
     private readonly HashSet<TemporaryAssignment> remoteAssignments = [];
     private string? preparedModKey;
+    private string? preparedCatalogFingerprint;
     private string? preparedCommand;
     private EmotePlayback? preparedDirectPlayback;
     private PoseTarget? preparedPose;
@@ -1200,6 +1202,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public void CancelSyncReady()
     {
         preparedModKey = null;
+        preparedCatalogFingerprint = null;
         preparedCommand = null;
         preparedPose = null;
         preparedDirectPlayback = null;
@@ -1215,6 +1218,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void CancelGroupReadinessForSolo()
     {
         preparedModKey = null;
+        preparedCatalogFingerprint = null;
         preparedCommand = null;
         preparedPose = null;
         preparedDirectPlayback = null;
@@ -1373,15 +1377,18 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var order = categoryId is null
             ? configuration.UncategorizedOrder
             : configuration.Categories.FirstOrDefault(folder => folder.Id == categoryId)?.ModDirectories ?? [];
-        var organized = order.Where(modsByDirectory.ContainsKey)
-            .Select(directory => modsByDirectory[directory])
+        var organized = OrderModsForLibrary(order.Where(modsByDirectory.ContainsKey)
+            .Select(directory => modsByDirectory[directory]));
+        organizedModsCache[cacheKey] = organized;
+        return organized;
+    }
+
+    public List<(string Directory, string Name)> OrderModsForLibrary(
+        IEnumerable<(string Directory, string Name)> mods) => mods
             .OrderBy(mod => GetMatchSortTier(mod.Directory))
             .ThenBy(mod => mod.Name, StringComparer.OrdinalIgnoreCase)
             .ThenBy(mod => mod.Directory, StringComparer.OrdinalIgnoreCase)
             .ToList();
-        organizedModsCache[cacheKey] = organized;
-        return organized;
-    }
 
     public IReadOnlyList<ModCategory> GetChildCategories(string? parentId)
     {
@@ -1721,10 +1728,20 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Chat.PrintError($"[Synastry] {command} has no playable action timeline in the current game data.");
             return;
         }
+
+        // Preserve the game's normal networked emote path whenever the character owns it.
+        // Direct timeline playback is only the fallback that bypasses a locked emote.
+        if (IsEmoteUnlocked(playback.EmoteId))
+        {
+            if (allowGroupPlay && PrepareForGroupPlay(directory, name, command, null, null)) return;
+            ScheduleCommand(name, command, 300);
+            return;
+        }
+
         if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, null, playback)) return;
         ScheduleDirectPlayback(name, Objects.LocalPlayer?.Address ?? 0, playback, 300);
         if (sync.IsConnected && modCatalogKeys.TryGetValue(directory, out var fingerprint) && fingerprint.Length == 64)
-            _ = BroadcastLocalPlaybackAsync(fingerprint, playback);
+            _ = BroadcastLocalPlaybackAsync(fingerprint, playback, pendingCommandTime);
     }
 
     private bool PrepareForGroupPlay(
@@ -1736,6 +1753,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         if (!sync.IsInRoom) return false;
         preparedModKey = modSyncKeys.TryGetValue(directory, out var key) ? key : NormalizeModKey(modName);
+        preparedCatalogFingerprint = modCatalogKeys.GetValueOrDefault(directory);
         preparedCommand = command;
         preparedPose = pose;
         preparedDirectPlayback = directPlayback;
@@ -1765,12 +1783,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
         pendingCommandTime = Environment.TickCount64 + delayMs;
     }
 
-    private Task BroadcastLocalPlaybackAsync(string fingerprint, EmotePlayback playback)
+    private Task BroadcastLocalPlaybackAsync(string fingerprint, EmotePlayback playback, long startAt)
     {
         return EnsureLocalPresenceAsync().ContinueWith(task =>
         {
             task.GetAwaiter().GetResult();
-            return sync.BroadcastLocalAnimationAsync(fingerprint, playback.EmoteId, 350);
+            var remaining = (int)Math.Clamp(startAt - Environment.TickCount64, 100, 3000);
+            return sync.BroadcastLocalAnimationAsync(fingerprint, playback.EmoteId, remaining);
         }, TaskScheduler.Default).Unwrap().ContinueWith(task =>
         {
             if (task.Exception is not null)
@@ -2020,6 +2039,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
         playback = null!;
         if (!emotePlaybackByCommand.TryGetValue(command, out var info)) return false;
         return TryCreatePlayback(info, out playback);
+    }
+
+    private bool IsEmoteUnlocked(uint emoteId)
+    {
+        var row = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Emote>()?.GetRow(emoteId);
+        return row is { } emote && UnlockState.IsEmoteUnlocked(emote);
     }
 
     private static bool TryCreatePlayback(EmotePlaybackInfo info, out EmotePlayback playback)
@@ -2434,6 +2459,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (cancelGroupReady && sync.IsInRoom)
         {
             preparedModKey = null;
+            preparedCatalogFingerprint = null;
             preparedCommand = null;
             preparedPose = null;
             preparedDirectPlayback = null;
@@ -3173,6 +3199,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     Objects.LocalPlayer?.Address ?? 0,
                     preparedDirectPlayback,
                     "group animation");
+            if (preparedDirectPlayback is not null &&
+                preparedCatalogFingerprint is { Length: 64 } fingerprint)
+                _ = BroadcastLocalPlaybackAsync(fingerprint, preparedDirectPlayback, pendingCommandTime);
             pendingSelectionModKey = signal.ModKey;
             lobbyEmoteRefreshTime = 0;
             Status = $"Group ready. Starting in {delay / 1000f:F1}s.";
@@ -3183,6 +3212,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 delay,
                 signal.DelayMilliseconds > 0 ? "relay countdown" : "legacy UTC");
             preparedModKey = null;
+            preparedCatalogFingerprint = null;
             preparedCommand = null;
             preparedPose = null;
             preparedDirectPlayback = null;
