@@ -269,7 +269,7 @@ public sealed class MainWindow : Window
         if (ImGui.Button(plugin.IsAligning ? "Cancel alignment" : "Align to Target", new Vector2(-1, 0)))
             plugin.ToggleAlignment();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Match your position and facing direction to the current target.");
+            ImGui.SetTooltip("Match the target's position and facing. During a looping emote, the target must be within 0.5 yalms.");
 
         if (!plugin.Sync.IsInRoom) ImGui.BeginDisabled();
         if (ImGui.Button("Emote Sync", new Vector2(-1, 0))) plugin.SyncLobbyEmotes();

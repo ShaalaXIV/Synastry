@@ -27,6 +27,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private const string PrimaryCommand = "/syn";
     private const string FallbackCommand = "/synastry";
     private const float MaxAlignDistance = 2f;
+    private const float MaxMidEmoteAlignDistance = 0.5f;
     private const int LobbyEmoteRefreshDelayMs = 6000;
     private const double RefreshFrameBudgetMilliseconds = 4;
     private static readonly TimeSpan StaleTransferPackageAge = TimeSpan.FromHours(24);
@@ -2311,9 +2312,43 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
         var target = Targets.Target ?? Targets.SoftTarget;
-        var player = (Character*)(Objects.LocalPlayer?.Address ?? 0);
-        if (target is null || player is null || player->Mode != CharacterModes.Normal) return;
-        if (System.Numerics.Vector3.Distance(Objects.LocalPlayer!.Position, target.Position) > MaxAlignDistance) return;
+        var localPlayer = Objects.LocalPlayer;
+        var player = (Character*)(localPlayer?.Address ?? 0);
+        if (target is null || localPlayer is null || player is null)
+        {
+            Status = "Select a nearby target before aligning.";
+            return;
+        }
+
+        var distance = System.Numerics.Vector3.Distance(localPlayer.Position, target.Position);
+        var isLoopingEmote = player->Mode is CharacterModes.EmoteLoop or CharacterModes.InPositionLoop;
+        if (isLoopingEmote)
+        {
+            if (distance > MaxMidEmoteAlignDistance)
+            {
+                Status = $"Mid-emote alignment is limited to {MaxMidEmoteAlignDistance:F1} yalms.";
+                return;
+            }
+
+            alignmentTargetAddress = target.Address;
+            alignmentFramesRemaining = 12;
+            alignmentStableFrames = 0;
+            SuppressMovementCleanupForAlignment();
+            ApplyAlignment(target.Position, target.Rotation);
+            Status = "Aligning to the nearby target without interrupting the emote...";
+            return;
+        }
+
+        if (player->Mode != CharacterModes.Normal)
+        {
+            Status = "Alignment is available while standing normally or performing a looping emote.";
+            return;
+        }
+        if (distance > MaxAlignDistance)
+        {
+            Status = $"Move within {MaxAlignDistance:F0} yalms of the target before aligning.";
+            return;
+        }
 
         var position = target.Position;
         var rotation = target.Rotation;
@@ -2324,8 +2359,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
             alignmentTargetAddress = targetAddress;
             alignmentFramesRemaining = 12;
             alignmentStableFrames = 0;
+            SuppressMovementCleanupForAlignment();
             ApplyAlignment(position, rotation);
         });
+    }
+
+    private void SuppressMovementCleanupForAlignment()
+    {
+        hasMovementSample = false;
+        movementFrames = 0;
+        movementTrackingStart = Math.Max(movementTrackingStart, Environment.TickCount64 + 250);
     }
 
     private void OnUpdate(IFramework _)
