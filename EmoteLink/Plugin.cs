@@ -27,12 +27,30 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private const string PrimaryCommand = "/syn";
     private const string FallbackCommand = "/synastry";
     private const float MaxAlignDistance = 2f;
+    private const float MaxMidEmoteAlignDistance = 0.5f;
     private const int LobbyEmoteRefreshDelayMs = 6000;
     private const double RefreshFrameBudgetMilliseconds = 4;
     private static readonly TimeSpan StaleTransferPackageAge = TimeSpan.FromHours(24);
     private const string PublicRelayUrl = "https://emotelink.aethercast.org";
 
     private sealed record PendingPenumbraInstall(ModTransferOfferDto Offer, string Path, string ReceiveFolder);
+    private sealed record EmoteTimelineInfo(int Slot, uint RowId, string Key, bool IsLoop);
+    private sealed record EmotePlaybackInfo(uint EmoteId, IReadOnlyList<EmoteTimelineInfo> Timelines);
+    private sealed record PendingDirectPlayback(nint ActorAddress, EmotePlayback Playback, string ModName);
+    private sealed record ActiveDirectPlayback(nint ActorAddress, ushort OriginalBaseOverride);
+    private sealed record PendingRemotePlayback(
+        nint ActorAddress,
+        EmotePlayback Playback,
+        TemporaryAssignment Assignment,
+        string ModName,
+        long StartAt);
+    private sealed record ActiveRemotePlayback(
+        nint ActorAddress,
+        ushort OriginalBaseOverride,
+        TemporaryAssignment Assignment,
+        System.Numerics.Vector3 StartPosition,
+        bool IsLoop,
+        long CleanupAt);
 
     [PluginService] private static IDalamudPluginInterface PluginInterface { get; set; } = null!;
     [PluginService] private static ICommandManager Commands { get; set; } = null!;
@@ -45,6 +63,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] private static IChatGui Chat { get; set; } = null!;
     [PluginService] private static IContextMenu ContextMenu { get; set; } = null!;
     [PluginService] private static ITextureProvider TextureProvider { get; set; } = null!;
+    [PluginService] private static IClientState ClientState { get; set; } = null!;
 
     private readonly Configuration configuration;
     private readonly AnimationIndexCache animationIndexCache;
@@ -52,6 +71,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly MovementService movement;
     private readonly PoseService poses;
     private readonly AnywherePoseService? anywherePoses;
+    private readonly AnimationSpeedService? animationSpeedController;
     private readonly AnimationSyncService sync;
     private readonly WindowSystem windows = new("Synastry");
     private readonly MainWindow mainWindow;
@@ -61,9 +81,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private long activationTime;
     private readonly Dictionary<string, string> emoteCommandsByName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, EmoteTarget> emoteTargetsByName = new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<string, EmotePlaybackInfo> emotePlaybackByCommand =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<uint, EmotePlaybackInfo> emotePlaybackById = [];
     private readonly Dictionary<string, IReadOnlyList<ModOptionGroup>> optionGroups =
         new(StringComparer.OrdinalIgnoreCase);
     private string? pendingCommand;
+    private PendingDirectPlayback? pendingDirectPlayback;
     private long pendingCommandTime;
     private PoseTarget? pendingPose;
     private string? pendingSelectionModKey;
@@ -89,12 +113,22 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private bool hasMovementSample;
     private int movementFrames;
     private readonly ConcurrentQueue<PlaySignalDto> syncPlaySignals = new();
+    private readonly ConcurrentQueue<LocalAnimationSignalDto> localAnimationSignals = new();
+    private readonly List<PendingRemotePlayback> pendingRemotePlaybacks = [];
+    private readonly List<ActiveRemotePlayback> activeRemotePlaybacks = [];
+    private readonly HashSet<TemporaryAssignment> remoteAssignments = [];
     private string? preparedModKey;
     private string? preparedCommand;
+    private EmotePlayback? preparedDirectPlayback;
     private PoseTarget? preparedPose;
+    private ActiveDirectPlayback? activeDirectPlayback;
     private nint alignmentTargetAddress;
     private int alignmentFramesRemaining;
     private int alignmentStableFrames;
+    private float? animationSpeedOverride;
+    private System.Numerics.Vector3? animationSpeedPosition;
+    private nint animationSpeedMatchTargetAddress;
+    private string animationSpeedMatchTargetName = "";
     private readonly ConcurrentQueue<ModTransferOfferDto> incomingTransferOffers = new();
     private readonly ConcurrentQueue<ModTransferOfferDto> transferOffers = new();
     private readonly ConcurrentQueue<RoomInvite> roomInvites = new();
@@ -111,6 +145,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private bool roleSyncPending;
     private bool communityRoleSyncPending;
     private bool communityRelayConnected;
+    private string localPresenceScope = "";
+    private bool localPresenceUpdatePending;
+    private long nextLocalPresenceAttempt;
     private readonly ConcurrentQueue<ModRefreshResult> modRefreshResults = new();
     private readonly SemaphoreSlim modScanFramePermit = new(0, 1);
     private Queue<((string Directory, string Name) Mod, CachedAnimationMod Cached)>? provisionalCachedMods;
@@ -188,8 +225,18 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             Log.Warning(exception, "Anywhere pose hooks could not be initialized; normal-pose fallbacks remain available.");
         }
+        try
+        {
+            animationSpeedController = new AnimationSpeedService(
+                Interop, Objects, DataManager, GetAnimationSpeedHookOverride);
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "Animation-speed hook could not be initialized.");
+        }
         sync = new AnimationSyncService();
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
+        sync.LocalAnimationReceived += signal => localAnimationSignals.Enqueue(signal);
         sync.ModTransferOffered += offer => incomingTransferOffers.Enqueue(offer);
         sync.OptionSelectionChanged += RememberOptionSelection;
         sync.RoleLabelChanged += label => receivedRoleLabels.Enqueue(label);
@@ -273,7 +320,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
 
-        var allMods = penumbra.GetMods();
+        var allMods = penumbra.GetMods().ToList();
         var currentDirectories = allMods.Select(mod => mod.Directory)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var directory in modsByDirectory.Keys.Where(directory => !currentDirectories.Contains(directory)).ToList())
@@ -629,7 +676,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             var root = penumbra.GetModRoot();
             if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) return;
-            var allMods = penumbra.GetMods();
+            var allMods = penumbra.GetMods().ToList();
             var targets = allMods.Where(mod => requested.Contains(mod.Directory)).ToList();
             if (targets.Count == 0)
             {
@@ -1155,6 +1202,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         preparedModKey = null;
         preparedCommand = null;
         preparedPose = null;
+        preparedDirectPlayback = null;
         RunSync(sync.CancelReadyAsync(), "Group-play readiness cancelled.");
     }
 
@@ -1169,6 +1217,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         preparedModKey = null;
         preparedCommand = null;
         preparedPose = null;
+        preparedDirectPlayback = null;
         if (!sync.IsInRoom) return;
         _ = sync.CancelReadyAsync().ContinueWith(task =>
         {
@@ -1631,7 +1680,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         if (requestedPose is null && modPoses.TryGetValue(directory, out var detected) && detected.Count == 1)
             requestedPose = detected[0];
-        ClearTemporaryAssignmentsInternal(false);
+        ClearTemporaryAssignmentsInternal(false, false);
         var collection = penumbra.GetPlayerCollection();
         var selections = configuration.ModOptionSelections.TryGetValue(directory, out var savedOptions)
             ? savedOptions
@@ -1653,7 +1702,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         if (requestedPose is not null)
         {
-            if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, requestedPose)) return;
+            if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, requestedPose, null)) return;
             SchedulePose(name, requestedPose, 300);
             return;
         }
@@ -1666,16 +1715,30 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
 
-        if (allowGroupPlay && PrepareForGroupPlay(directory, name, command, null)) return;
-        ScheduleCommand(name, command, 300);
+        if (!TryCreatePlayback(command, out var playback))
+        {
+            Status = $"Activated {name}, but {command} has no playable action timeline.";
+            Chat.PrintError($"[Synastry] {command} has no playable action timeline in the current game data.");
+            return;
+        }
+        if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, null, playback)) return;
+        ScheduleDirectPlayback(name, Objects.LocalPlayer?.Address ?? 0, playback, 300);
+        if (sync.IsConnected && modCatalogKeys.TryGetValue(directory, out var fingerprint) && fingerprint.Length == 64)
+            _ = BroadcastLocalPlaybackAsync(fingerprint, playback);
     }
 
-    private bool PrepareForGroupPlay(string directory, string modName, string? command, PoseTarget? pose)
+    private bool PrepareForGroupPlay(
+        string directory,
+        string modName,
+        string? command,
+        PoseTarget? pose,
+        EmotePlayback? directPlayback)
     {
         if (!sync.IsInRoom) return false;
         preparedModKey = modSyncKeys.TryGetValue(directory, out var key) ? key : NormalizeModKey(modName);
         preparedCommand = command;
         preparedPose = pose;
+        preparedDirectPlayback = directPlayback;
         Status = $"Prepared {modName}; waiting for everyone in room {sync.Room!.RoomCode}.";
         RunSync(sync.SetReadyAsync(preparedModKey), $"Ready with {modName}; waiting for the group.");
         return true;
@@ -1693,6 +1756,27 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = $"Activated {modName}; starting {command}.";
         pendingCommand = command;
         pendingCommandTime = Environment.TickCount64 + delayMs;
+    }
+
+    private void ScheduleDirectPlayback(string modName, nint actorAddress, EmotePlayback playback, long delayMs)
+    {
+        Status = $"Activated {modName}; starting its native timeline.";
+        pendingDirectPlayback = new PendingDirectPlayback(actorAddress, playback, modName);
+        pendingCommandTime = Environment.TickCount64 + delayMs;
+    }
+
+    private Task BroadcastLocalPlaybackAsync(string fingerprint, EmotePlayback playback)
+    {
+        return EnsureLocalPresenceAsync().ContinueWith(task =>
+        {
+            task.GetAwaiter().GetResult();
+            return sync.BroadcastLocalAnimationAsync(fingerprint, playback.EmoteId, 350);
+        }, TaskScheduler.Default).Unwrap().ContinueWith(task =>
+        {
+            if (task.Exception is not null)
+                Log.Debug(task.Exception.GetBaseException(),
+                    "Nearby relay playback was unavailable; local direct playback will continue.");
+        }, TaskScheduler.Default);
     }
 
     private static string NormalizeModKey(string modName) =>
@@ -1910,8 +1994,49 @@ public sealed unsafe class Plugin : IDalamudPlugin
             var name = row.Name.ExtractText();
             if (command.Length == 0 || name.Length == 0) continue;
             AddEmoteName(row.RowId, name, command);
+            var timelines = row.ActionTimeline
+                .Select((timeline, slot) => (timeline, slot))
+                .Where(item => item.timeline is { RowId: > 0, IsValid: true })
+                .Select(item => new EmoteTimelineInfo(
+                    item.slot,
+                    item.timeline.RowId,
+                    NormalizeTimelineKey(item.timeline.Value.Key.ExtractText()),
+                    item.timeline.Value.IsLoop))
+                .Where(timeline => timeline.Key.Length > 0)
+                .DistinctBy(timeline => (timeline.RowId, timeline.Key.ToUpperInvariant(), timeline.IsLoop))
+                .ToList();
+            if (timelines.Count > 0)
+            {
+                var playback = new EmotePlaybackInfo(row.RowId, timelines);
+                emotePlaybackByCommand.TryAdd(command, playback);
+                emotePlaybackById.TryAdd(row.RowId, playback);
+            }
         }
         Log.Information("Loaded {Count} emote names for automatic playback.", emoteCommandsByName.Count);
+    }
+
+    private bool TryCreatePlayback(string command, out EmotePlayback playback)
+    {
+        playback = null!;
+        if (!emotePlaybackByCommand.TryGetValue(command, out var info)) return false;
+        return TryCreatePlayback(info, out playback);
+    }
+
+    private static bool TryCreatePlayback(EmotePlaybackInfo info, out EmotePlayback playback)
+    {
+        playback = null!;
+        var main = info.Timelines.FirstOrDefault(timeline => timeline.Slot == 0) ??
+                   info.Timelines.FirstOrDefault(timeline => timeline.IsLoop) ??
+                   info.Timelines.FirstOrDefault();
+        if (main is null || main.RowId > ushort.MaxValue) return false;
+        var isLoop = main.IsLoop || info.Timelines.Any(timeline => timeline.IsLoop);
+        var intro = isLoop ? info.Timelines.FirstOrDefault(timeline => timeline.Slot == 1) : null;
+        playback = new EmotePlayback(
+            info.EmoteId,
+            (ushort)main.RowId,
+            intro is { RowId: <= ushort.MaxValue } ? (ushort)intro.RowId : (ushort)0,
+            isLoop);
+        return true;
     }
 
     private void AddEmoteName(uint id, string name, string command)
@@ -1996,6 +2121,18 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private static string NormalizeEmoteName(string value) =>
         string.Join(' ', value.Trim().ToLowerInvariant().Split(' ', StringSplitOptions.RemoveEmptyEntries));
 
+    private static string NormalizeTimelineKey(string value)
+    {
+        var normalized = value.Replace('\\', '/').Trim().Trim('/').ToLowerInvariant();
+        if (normalized.EndsWith(".pap", StringComparison.Ordinal)) normalized = normalized[..^4];
+        const string actionPrefix = "chara/action/";
+        if (normalized.StartsWith(actionPrefix, StringComparison.Ordinal))
+            normalized = normalized[actionPrefix.Length..];
+        const string commonMarker = "bt_common/";
+        var commonIndex = normalized.IndexOf(commonMarker, StringComparison.Ordinal);
+        return commonIndex >= 0 ? normalized[(commonIndex + commonMarker.Length)..] : normalized;
+    }
+
     private static void ExecuteCommand(string command)
     {
         var ui = UIModule.Instance();
@@ -2042,6 +2179,185 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = "Opened Simple Heels LivePose.";
     }
 
+    public bool IsAnimationSpeedMatching => animationSpeedMatchTargetAddress != 0;
+    public bool AnimationSpeedAvailable => animationSpeedController is not null;
+
+    public int AnimationSpeedPercent
+    {
+        get
+        {
+            if (TryGetAnimationSpeedMatchTarget(out var target))
+                return ReadAnimationSpeedPercent(target.Address);
+            return (int)MathF.Round((animationSpeedOverride ?? 1f) * 100f);
+        }
+    }
+
+    public string AnimationSpeedMatchButtonLabel
+    {
+        get
+        {
+            if (TryGetAnimationSpeedMatchTarget(out var matchedTarget))
+                return $"Match {matchedTarget.Name.TextValue} ({ReadAnimationSpeedPercent(matchedTarget.Address)}%)";
+
+            var target = Targets.SoftTarget ?? Targets.Target;
+            return target is IPlayerCharacter player
+                ? $"Match {player.Name.TextValue} ({ReadAnimationSpeedPercent(player.Address)}%)"
+                : "Match target";
+        }
+    }
+
+    public bool CanMatchAnimationSpeed => IsAnimationSpeedMatching ||
+                                          (Targets.SoftTarget ?? Targets.Target) is IPlayerCharacter;
+
+    public void SetAnimationSpeedPercent(int percent)
+    {
+        animationSpeedMatchTargetAddress = 0;
+        animationSpeedMatchTargetName = "";
+        percent = Math.Clamp(percent, -200, 200);
+        if (percent == 100)
+        {
+            ResetAnimationSpeed();
+            return;
+        }
+
+        var player = Objects.LocalPlayer;
+        if (player is null) return;
+        animationSpeedOverride = percent / 100f;
+        animationSpeedPosition = player.Position;
+        ApplyAnimationSpeed(player.Address, animationSpeedOverride.Value);
+        Status = $"Animation speed set to {percent}%.";
+    }
+
+    public void ResetAnimationSpeed()
+    {
+        ClearAnimationSpeedState();
+        if (Objects.LocalPlayer is { } player) ApplyAnimationSpeed(player.Address, 1f);
+        Status = "Animation speed reset to 100%.";
+    }
+
+    private void ClearAnimationSpeedState()
+    {
+        animationSpeedOverride = null;
+        animationSpeedPosition = null;
+        animationSpeedMatchTargetAddress = 0;
+        animationSpeedMatchTargetName = "";
+    }
+
+    public void ToggleAnimationSpeedMatch()
+    {
+        if (IsAnimationSpeedMatching)
+        {
+            var previousName = animationSpeedMatchTargetName;
+            ResetAnimationSpeed();
+            Status = string.IsNullOrWhiteSpace(previousName)
+                ? "Animation speed target matching stopped."
+                : $"Stopped matching {previousName}'s animation speed.";
+            return;
+        }
+
+        var target = Targets.SoftTarget ?? Targets.Target;
+        if (target is not IPlayerCharacter player)
+        {
+            Status = "Target another player to match their animation speed.";
+            return;
+        }
+
+        animationSpeedOverride = null;
+        animationSpeedPosition = null;
+        animationSpeedMatchTargetAddress = player.Address;
+        animationSpeedMatchTargetName = player.Name.TextValue;
+        ApplyMatchedAnimationSpeed(player);
+        Status = $"Matching {animationSpeedMatchTargetName}'s animation speed.";
+    }
+
+    private bool TryGetAnimationSpeedMatchTarget(out IPlayerCharacter target)
+    {
+        target = null!;
+        if (animationSpeedMatchTargetAddress == 0) return false;
+        target = Objects.OfType<IPlayerCharacter>()
+            .FirstOrDefault(candidate => candidate.Address == animationSpeedMatchTargetAddress)!;
+        return target is not null;
+    }
+
+    private static int ReadAnimationSpeedPercent(nint address)
+    {
+        var character = (Character*)address;
+        return character is null
+            ? 100
+            : (int)MathF.Round(Math.Clamp(character->Timeline.OverallSpeed, -2f, 2f) * 100f);
+    }
+
+    private static void ApplyAnimationSpeed(nint address, float speed)
+    {
+        var character = (Character*)address;
+        if (character is null) return;
+        character->Timeline.OverallSpeed = Math.Clamp(speed, -2f, 2f);
+    }
+
+    private float? GetAnimationSpeedHookOverride()
+    {
+        if (animationSpeedMatchTargetAddress != 0)
+        {
+            if (!TryGetAnimationSpeedMatchTarget(out var target)) return null;
+            var targetCharacter = (Character*)target.Address;
+            return targetCharacter is null
+                ? null
+                : Math.Clamp(targetCharacter->Timeline.OverallSpeed, -2f, 2f);
+        }
+
+        return animationSpeedOverride;
+    }
+
+    private void ApplyMatchedAnimationSpeed(IPlayerCharacter target)
+    {
+        if (Objects.LocalPlayer is not { } player) return;
+        var targetCharacter = (Character*)target.Address;
+        if (targetCharacter is null) return;
+        ApplyAnimationSpeed(player.Address, targetCharacter->Timeline.OverallSpeed);
+    }
+
+    private void UpdateAnimationSpeed()
+    {
+        var player = Objects.LocalPlayer;
+        if (player is null)
+        {
+            animationSpeedOverride = null;
+            animationSpeedPosition = null;
+            animationSpeedMatchTargetAddress = 0;
+            animationSpeedMatchTargetName = "";
+            return;
+        }
+
+        if (animationSpeedMatchTargetAddress != 0)
+        {
+            if (TryGetAnimationSpeedMatchTarget(out var target))
+            {
+                ApplyMatchedAnimationSpeed(target);
+                return;
+            }
+
+            var lostName = animationSpeedMatchTargetName;
+            animationSpeedMatchTargetAddress = 0;
+            animationSpeedMatchTargetName = "";
+            ApplyAnimationSpeed(player.Address, 1f);
+            Status = string.IsNullOrWhiteSpace(lostName)
+                ? "Animation speed matching stopped because the target was lost."
+                : $"Animation speed matching stopped because {lostName} was lost.";
+            return;
+        }
+
+        if (!animationSpeedOverride.HasValue) return;
+        if (!animationSpeedPosition.HasValue ||
+            System.Numerics.Vector3.DistanceSquared(animationSpeedPosition.Value, player.Position) > 0.01f)
+        {
+            ResetAnimationSpeed();
+            Status = "Animation speed reset after movement.";
+            return;
+        }
+
+        ApplyAnimationSpeed(player.Address, animationSpeedOverride.Value);
+    }
+
     private int RefreshLobbyEmotes()
     {
         var room = sync.Room;
@@ -2083,14 +2399,32 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void ClearTemporaryAssignments() => ClearTemporaryAssignmentsInternal(true);
 
-    private void ClearTemporaryAssignmentsInternal(bool cancelGroupReady)
+    private void ClearTemporaryAssignmentsInternal(bool cancelGroupReady, bool clearRemote = true)
     {
+        if (activeDirectPlayback is { } direct)
+        {
+            ActionTimelinePlayback.Stop(direct.ActorAddress, direct.OriginalBaseOverride);
+            activeDirectPlayback = null;
+        }
+        if (clearRemote)
+        {
+            foreach (var remote in activeRemotePlaybacks)
+                if (remote.IsLoop && Objects.Any(candidate => candidate.Address == remote.ActorAddress))
+                    ActionTimelinePlayback.Stop(remote.ActorAddress, remote.OriginalBaseOverride);
+            activeRemotePlaybacks.Clear();
+            pendingRemotePlaybacks.Clear();
+        }
         foreach (var assignment in configuration.ActiveAssignments.ToList())
+        {
+            if (!clearRemote && remoteAssignments.Contains(assignment)) continue;
             if (penumbra.Remove(assignment)) configuration.ActiveAssignments.Remove(assignment);
+        }
+        if (clearRemote) remoteAssignments.Clear();
 
         configuration.Save(PluginInterface);
         waitingForAnimation = false;
         pendingCommand = null;
+        pendingDirectPlayback = null;
         pendingPose = null;
         pendingSelectionModKey = null;
         lobbyEmoteRefreshTime = 0;
@@ -2102,6 +2436,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             preparedModKey = null;
             preparedCommand = null;
             preparedPose = null;
+            preparedDirectPlayback = null;
             RunSync(sync.CancelReadyAsync(), "Temporary animation and group readiness cleared.");
         }
         Status = "Temporary animation assignments cleared.";
@@ -2118,9 +2453,43 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
         var target = Targets.Target ?? Targets.SoftTarget;
-        var player = (Character*)(Objects.LocalPlayer?.Address ?? 0);
-        if (target is null || player is null || player->Mode != CharacterModes.Normal) return;
-        if (System.Numerics.Vector3.Distance(Objects.LocalPlayer!.Position, target.Position) > MaxAlignDistance) return;
+        var localPlayer = Objects.LocalPlayer;
+        var player = (Character*)(localPlayer?.Address ?? 0);
+        if (target is null || localPlayer is null || player is null)
+        {
+            Status = "Select a nearby target before aligning.";
+            return;
+        }
+
+        var distance = System.Numerics.Vector3.Distance(localPlayer.Position, target.Position);
+        var isLoopingEmote = player->Mode is CharacterModes.EmoteLoop or CharacterModes.InPositionLoop;
+        if (isLoopingEmote)
+        {
+            if (distance > MaxMidEmoteAlignDistance)
+            {
+                Status = $"Mid-emote alignment is limited to {MaxMidEmoteAlignDistance:F1} yalms.";
+                return;
+            }
+
+            alignmentTargetAddress = target.Address;
+            alignmentFramesRemaining = 12;
+            alignmentStableFrames = 0;
+            SuppressMovementCleanupForAlignment();
+            ApplyAlignment(target.Position, target.Rotation);
+            Status = "Aligning to the nearby target without interrupting the emote...";
+            return;
+        }
+
+        if (player->Mode != CharacterModes.Normal)
+        {
+            Status = "Alignment is available while standing normally or performing a looping emote.";
+            return;
+        }
+        if (distance > MaxAlignDistance)
+        {
+            Status = $"Move within {MaxAlignDistance:F0} yalms of the target before aligning.";
+            return;
+        }
 
         var position = target.Position;
         var rotation = target.Rotation;
@@ -2131,12 +2500,21 @@ public sealed unsafe class Plugin : IDalamudPlugin
             alignmentTargetAddress = targetAddress;
             alignmentFramesRemaining = 12;
             alignmentStableFrames = 0;
+            SuppressMovementCleanupForAlignment();
             ApplyAlignment(position, rotation);
         });
     }
 
+    private void SuppressMovementCleanupForAlignment()
+    {
+        hasMovementSample = false;
+        movementFrames = 0;
+        movementTrackingStart = Math.Max(movementTrackingStart, Environment.TickCount64 + 250);
+    }
+
     private void OnUpdate(IFramework _)
     {
+        UpdateLocalPresence();
         ProcessModRefresh();
         ProcessReceivedRoleLabels();
         ProcessReceivedCommunityRoleLabels();
@@ -2144,9 +2522,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (roleSyncPending) StartRoleLabelSync();
         if (communityRoleSyncPending) StartCommunityRoleLabelSync();
         UpdateAlignment();
+        UpdateAnimationSpeed();
         ProcessCompletedDownloads();
         ProcessAddedMod();
         ProcessSyncPlaySignals();
+        ProcessLocalAnimationSignals();
+        UpdateRemotePlaybacks();
         var animationStarted = false;
         if (pendingPose is not null && Environment.TickCount64 >= pendingCommandTime)
         {
@@ -2161,6 +2542,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingCommand = null;
             ExecuteCommand(command);
             animationStarted = true;
+        }
+        if (pendingDirectPlayback is not null && Environment.TickCount64 >= pendingCommandTime)
+        {
+            var pending = pendingDirectPlayback;
+            pendingDirectPlayback = null;
+            if (ActionTimelinePlayback.Start(
+                    pending.ActorAddress,
+                    pending.Playback,
+                    out var originalBaseOverride))
+            {
+                if (pending.Playback.IsLoop)
+                    activeDirectPlayback = new ActiveDirectPlayback(pending.ActorAddress, originalBaseOverride);
+                animationStarted = true;
+                Status = $"Started {pending.ModName} with its native action timeline.";
+            }
+            else
+            {
+                Status = $"Could not start {pending.ModName}'s action timeline.";
+            }
         }
         if (animationStarted && pendingSelectionModKey is not null)
         {
@@ -2590,6 +2990,166 @@ public sealed unsafe class Plugin : IDalamudPlugin
         player->GameObject.SetRotation(rotation);
     }
 
+    private void UpdateLocalPresence()
+    {
+        if (!sync.IsConnected)
+        {
+            localPresenceScope = "";
+            localPresenceUpdatePending = false;
+            nextLocalPresenceAttempt = 0;
+            return;
+        }
+        var player = Objects.LocalPlayer;
+        if (player is null) return;
+        var scope = $"{player.CurrentWorld.RowId}:{ClientState.TerritoryType}";
+        if (scope.Equals(localPresenceScope, StringComparison.Ordinal) || localPresenceUpdatePending ||
+            Environment.TickCount64 < nextLocalPresenceAttempt) return;
+        localPresenceUpdatePending = true;
+        nextLocalPresenceAttempt = Environment.TickCount64 + 30_000;
+        _ = EnsureLocalPresenceAsync().ContinueWith(task =>
+        {
+            localPresenceUpdatePending = false;
+            if (task.Exception is not null)
+                Log.Debug(task.Exception.GetBaseException(), "Could not update nearby relay presence.");
+        }, TaskScheduler.Default);
+    }
+
+    private Task EnsureLocalPresenceAsync()
+    {
+        var player = Objects.LocalPlayer;
+        if (!sync.IsConnected || player is null) return Task.CompletedTask;
+        var scope = $"{player.CurrentWorld.RowId}:{ClientState.TerritoryType}";
+        return sync.SetLocalPresenceAsync(scope, player.Name.TextValue, player.HomeWorld.RowId)
+            .ContinueWith(task =>
+            {
+                task.GetAwaiter().GetResult();
+                localPresenceScope = scope;
+                nextLocalPresenceAttempt = 0;
+            }, TaskScheduler.Default);
+    }
+
+    private void ProcessLocalAnimationSignals()
+    {
+        while (localAnimationSignals.TryDequeue(out var signal))
+        {
+            var actor = Objects.OfType<IPlayerCharacter>().FirstOrDefault(player =>
+                player.Name.TextValue.Equals(signal.SenderName, StringComparison.OrdinalIgnoreCase) &&
+                (signal.SenderHomeWorldId == 0 || player.HomeWorld.RowId == signal.SenderHomeWorldId));
+            if (actor is null)
+            {
+                Log.Debug("Skipped nearby animation {SequenceId}; sender is not a visible actor.", signal.SequenceId);
+                continue;
+            }
+            var indexedMod = modCatalogKeys.FirstOrDefault(pair =>
+                pair.Value.Equals(signal.Fingerprint, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrWhiteSpace(indexedMod.Key) ||
+                !modsByDirectory.TryGetValue(indexedMod.Key, out var mod) ||
+                !emotePlaybackById.TryGetValue(signal.EmoteId, out var playbackInfo) ||
+                !TryCreatePlayback(playbackInfo, out var playback))
+            {
+                Log.Debug("Skipped nearby animation {SequenceId}; its local mod or timeline was unavailable.",
+                    signal.SequenceId);
+                continue;
+            }
+
+            var objectIndex = FindObjectIndex(actor.Address);
+            var collection = objectIndex < 0 ? null : penumbra.GetCollectionForObject(objectIndex);
+            var selections = configuration.ModOptionSelections.TryGetValue(mod.Directory, out var savedOptions)
+                ? savedOptions
+                : new Dictionary<string, List<string>>();
+            ClearRemotePlaybackForActor(actor.Address);
+            if (collection is null || !penumbra.Activate(collection.Value.Id, mod.Directory, mod.Name, selections))
+            {
+                Log.Debug("Skipped nearby animation {SequenceId}; Penumbra could not activate {ModName} for {Sender}.",
+                    signal.SequenceId, mod.Name, signal.SenderName);
+                continue;
+            }
+
+            var assignment = new TemporaryAssignment(collection.Value.Id, mod.Directory, mod.Name);
+            configuration.ActiveAssignments.Add(assignment);
+            remoteAssignments.Add(assignment);
+            configuration.Save(PluginInterface);
+            var delay = signal.DelayMilliseconds > 0
+                ? signal.DelayMilliseconds
+                : Math.Max(0, signal.StartUnixMilliseconds - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            pendingRemotePlaybacks.Add(new PendingRemotePlayback(
+                actor.Address, playback, assignment, mod.Name, Environment.TickCount64 + delay));
+            Log.Information("Scheduled nearby animation {SequenceId} from {Sender} in {DelayMilliseconds} ms.",
+                signal.SequenceId, signal.SenderName, delay);
+        }
+    }
+
+    private static int FindObjectIndex(nint address)
+    {
+        for (var index = 0; index < Objects.Length; index++)
+            if (Objects[index]?.Address == address) return index;
+        return -1;
+    }
+
+    private void UpdateRemotePlaybacks()
+    {
+        var now = Environment.TickCount64;
+        for (var index = pendingRemotePlaybacks.Count - 1; index >= 0; index--)
+        {
+            var pending = pendingRemotePlaybacks[index];
+            if (now < pending.StartAt) continue;
+            pendingRemotePlaybacks.RemoveAt(index);
+            var actor = Objects.FirstOrDefault(candidate => candidate.Address == pending.ActorAddress);
+            if (actor is null || !ActionTimelinePlayback.Start(
+                    pending.ActorAddress, pending.Playback, out var originalBaseOverride))
+            {
+                RemoveRemoteAssignment(pending.Assignment);
+                continue;
+            }
+            activeRemotePlaybacks.Add(new ActiveRemotePlayback(
+                pending.ActorAddress,
+                originalBaseOverride,
+                pending.Assignment,
+                actor.Position,
+                pending.Playback.IsLoop,
+                now + (pending.Playback.IsLoop ? 21_600_000 : 15_000)));
+        }
+
+        for (var index = activeRemotePlaybacks.Count - 1; index >= 0; index--)
+        {
+            var active = activeRemotePlaybacks[index];
+            var actor = Objects.FirstOrDefault(candidate => candidate.Address == active.ActorAddress);
+            var moved = actor is not null &&
+                System.Numerics.Vector3.DistanceSquared(actor.Position, active.StartPosition) > 0.01f;
+            if (actor is not null && now < active.CleanupAt && (!active.IsLoop || !moved)) continue;
+            if (actor is not null && active.IsLoop)
+                ActionTimelinePlayback.Stop(active.ActorAddress, active.OriginalBaseOverride);
+            RemoveRemoteAssignment(active.Assignment);
+            activeRemotePlaybacks.RemoveAt(index);
+        }
+    }
+
+    private void ClearRemotePlaybackForActor(nint actorAddress)
+    {
+        for (var index = pendingRemotePlaybacks.Count - 1; index >= 0; index--)
+        {
+            if (pendingRemotePlaybacks[index].ActorAddress != actorAddress) continue;
+            RemoveRemoteAssignment(pendingRemotePlaybacks[index].Assignment);
+            pendingRemotePlaybacks.RemoveAt(index);
+        }
+        for (var index = activeRemotePlaybacks.Count - 1; index >= 0; index--)
+        {
+            var active = activeRemotePlaybacks[index];
+            if (active.ActorAddress != actorAddress) continue;
+            if (active.IsLoop) ActionTimelinePlayback.Stop(active.ActorAddress, active.OriginalBaseOverride);
+            RemoveRemoteAssignment(active.Assignment);
+            activeRemotePlaybacks.RemoveAt(index);
+        }
+    }
+
+    private void RemoveRemoteAssignment(TemporaryAssignment assignment)
+    {
+        penumbra.Remove(assignment);
+        configuration.ActiveAssignments.Remove(assignment);
+        remoteAssignments.Remove(assignment);
+        configuration.Save(PluginInterface);
+    }
+
     private void ProcessSyncPlaySignals()
     {
         while (syncPlaySignals.TryDequeue(out var signal))
@@ -2607,6 +3167,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingCommandTime = Environment.TickCount64 + delay;
             pendingCommand = preparedCommand;
             pendingPose = preparedPose;
+            pendingDirectPlayback = preparedDirectPlayback is null
+                ? null
+                : new PendingDirectPlayback(
+                    Objects.LocalPlayer?.Address ?? 0,
+                    preparedDirectPlayback,
+                    "group animation");
             pendingSelectionModKey = signal.ModKey;
             lobbyEmoteRefreshTime = 0;
             Status = $"Group ready. Starting in {delay / 1000f:F1}s.";
@@ -2619,6 +3185,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             preparedModKey = null;
             preparedCommand = null;
             preparedPose = null;
+            preparedDirectPlayback = null;
         }
     }
 
@@ -2758,7 +3325,18 @@ public sealed unsafe class Plugin : IDalamudPlugin
         refreshCancellation?.Dispose();
         modRefreshWorker = null;
         modScanFramePermit.Dispose();
-        ClearTemporaryAssignments();
+        ClearAnimationSpeedState();
+        animationSpeedController?.Dispose();
+        movement.Dispose();
+        anywherePoses?.Dispose();
+        try
+        {
+            ClearTemporaryAssignments();
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "Temporary assignments could not be cleared while Synastry was unloading.");
+        }
         Framework.Update -= OnUpdate;
         ContextMenu.OnMenuOpened -= OnContextMenuOpened;
         Chat.ChatMessage -= OnChatMessage;
@@ -2770,8 +3348,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Commands.RemoveHandler(FallbackCommand);
         penumbra.ModAdded -= OnPenumbraModAdded;
         penumbra.Dispose();
-        movement.Dispose();
-        anywherePoses?.Dispose();
         sync.DisposeAsync().AsTask().GetAwaiter().GetResult();
         windows.RemoveAllWindows();
     }

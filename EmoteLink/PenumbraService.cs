@@ -85,21 +85,24 @@ public sealed class PenumbraService : IDisposable
     }
 
     public (Guid Id, string Name)? GetPlayerCollection()
+        => GetCollectionForObject(0);
+
+    public (Guid Id, string Name)? GetCollectionForObject(int objectIndex)
     {
         try
         {
-            var (valid, _, collection) = getCollectionForObject.InvokeFunc(0);
+            var (valid, _, collection) = getCollectionForObject.InvokeFunc(objectIndex);
             return valid && collection.Item1 != Guid.Empty ? collection : null;
         }
         catch (Exception ex)
         {
-            log.Warning(ex, "Could not read the player's Penumbra collection.");
+            log.Warning(ex, "Could not read Penumbra collection for object index {ObjectIndex}.", objectIndex);
             return null;
         }
     }
 
     public bool Activate(Guid collectionId, string directory, string name,
-        IReadOnlyDictionary<string, List<string>> selectedOptions)
+        IReadOnlyDictionary<string, List<string>> selectedOptions, int priority = 9999)
     {
         try
         {
@@ -121,7 +124,7 @@ public sealed class PenumbraService : IDisposable
             var readonlyOptions = options.ToDictionary(
                 pair => pair.Key,
                 pair => (IReadOnlyList<string>)pair.Value);
-            var settings = (false, true, 9999,
+            var settings = (false, true, priority,
                 (IReadOnlyDictionary<string, IReadOnlyList<string>>)readonlyOptions);
             var result = setTemporary.InvokeFunc(collectionId, directory, name, settings, Source, 0);
             if (result is not (0 or 1))
