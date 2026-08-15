@@ -46,6 +46,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         int Priority,
         string Command,
         IReadOnlySet<uint> TimelineIds,
+        string TemporaryDirectory,
         long CreatedAt)
     {
         public bool AnimationStarted { get; set; }
@@ -185,6 +186,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public Plugin()
     {
         configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
+        DeleteCarrierDirectory(Path.Combine(PluginInterface.ConfigDirectory.FullName, "carrier"));
         var upgradedConfiguration = configuration.Version < 8;
         if (upgradedConfiguration) configuration.Version = 8;
         animationIndexCache = AnimationIndexCache.Load(
@@ -1782,21 +1784,45 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
 
         var mappings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        for (var index = 0; index < candidates.Count; index++)
+        var temporaryDirectory = Path.Combine(
+            PluginInterface.ConfigDirectory.FullName,
+            "carrier",
+            Guid.NewGuid().ToString("N"));
+        try
         {
-            var resolvedPath = resolvedPaths[index];
-            if (!Path.IsPathFullyQualified(resolvedPath) || !File.Exists(resolvedPath)) continue;
-            mappings[candidates[index].CarrierGamePath] = resolvedPath;
+            Directory.CreateDirectory(temporaryDirectory);
+            for (var index = 0; index < candidates.Count; index++)
+            {
+                var resolvedPath = resolvedPaths[index];
+                if (!Path.IsPathFullyQualified(resolvedPath) || !File.Exists(resolvedPath)) continue;
+                var carrierFile = DataManager.GetFile(candidates[index].CarrierGamePath);
+                if (carrierFile is null) continue;
+                var patchedPath = Path.Combine(temporaryDirectory, $"{index:D3}.pap");
+                var patchedBytes = CarrierPapPatcher.Patch(
+                    File.ReadAllBytes(resolvedPath),
+                    carrierFile.Data);
+                File.WriteAllBytes(patchedPath, patchedBytes);
+                mappings[candidates[index].CarrierGamePath] = patchedPath;
+            }
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "Could not create Synastry's temporary carrier PAP.");
+            DeleteCarrierDirectory(temporaryDirectory);
+            carrierCommand = sourceCommand;
+            return false;
         }
 
         if (mappings.Count == 0)
         {
+            DeleteCarrierDirectory(temporaryDirectory);
             carrierCommand = sourceCommand;
             return false;
         }
 
         if (!penumbra.AddCarrierMod(CarrierTag, collectionId, mappings, CarrierPriority))
         {
+            DeleteCarrierDirectory(temporaryDirectory);
             carrierCommand = sourceCommand;
             return false;
         }
@@ -1807,6 +1833,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             CarrierPriority,
             carrierCommand,
             carrierInfo.Timelines.Select(timeline => timeline.RowId).ToHashSet(),
+            temporaryDirectory,
             Environment.TickCount64);
         Log.Information(
             "Mapped {MappingCount} selected PAP path(s) from {SourceCommand} to carrier {CarrierCommand}.",
@@ -2451,6 +2478,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (activeCarrier is { } carrier)
         {
             penumbra.RemoveCarrierMod(carrier.Tag, carrier.CollectionId, carrier.Priority);
+            DeleteCarrierDirectory(carrier.TemporaryDirectory);
             activeCarrier = null;
         }
         foreach (var assignment in configuration.ActiveAssignments.ToList())
@@ -2473,6 +2501,18 @@ public sealed unsafe class Plugin : IDalamudPlugin
             RunSync(sync.CancelReadyAsync(), "Temporary animation and group readiness cleared.");
         }
         Status = "Temporary animation assignments cleared.";
+    }
+
+    private static void DeleteCarrierDirectory(string directory)
+    {
+        try
+        {
+            if (Directory.Exists(directory)) Directory.Delete(directory, true);
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "Could not delete Synastry's temporary carrier files at {Directory}.", directory);
+        }
     }
 
     public void ToggleAlignment()
