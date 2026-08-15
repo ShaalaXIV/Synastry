@@ -29,9 +29,6 @@ public sealed class PenumbraService : IDisposable
     private readonly ICallGateSubscriber<string, string,
         IReadOnlyDictionary<string, (string[] Options, int GroupType)>?> getAvailableSettings;
     private readonly ICallGateSubscriber<string, int> installMod;
-    private readonly ICallGateSubscriber<string[], string[], (string[], string[][])> resolvePlayerPaths;
-    private readonly ICallGateSubscriber<string, int> addMod;
-    private readonly ICallGateSubscriber<string, string, int> deleteMod;
     private readonly ICallGateSubscriber<string, string, string, int> setModPath;
     private readonly ICallGateSubscriber<string, object?> modAdded;
 
@@ -57,10 +54,6 @@ public sealed class PenumbraService : IDisposable
         getAvailableSettings = pi.GetIpcSubscriber<string, string,
             IReadOnlyDictionary<string, (string[] Options, int GroupType)>?>("Penumbra.GetAvailableModSettings.V5");
         installMod = pi.GetIpcSubscriber<string, int>("Penumbra.InstallMod.V5");
-        resolvePlayerPaths = pi.GetIpcSubscriber<string[], string[], (string[], string[][])>(
-            "Penumbra.ResolvePlayerPaths");
-        addMod = pi.GetIpcSubscriber<string, int>("Penumbra.AddMod.V5");
-        deleteMod = pi.GetIpcSubscriber<string, string, int>("Penumbra.DeleteMod.V5");
         setModPath = pi.GetIpcSubscriber<string, string, string, int>("Penumbra.SetModPath.V5");
         modAdded = pi.GetIpcSubscriber<string, object?>("Penumbra.ModAdded");
         modAdded.Subscribe(OnModAdded);
@@ -92,15 +85,18 @@ public sealed class PenumbraService : IDisposable
     }
 
     public (Guid Id, string Name)? GetPlayerCollection()
+        => GetCollectionForObject(0);
+
+    public (Guid Id, string Name)? GetCollectionForObject(int objectIndex)
     {
         try
         {
-            var (valid, _, collection) = getCollectionForObject.InvokeFunc(0);
+            var (valid, _, collection) = getCollectionForObject.InvokeFunc(objectIndex);
             return valid && collection.Item1 != Guid.Empty ? collection : null;
         }
         catch (Exception ex)
         {
-            log.Warning(ex, "Could not read the player's Penumbra collection.");
+            log.Warning(ex, "Could not read Penumbra collection for object index {ObjectIndex}.", objectIndex);
             return null;
         }
     }
@@ -209,48 +205,6 @@ public sealed class PenumbraService : IDisposable
         {
             log.Error(ex, "Could not queue transferred mod for Penumbra installation.");
             return (false, ex.GetBaseException().Message);
-        }
-    }
-
-    public IReadOnlyList<string> ResolvePlayerPaths(IReadOnlyList<string> gamePaths)
-    {
-        try
-        {
-            return resolvePlayerPaths.InvokeFunc(gamePaths.ToArray(), []).Item1;
-        }
-        catch (Exception ex)
-        {
-            log.Warning(ex, "Could not resolve animation paths for Synastry's emote carrier.");
-            return [];
-        }
-    }
-
-    public bool AddMod(string directory)
-    {
-        try
-        {
-            var result = addMod.InvokeFunc(directory);
-            if (result != 0)
-                log.Warning("Penumbra could not add Synastry carrier mod {Directory}; error code {ErrorCode}.", directory, result);
-            return result == 0;
-        }
-        catch (Exception ex)
-        {
-            log.Warning(ex, "Could not add Synastry carrier mod {Directory}.", directory);
-            return false;
-        }
-    }
-
-    public bool DeleteMod(string directory, string name)
-    {
-        try
-        {
-            return deleteMod.InvokeFunc(directory, name) is 0 or 1;
-        }
-        catch (Exception ex)
-        {
-            log.Warning(ex, "Could not delete Synastry carrier mod {Directory}.", directory);
-            return false;
         }
     }
 

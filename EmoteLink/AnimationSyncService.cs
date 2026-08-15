@@ -19,11 +19,14 @@ public sealed class AnimationSyncService : IAsyncDisposable
     private int onlineUserCount = -1;
     private string? desiredRoomCode;
     private string desiredDisplayName = "Player";
+    private string desiredLocalScope = "";
+    private uint desiredHomeWorldId;
     private string relayBaseUrl = "";
     private static readonly HttpClient Http = new() { Timeout = TimeSpan.FromMinutes(10) };
 
     public event Action? StateChanged;
     public event Action<PlaySignalDto>? PlayReceived;
+    public event Action<LocalAnimationSignalDto>? LocalAnimationReceived;
     public event Action<string, Exception?>? Diagnostic;
     public event Action<ModTransferOfferDto>? ModTransferOffered;
     public event Action<OptionSelectionDto>? OptionSelectionChanged;
@@ -60,6 +63,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         hub.ServerTimeout = TimeSpan.FromSeconds(90);
         hub.On<RoomStateDto>("RoomStateChanged", UpdateRoom);
         hub.On<PlaySignalDto>("AnimationPlay", signal => PlayReceived?.Invoke(signal));
+        hub.On<LocalAnimationSignalDto>("LocalAnimation", signal => LocalAnimationReceived?.Invoke(signal));
         hub.On("CatalogChanged", () => _ = RefreshMatchCountsAsync());
         hub.On<string>("CatalogFingerprintChanged", fingerprint => _ = RefreshMatchCountAsync(fingerprint));
         hub.On<ModTransferOfferDto>("ModTransferOffered", offer => ModTransferOffered?.Invoke(offer));
@@ -95,6 +99,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
             Diagnostic?.Invoke($"Relay reconnected with connection ID {connectionId ?? "unknown"}.", null);
             await RefreshOnlineUserCountAsync(hub);
             await RecoverRoomAsync(hub);
+            await RecoverLocalPresenceAsync(hub);
         };
         hub.Closed += exception =>
         {
@@ -437,6 +442,32 @@ public sealed class AnimationSyncService : IAsyncDisposable
         UpdateRoom(state);
     }
 
+    public async Task SetLocalPresenceAsync(string scope, string displayName, uint homeWorldId)
+    {
+        var cleanScope = CleanLocalScope(scope);
+        var cleanName = CleanDisplayName(displayName);
+        lock (gate)
+        {
+            desiredLocalScope = cleanScope;
+            desiredDisplayName = cleanName;
+            desiredHomeWorldId = homeWorldId;
+        }
+        if (cleanScope.Length == 0 || !IsConnected) return;
+        await RequireConnection().InvokeAsync("SetLocalPresence", cleanScope, cleanName, homeWorldId);
+    }
+
+    public async Task<LocalAnimationSignalDto> BroadcastLocalAnimationAsync(
+        string fingerprint,
+        uint emoteId,
+        int delayMilliseconds = 350)
+    {
+        var clean = CleanFingerprint(fingerprint);
+        if (clean.Length != 64)
+            throw new InvalidOperationException("A valid local animation fingerprint is required.");
+        return await RequireConnection().InvokeAsync<LocalAnimationSignalDto>(
+            "BroadcastLocalAnimation", clean, emoteId, Math.Clamp(delayMilliseconds, 100, 3000));
+    }
+
     public async Task CancelReadyAsync()
     {
         var state = await RequireConnection().InvokeAsync<RoomStateDto>("CancelReady");
@@ -524,6 +555,28 @@ public sealed class AnimationSyncService : IAsyncDisposable
         }
     }
 
+    private async Task RecoverLocalPresenceAsync(HubConnection hub)
+    {
+        string scope;
+        string displayName;
+        uint homeWorldId;
+        lock (gate)
+        {
+            scope = desiredLocalScope;
+            displayName = desiredDisplayName;
+            homeWorldId = desiredHomeWorldId;
+        }
+        if (scope.Length == 0) return;
+        try
+        {
+            await hub.InvokeAsync("SetLocalPresence", scope, displayName, homeWorldId);
+        }
+        catch (Exception exception)
+        {
+            Diagnostic?.Invoke("The connected relay does not support local animation presence.", exception);
+        }
+    }
+
     private static string ConnectionStatus(string prefix, Exception? exception) => exception is null
         ? prefix
         : $"{prefix}: {exception.GetBaseException().Message}";
@@ -533,6 +586,10 @@ public sealed class AnimationSyncService : IAsyncDisposable
 
     private static string CleanFingerprint(string value) =>
         new(value.Where(Uri.IsHexDigit).Take(64).Select(char.ToUpperInvariant).ToArray());
+
+    private static string CleanLocalScope(string value) =>
+        new(value.Where(character => char.IsLetterOrDigit(character) || character is ':' or '-' or '_')
+            .Take(80).ToArray());
 
     private async Task RefreshOnlineUserCountAsync(HubConnection hub)
     {
@@ -625,3 +682,11 @@ public sealed record PlaySignalDto(
     long StartUnixMilliseconds,
     string SequenceId,
     int DelayMilliseconds = 0);
+public sealed record LocalAnimationSignalDto(
+    string SenderName,
+    uint SenderHomeWorldId,
+    string Fingerprint,
+    uint EmoteId,
+    long StartUnixMilliseconds,
+    string SequenceId,
+    int DelayMilliseconds);

@@ -26,11 +26,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
 {
     private const string PrimaryCommand = "/syn";
     private const string FallbackCommand = "/synastry";
-    private const string LoopCarrierCommand = "/beesknees";
-    private const string OneShotCarrierCommand = "/cheer";
-    private const string CarrierModName = "Synastry Carrier";
-    private const string CarrierDirectoryPrefix = ".synastry-carrier-";
-    private const int CarrierPriority = 10_000;
     private const float MaxAlignDistance = 2f;
     private const float MaxMidEmoteAlignDistance = 0.5f;
     private const int LobbyEmoteRefreshDelayMs = 6000;
@@ -39,20 +34,23 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private const string PublicRelayUrl = "https://emotelink.aethercast.org";
 
     private sealed record PendingPenumbraInstall(ModTransferOfferDto Offer, string Path, string ReceiveFolder);
-    private sealed record EmoteTimelineInfo(uint RowId, string Key, bool IsLoop);
-    private sealed record EmotePlaybackInfo(IReadOnlyList<EmoteTimelineInfo> Timelines);
-    private sealed record ActiveCarrier(
-        Guid CollectionId,
-        string ModDirectory,
+    private sealed record EmoteTimelineInfo(int Slot, uint RowId, string Key, bool IsLoop);
+    private sealed record EmotePlaybackInfo(uint EmoteId, IReadOnlyList<EmoteTimelineInfo> Timelines);
+    private sealed record PendingDirectPlayback(nint ActorAddress, EmotePlayback Playback, string ModName);
+    private sealed record ActiveDirectPlayback(nint ActorAddress, ushort OriginalBaseOverride);
+    private sealed record PendingRemotePlayback(
+        nint ActorAddress,
+        EmotePlayback Playback,
+        TemporaryAssignment Assignment,
         string ModName,
-        string Command,
-        IReadOnlySet<uint> TimelineIds,
-        string ModRootDirectory,
-        long CreatedAt)
-    {
-        public bool AnimationStarted { get; set; }
-        public long LastSeenAt { get; set; }
-    }
+        long StartAt);
+    private sealed record ActiveRemotePlayback(
+        nint ActorAddress,
+        ushort OriginalBaseOverride,
+        TemporaryAssignment Assignment,
+        System.Numerics.Vector3 StartPosition,
+        bool IsLoop,
+        long CleanupAt);
 
     [PluginService] private static IDalamudPluginInterface PluginInterface { get; set; } = null!;
     [PluginService] private static ICommandManager Commands { get; set; } = null!;
@@ -65,6 +63,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] private static IChatGui Chat { get; set; } = null!;
     [PluginService] private static IContextMenu ContextMenu { get; set; } = null!;
     [PluginService] private static ITextureProvider TextureProvider { get; set; } = null!;
+    [PluginService] private static IClientState ClientState { get; set; } = null!;
 
     private readonly Configuration configuration;
     private readonly AnimationIndexCache animationIndexCache;
@@ -84,9 +83,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly Dictionary<string, EmoteTarget> emoteTargetsByName = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, EmotePlaybackInfo> emotePlaybackByCommand =
         new(StringComparer.OrdinalIgnoreCase);
+    private readonly Dictionary<uint, EmotePlaybackInfo> emotePlaybackById = [];
     private readonly Dictionary<string, IReadOnlyList<ModOptionGroup>> optionGroups =
         new(StringComparer.OrdinalIgnoreCase);
     private string? pendingCommand;
+    private PendingDirectPlayback? pendingDirectPlayback;
     private long pendingCommandTime;
     private PoseTarget? pendingPose;
     private string? pendingSelectionModKey;
@@ -112,10 +113,15 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private bool hasMovementSample;
     private int movementFrames;
     private readonly ConcurrentQueue<PlaySignalDto> syncPlaySignals = new();
+    private readonly ConcurrentQueue<LocalAnimationSignalDto> localAnimationSignals = new();
+    private readonly List<PendingRemotePlayback> pendingRemotePlaybacks = [];
+    private readonly List<ActiveRemotePlayback> activeRemotePlaybacks = [];
+    private readonly HashSet<TemporaryAssignment> remoteAssignments = [];
     private string? preparedModKey;
     private string? preparedCommand;
+    private EmotePlayback? preparedDirectPlayback;
     private PoseTarget? preparedPose;
-    private ActiveCarrier? activeCarrier;
+    private ActiveDirectPlayback? activeDirectPlayback;
     private nint alignmentTargetAddress;
     private int alignmentFramesRemaining;
     private int alignmentStableFrames;
@@ -139,6 +145,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private bool roleSyncPending;
     private bool communityRoleSyncPending;
     private bool communityRelayConnected;
+    private string localPresenceScope = "";
+    private bool localPresenceUpdatePending;
+    private long nextLocalPresenceAttempt;
     private readonly ConcurrentQueue<ModRefreshResult> modRefreshResults = new();
     private readonly SemaphoreSlim modScanFramePermit = new(0, 1);
     private Queue<((string Directory, string Name) Mod, CachedAnimationMod Cached)>? provisionalCachedMods;
@@ -206,7 +215,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (generatedReporterIdentity || upgradedConfiguration) configuration.Save(PluginInterface);
         penumbra = new PenumbraService(PluginInterface, Log);
         penumbra.ModAdded += OnPenumbraModAdded;
-        DeleteStaleCarrierMods();
         movement = new MovementService(Interop, Objects);
         poses = new PoseService(Objects);
         try
@@ -228,6 +236,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
         sync = new AnimationSyncService();
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
+        sync.LocalAnimationReceived += signal => localAnimationSignals.Enqueue(signal);
         sync.ModTransferOffered += offer => incomingTransferOffers.Enqueue(offer);
         sync.OptionSelectionChanged += RememberOptionSelection;
         sync.RoleLabelChanged += label => receivedRoleLabels.Enqueue(label);
@@ -311,9 +320,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
 
-        var allMods = penumbra.GetMods()
-            .Where(mod => !mod.Directory.StartsWith(CarrierDirectoryPrefix, StringComparison.OrdinalIgnoreCase))
-            .ToList();
+        var allMods = penumbra.GetMods().ToList();
         var currentDirectories = allMods.Select(mod => mod.Directory)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var directory in modsByDirectory.Keys.Where(directory => !currentDirectories.Contains(directory)).ToList())
@@ -619,9 +626,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void OnPenumbraModAdded(string directory)
     {
-        if (string.IsNullOrWhiteSpace(directory) ||
-            directory.StartsWith(CarrierDirectoryPrefix, StringComparison.OrdinalIgnoreCase) ||
-            !queuedAddedModDirectories.TryAdd(directory, 0)) return;
+        if (string.IsNullOrWhiteSpace(directory) || !queuedAddedModDirectories.TryAdd(directory, 0)) return;
         addedModDirectories.Enqueue(directory);
     }
 
@@ -671,9 +676,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             var root = penumbra.GetModRoot();
             if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) return;
-            var allMods = penumbra.GetMods()
-                .Where(mod => !mod.Directory.StartsWith(CarrierDirectoryPrefix, StringComparison.OrdinalIgnoreCase))
-                .ToList();
+            var allMods = penumbra.GetMods().ToList();
             var targets = allMods.Where(mod => requested.Contains(mod.Directory)).ToList();
             if (targets.Count == 0)
             {
@@ -1199,6 +1202,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         preparedModKey = null;
         preparedCommand = null;
         preparedPose = null;
+        preparedDirectPlayback = null;
         RunSync(sync.CancelReadyAsync(), "Group-play readiness cancelled.");
     }
 
@@ -1213,6 +1217,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         preparedModKey = null;
         preparedCommand = null;
         preparedPose = null;
+        preparedDirectPlayback = null;
         if (!sync.IsInRoom) return;
         _ = sync.CancelReadyAsync().ContinueWith(task =>
         {
@@ -1675,7 +1680,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         if (requestedPose is null && modPoses.TryGetValue(directory, out var detected) && detected.Count == 1)
             requestedPose = detected[0];
-        ClearTemporaryAssignmentsInternal(false);
+        ClearTemporaryAssignmentsInternal(false, false);
         var collection = penumbra.GetPlayerCollection();
         var selections = configuration.ModOptionSelections.TryGetValue(directory, out var savedOptions)
             ? savedOptions
@@ -1697,7 +1702,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         if (requestedPose is not null)
         {
-            if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, requestedPose)) return;
+            if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, requestedPose, null)) return;
             SchedulePose(name, requestedPose, 300);
             return;
         }
@@ -1710,179 +1715,30 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
 
-        var usingCarrier = TryActivateEmoteCarrier(collection.Value.Id, directory, command, out var carrierCommand);
-        var playbackCommand = usingCarrier ? carrierCommand : command;
-        if (allowGroupPlay && PrepareForGroupPlay(directory, name, playbackCommand, null)) return;
-        ScheduleCommand(name, playbackCommand, usingCarrier ? 750 : 300);
+        if (!TryCreatePlayback(command, out var playback))
+        {
+            Status = $"Activated {name}, but {command} has no playable action timeline.";
+            Chat.PrintError($"[Synastry] {command} has no playable action timeline in the current game data.");
+            return;
+        }
+        if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, null, playback)) return;
+        ScheduleDirectPlayback(name, Objects.LocalPlayer?.Address ?? 0, playback, 300);
+        if (sync.IsConnected && modCatalogKeys.TryGetValue(directory, out var fingerprint) && fingerprint.Length == 64)
+            _ = BroadcastLocalPlaybackAsync(fingerprint, playback);
     }
 
-    private bool TryActivateEmoteCarrier(
-        Guid collectionId,
+    private bool PrepareForGroupPlay(
         string directory,
-        string sourceCommand,
-        out string carrierCommand)
-    {
-        carrierCommand = sourceCommand;
-        if (!emotePlaybackByCommand.TryGetValue(sourceCommand, out var sourceInfo) ||
-            sourceInfo.Timelines.Count == 0) return false;
-
-        carrierCommand = sourceInfo.Timelines.Any(timeline => timeline.IsLoop)
-            ? LoopCarrierCommand
-            : OneShotCarrierCommand;
-        if (sourceCommand.Equals(carrierCommand, StringComparison.OrdinalIgnoreCase)) return false;
-        if (!emotePlaybackByCommand.TryGetValue(carrierCommand, out var carrierInfo) ||
-            carrierInfo.Timelines.Count == 0)
-        {
-            Log.Warning("Carrier command {CarrierCommand} was not found in the current Emote sheet.", carrierCommand);
-            carrierCommand = sourceCommand;
-            return false;
-        }
-
-        var root = penumbra.GetModRoot();
-        if (string.IsNullOrWhiteSpace(root))
-        {
-            carrierCommand = sourceCommand;
-            return false;
-        }
-
-        var modPath = Path.Combine(root, directory);
-        if (!Directory.Exists(modPath))
-        {
-            carrierCommand = sourceCommand;
-            return false;
-        }
-
-        var candidates = new List<(string SourceGamePath, string CarrierGamePath)>();
-        foreach (var sourceGamePath in ReadPapGamePaths(modPath))
-        {
-            var normalized = sourceGamePath.Replace('\\', '/').ToLowerInvariant();
-            const string commonMarker = "/bt_common/";
-            var commonIndex = normalized.IndexOf(commonMarker, StringComparison.Ordinal);
-            if (commonIndex < 0 || !normalized.EndsWith(".pap", StringComparison.Ordinal)) continue;
-            var relativeSourcePath = normalized[(commonIndex + commonMarker.Length)..^4];
-            if (!relativeSourcePath.StartsWith("emote", StringComparison.Ordinal)) continue;
-            var sourceLeaf = TimelineLeaf(relativeSourcePath);
-            var sourceTimeline = sourceInfo.Timelines.FirstOrDefault(timeline =>
-                relativeSourcePath.Equals(timeline.Key, StringComparison.OrdinalIgnoreCase) ||
-                sourceLeaf.Equals(TimelineLeaf(timeline.Key), StringComparison.OrdinalIgnoreCase));
-            if (sourceTimeline is null) continue;
-            var targetTimeline = carrierInfo.Timelines.FirstOrDefault(timeline =>
-                                     timeline.IsLoop == sourceTimeline.IsLoop) ??
-                                 carrierInfo.Timelines.First();
-            var carrierTimelinePath = targetTimeline.Key.Contains('/')
-                ? targetTimeline.Key
-                : "emote/" + targetTimeline.Key;
-            candidates.Add((normalized,
-                normalized[..(commonIndex + commonMarker.Length)] + carrierTimelinePath + ".pap"));
-        }
-
-        if (candidates.Count == 0)
-        {
-            carrierCommand = sourceCommand;
-            return false;
-        }
-
-        var resolvedPaths = penumbra.ResolvePlayerPaths(candidates.Select(candidate => candidate.SourceGamePath).ToList());
-        if (resolvedPaths.Count != candidates.Count)
-        {
-            carrierCommand = sourceCommand;
-            return false;
-        }
-
-        var mappings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var carrierDirectory = CarrierDirectoryPrefix + Guid.NewGuid().ToString("N");
-        var carrierModRoot = Path.Combine(root, carrierDirectory);
-        var papDirectory = Path.Combine(carrierModRoot, "pap");
-        try
-        {
-            Directory.CreateDirectory(papDirectory);
-            for (var index = 0; index < candidates.Count; index++)
-            {
-                var resolvedPath = resolvedPaths[index];
-                if (!Path.IsPathFullyQualified(resolvedPath) || !File.Exists(resolvedPath)) continue;
-                var carrierFile = DataManager.GetFile(candidates[index].CarrierGamePath);
-                if (carrierFile is null) continue;
-                var relativePatchedPath = Path.Combine("pap", $"{index:D3}.pap");
-                var patchedPath = Path.Combine(carrierModRoot, relativePatchedPath);
-                var patchedBytes = CarrierPapPatcher.Patch(
-                    File.ReadAllBytes(resolvedPath),
-                    carrierFile.Data);
-                File.WriteAllBytes(patchedPath, patchedBytes);
-                mappings[candidates[index].CarrierGamePath] = relativePatchedPath;
-            }
-
-            File.WriteAllText(
-                Path.Combine(carrierModRoot, "meta.json"),
-                JsonSerializer.Serialize(new
-                {
-                    FileVersion = 3,
-                    Name = CarrierModName,
-                    Author = "Synastry",
-                    Description = "Temporary emote carrier. Synastry removes this automatically.",
-                    Version = "1.0",
-                    Website = ""
-                }, new JsonSerializerOptions { WriteIndented = true }));
-            File.WriteAllText(
-                Path.Combine(carrierModRoot, "default_mod.json"),
-                JsonSerializer.Serialize(new
-                {
-                    Version = 0,
-                    Files = mappings,
-                    FileSwaps = new Dictionary<string, string>(),
-                    Manipulations = Array.Empty<object>()
-                }, new JsonSerializerOptions { WriteIndented = true }));
-        }
-        catch (Exception exception)
-        {
-            Log.Warning(exception, "Could not create Synastry's temporary carrier PAP.");
-            DeleteCarrierDirectory(carrierModRoot);
-            carrierCommand = sourceCommand;
-            return false;
-        }
-
-        if (mappings.Count == 0)
-        {
-            DeleteCarrierDirectory(carrierModRoot);
-            carrierCommand = sourceCommand;
-            return false;
-        }
-
-        if (!penumbra.AddMod(carrierDirectory) ||
-            !penumbra.Activate(
-                collectionId,
-                carrierDirectory,
-                CarrierModName,
-                new Dictionary<string, List<string>>(),
-                CarrierPriority))
-        {
-            penumbra.DeleteMod(carrierDirectory, CarrierModName);
-            DeleteCarrierDirectory(carrierModRoot);
-            carrierCommand = sourceCommand;
-            return false;
-        }
-
-        activeCarrier = new ActiveCarrier(
-            collectionId,
-            carrierDirectory,
-            CarrierModName,
-            carrierCommand,
-            carrierInfo.Timelines.Select(timeline => timeline.RowId).ToHashSet(),
-            carrierModRoot,
-            Environment.TickCount64);
-        Log.Information(
-            "Created temporary Penumbra carrier with {MappingCount} PAP mapping(s) from {SourceCommand} to {CarrierCommand}.",
-            mappings.Count,
-            sourceCommand,
-            carrierCommand);
-        return true;
-    }
-
-    private bool PrepareForGroupPlay(string directory, string modName, string? command, PoseTarget? pose)
+        string modName,
+        string? command,
+        PoseTarget? pose,
+        EmotePlayback? directPlayback)
     {
         if (!sync.IsInRoom) return false;
         preparedModKey = modSyncKeys.TryGetValue(directory, out var key) ? key : NormalizeModKey(modName);
         preparedCommand = command;
         preparedPose = pose;
+        preparedDirectPlayback = directPlayback;
         Status = $"Prepared {modName}; waiting for everyone in room {sync.Room!.RoomCode}.";
         RunSync(sync.SetReadyAsync(preparedModKey), $"Ready with {modName}; waiting for the group.");
         return true;
@@ -1900,6 +1756,27 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = $"Activated {modName}; starting {command}.";
         pendingCommand = command;
         pendingCommandTime = Environment.TickCount64 + delayMs;
+    }
+
+    private void ScheduleDirectPlayback(string modName, nint actorAddress, EmotePlayback playback, long delayMs)
+    {
+        Status = $"Activated {modName}; starting its native timeline.";
+        pendingDirectPlayback = new PendingDirectPlayback(actorAddress, playback, modName);
+        pendingCommandTime = Environment.TickCount64 + delayMs;
+    }
+
+    private Task BroadcastLocalPlaybackAsync(string fingerprint, EmotePlayback playback)
+    {
+        return EnsureLocalPresenceAsync().ContinueWith(task =>
+        {
+            task.GetAwaiter().GetResult();
+            return sync.BroadcastLocalAnimationAsync(fingerprint, playback.EmoteId, 350);
+        }, TaskScheduler.Default).Unwrap().ContinueWith(task =>
+        {
+            if (task.Exception is not null)
+                Log.Debug(task.Exception.GetBaseException(),
+                    "Nearby relay playback was unavailable; local direct playback will continue.");
+        }, TaskScheduler.Default);
     }
 
     private static string NormalizeModKey(string modName) =>
@@ -2118,27 +1995,48 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (command.Length == 0 || name.Length == 0) continue;
             AddEmoteName(row.RowId, name, command);
             var timelines = row.ActionTimeline
-                .Where(timeline => timeline is { RowId: > 0, IsValid: true })
-                .Select(timeline => new EmoteTimelineInfo(
-                    timeline.RowId,
-                    NormalizeTimelineKey(timeline.Value.Key.ExtractText()),
-                    timeline.Value.IsLoop))
+                .Select((timeline, slot) => (timeline, slot))
+                .Where(item => item.timeline is { RowId: > 0, IsValid: true })
+                .Select(item => new EmoteTimelineInfo(
+                    item.slot,
+                    item.timeline.RowId,
+                    NormalizeTimelineKey(item.timeline.Value.Key.ExtractText()),
+                    item.timeline.Value.IsLoop))
                 .Where(timeline => timeline.Key.Length > 0)
                 .DistinctBy(timeline => (timeline.RowId, timeline.Key.ToUpperInvariant(), timeline.IsLoop))
                 .ToList();
             if (timelines.Count > 0)
-                emotePlaybackByCommand.TryAdd(command, new EmotePlaybackInfo(timelines));
-        }
-        foreach (var carrierCommand in new[] { LoopCarrierCommand, OneShotCarrierCommand })
-        {
-            if (emotePlaybackByCommand.TryGetValue(carrierCommand, out var carrier))
-                Log.Information("Carrier {CarrierCommand} timelines: {Timelines}.", carrierCommand,
-                    string.Join(", ", carrier.Timelines.Select(timeline =>
-                        $"{timeline.RowId}:{timeline.Key}{(timeline.IsLoop ? " [loop]" : "")}")));
-            else
-                Log.Warning("Carrier {CarrierCommand} was not found in the current Emote sheet.", carrierCommand);
+            {
+                var playback = new EmotePlaybackInfo(row.RowId, timelines);
+                emotePlaybackByCommand.TryAdd(command, playback);
+                emotePlaybackById.TryAdd(row.RowId, playback);
+            }
         }
         Log.Information("Loaded {Count} emote names for automatic playback.", emoteCommandsByName.Count);
+    }
+
+    private bool TryCreatePlayback(string command, out EmotePlayback playback)
+    {
+        playback = null!;
+        if (!emotePlaybackByCommand.TryGetValue(command, out var info)) return false;
+        return TryCreatePlayback(info, out playback);
+    }
+
+    private static bool TryCreatePlayback(EmotePlaybackInfo info, out EmotePlayback playback)
+    {
+        playback = null!;
+        var main = info.Timelines.FirstOrDefault(timeline => timeline.Slot == 0) ??
+                   info.Timelines.FirstOrDefault(timeline => timeline.IsLoop) ??
+                   info.Timelines.FirstOrDefault();
+        if (main is null || main.RowId > ushort.MaxValue) return false;
+        var isLoop = main.IsLoop || info.Timelines.Any(timeline => timeline.IsLoop);
+        var intro = isLoop ? info.Timelines.FirstOrDefault(timeline => timeline.Slot == 1) : null;
+        playback = new EmotePlayback(
+            info.EmoteId,
+            (ushort)main.RowId,
+            intro is { RowId: <= ushort.MaxValue } ? (ushort)intro.RowId : (ushort)0,
+            isLoop);
+        return true;
     }
 
     private void AddEmoteName(uint id, string name, string command)
@@ -2233,12 +2131,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         const string commonMarker = "bt_common/";
         var commonIndex = normalized.IndexOf(commonMarker, StringComparison.Ordinal);
         return commonIndex >= 0 ? normalized[(commonIndex + commonMarker.Length)..] : normalized;
-    }
-
-    private static string TimelineLeaf(string timelinePath)
-    {
-        var slash = timelinePath.LastIndexOf('/');
-        return slash >= 0 ? timelinePath[(slash + 1)..] : timelinePath;
     }
 
     private static void ExecuteCommand(string command)
@@ -2507,24 +2399,32 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void ClearTemporaryAssignments() => ClearTemporaryAssignmentsInternal(true);
 
-    private void ClearTemporaryAssignmentsInternal(bool cancelGroupReady)
+    private void ClearTemporaryAssignmentsInternal(bool cancelGroupReady, bool clearRemote = true)
     {
-        if (activeCarrier is { } carrier)
+        if (activeDirectPlayback is { } direct)
         {
-            penumbra.Remove(new TemporaryAssignment(
-                carrier.CollectionId,
-                carrier.ModDirectory,
-                carrier.ModName));
-            penumbra.DeleteMod(carrier.ModDirectory, carrier.ModName);
-            DeleteCarrierDirectory(carrier.ModRootDirectory);
-            activeCarrier = null;
+            ActionTimelinePlayback.Stop(direct.ActorAddress, direct.OriginalBaseOverride);
+            activeDirectPlayback = null;
+        }
+        if (clearRemote)
+        {
+            foreach (var remote in activeRemotePlaybacks)
+                if (remote.IsLoop && Objects.Any(candidate => candidate.Address == remote.ActorAddress))
+                    ActionTimelinePlayback.Stop(remote.ActorAddress, remote.OriginalBaseOverride);
+            activeRemotePlaybacks.Clear();
+            pendingRemotePlaybacks.Clear();
         }
         foreach (var assignment in configuration.ActiveAssignments.ToList())
+        {
+            if (!clearRemote && remoteAssignments.Contains(assignment)) continue;
             if (penumbra.Remove(assignment)) configuration.ActiveAssignments.Remove(assignment);
+        }
+        if (clearRemote) remoteAssignments.Clear();
 
         configuration.Save(PluginInterface);
         waitingForAnimation = false;
         pendingCommand = null;
+        pendingDirectPlayback = null;
         pendingPose = null;
         pendingSelectionModKey = null;
         lobbyEmoteRefreshTime = 0;
@@ -2536,43 +2436,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
             preparedModKey = null;
             preparedCommand = null;
             preparedPose = null;
+            preparedDirectPlayback = null;
             RunSync(sync.CancelReadyAsync(), "Temporary animation and group readiness cleared.");
         }
         Status = "Temporary animation assignments cleared.";
-    }
-
-    private void DeleteStaleCarrierMods()
-    {
-        var root = penumbra.GetModRoot();
-        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) return;
-        try
-        {
-            foreach (var directory in Directory.EnumerateDirectories(
-                         root,
-                         CarrierDirectoryPrefix + "*",
-                         SearchOption.TopDirectoryOnly))
-            {
-                var directoryName = Path.GetFileName(directory);
-                penumbra.DeleteMod(directoryName, CarrierModName);
-                DeleteCarrierDirectory(directory);
-            }
-        }
-        catch (Exception exception)
-        {
-            Log.Warning(exception, "Could not sweep stale Synastry carrier mods.");
-        }
-    }
-
-    private static void DeleteCarrierDirectory(string directory)
-    {
-        try
-        {
-            if (Directory.Exists(directory)) Directory.Delete(directory, true);
-        }
-        catch (Exception exception)
-        {
-            Log.Warning(exception, "Could not delete Synastry's temporary carrier files at {Directory}.", directory);
-        }
     }
 
     public void ToggleAlignment()
@@ -2647,6 +2514,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void OnUpdate(IFramework _)
     {
+        UpdateLocalPresence();
         ProcessModRefresh();
         ProcessReceivedRoleLabels();
         ProcessReceivedCommunityRoleLabels();
@@ -2658,6 +2526,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ProcessCompletedDownloads();
         ProcessAddedMod();
         ProcessSyncPlaySignals();
+        ProcessLocalAnimationSignals();
+        UpdateRemotePlaybacks();
         var animationStarted = false;
         if (pendingPose is not null && Environment.TickCount64 >= pendingCommandTime)
         {
@@ -2672,6 +2542,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingCommand = null;
             ExecuteCommand(command);
             animationStarted = true;
+        }
+        if (pendingDirectPlayback is not null && Environment.TickCount64 >= pendingCommandTime)
+        {
+            var pending = pendingDirectPlayback;
+            pendingDirectPlayback = null;
+            if (ActionTimelinePlayback.Start(
+                    pending.ActorAddress,
+                    pending.Playback,
+                    out var originalBaseOverride))
+            {
+                if (pending.Playback.IsLoop)
+                    activeDirectPlayback = new ActiveDirectPlayback(pending.ActorAddress, originalBaseOverride);
+                animationStarted = true;
+                Status = $"Started {pending.ModName} with its native action timeline.";
+            }
+            else
+            {
+                Status = $"Could not start {pending.ModName}'s action timeline.";
+            }
         }
         if (animationStarted && pendingSelectionModKey is not null)
         {
@@ -2698,35 +2587,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Log.Information("Ran lobby EmoteSync after {DelayMilliseconds} ms for {ActorCount} visible actors.",
                 LobbyEmoteRefreshDelayMs, refreshed);
         }
-        UpdateCarrierLifecycle();
         UpdatePoseCycling();
         if (!waitingForAnimation) return;
         UpdateMovementCleanup();
-    }
-
-    private void UpdateCarrierLifecycle()
-    {
-        var carrier = activeCarrier;
-        if (carrier is null) return;
-        if (string.Equals(pendingCommand, carrier.Command, StringComparison.OrdinalIgnoreCase) ||
-            string.Equals(preparedCommand, carrier.Command, StringComparison.OrdinalIgnoreCase)) return;
-
-        var player = (Character*)(Objects.LocalPlayer?.Address ?? 0);
-        var timelineId = player is null ? 0u : player->Timeline.TimelineSequencer.TimelineIds[0];
-        if (carrier.TimelineIds.Contains(timelineId))
-        {
-            carrier.AnimationStarted = true;
-            carrier.LastSeenAt = Environment.TickCount64;
-            return;
-        }
-
-        if (!carrier.AnimationStarted && Environment.TickCount64 - carrier.CreatedAt < 5000) return;
-        if (carrier.AnimationStarted && Environment.TickCount64 - carrier.LastSeenAt < 500) return;
-        var status = carrier.AnimationStarted
-            ? "Carrier animation finished; removed Synastry's temporary emote mapping."
-            : "Carrier animation did not start; removed Synastry's temporary emote mapping.";
-        ClearTemporaryAssignmentsInternal(false);
-        Status = status;
     }
 
     private void ProcessTransferOffers()
@@ -3127,6 +2990,166 @@ public sealed unsafe class Plugin : IDalamudPlugin
         player->GameObject.SetRotation(rotation);
     }
 
+    private void UpdateLocalPresence()
+    {
+        if (!sync.IsConnected)
+        {
+            localPresenceScope = "";
+            localPresenceUpdatePending = false;
+            nextLocalPresenceAttempt = 0;
+            return;
+        }
+        var player = Objects.LocalPlayer;
+        if (player is null) return;
+        var scope = $"{player.CurrentWorld.RowId}:{ClientState.TerritoryType}";
+        if (scope.Equals(localPresenceScope, StringComparison.Ordinal) || localPresenceUpdatePending ||
+            Environment.TickCount64 < nextLocalPresenceAttempt) return;
+        localPresenceUpdatePending = true;
+        nextLocalPresenceAttempt = Environment.TickCount64 + 30_000;
+        _ = EnsureLocalPresenceAsync().ContinueWith(task =>
+        {
+            localPresenceUpdatePending = false;
+            if (task.Exception is not null)
+                Log.Debug(task.Exception.GetBaseException(), "Could not update nearby relay presence.");
+        }, TaskScheduler.Default);
+    }
+
+    private Task EnsureLocalPresenceAsync()
+    {
+        var player = Objects.LocalPlayer;
+        if (!sync.IsConnected || player is null) return Task.CompletedTask;
+        var scope = $"{player.CurrentWorld.RowId}:{ClientState.TerritoryType}";
+        return sync.SetLocalPresenceAsync(scope, player.Name.TextValue, player.HomeWorld.RowId)
+            .ContinueWith(task =>
+            {
+                task.GetAwaiter().GetResult();
+                localPresenceScope = scope;
+                nextLocalPresenceAttempt = 0;
+            }, TaskScheduler.Default);
+    }
+
+    private void ProcessLocalAnimationSignals()
+    {
+        while (localAnimationSignals.TryDequeue(out var signal))
+        {
+            var actor = Objects.OfType<IPlayerCharacter>().FirstOrDefault(player =>
+                player.Name.TextValue.Equals(signal.SenderName, StringComparison.OrdinalIgnoreCase) &&
+                (signal.SenderHomeWorldId == 0 || player.HomeWorld.RowId == signal.SenderHomeWorldId));
+            if (actor is null)
+            {
+                Log.Debug("Skipped nearby animation {SequenceId}; sender is not a visible actor.", signal.SequenceId);
+                continue;
+            }
+            var indexedMod = modCatalogKeys.FirstOrDefault(pair =>
+                pair.Value.Equals(signal.Fingerprint, StringComparison.OrdinalIgnoreCase));
+            if (string.IsNullOrWhiteSpace(indexedMod.Key) ||
+                !modsByDirectory.TryGetValue(indexedMod.Key, out var mod) ||
+                !emotePlaybackById.TryGetValue(signal.EmoteId, out var playbackInfo) ||
+                !TryCreatePlayback(playbackInfo, out var playback))
+            {
+                Log.Debug("Skipped nearby animation {SequenceId}; its local mod or timeline was unavailable.",
+                    signal.SequenceId);
+                continue;
+            }
+
+            var objectIndex = FindObjectIndex(actor.Address);
+            var collection = objectIndex < 0 ? null : penumbra.GetCollectionForObject(objectIndex);
+            var selections = configuration.ModOptionSelections.TryGetValue(mod.Directory, out var savedOptions)
+                ? savedOptions
+                : new Dictionary<string, List<string>>();
+            ClearRemotePlaybackForActor(actor.Address);
+            if (collection is null || !penumbra.Activate(collection.Value.Id, mod.Directory, mod.Name, selections))
+            {
+                Log.Debug("Skipped nearby animation {SequenceId}; Penumbra could not activate {ModName} for {Sender}.",
+                    signal.SequenceId, mod.Name, signal.SenderName);
+                continue;
+            }
+
+            var assignment = new TemporaryAssignment(collection.Value.Id, mod.Directory, mod.Name);
+            configuration.ActiveAssignments.Add(assignment);
+            remoteAssignments.Add(assignment);
+            configuration.Save(PluginInterface);
+            var delay = signal.DelayMilliseconds > 0
+                ? signal.DelayMilliseconds
+                : Math.Max(0, signal.StartUnixMilliseconds - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            pendingRemotePlaybacks.Add(new PendingRemotePlayback(
+                actor.Address, playback, assignment, mod.Name, Environment.TickCount64 + delay));
+            Log.Information("Scheduled nearby animation {SequenceId} from {Sender} in {DelayMilliseconds} ms.",
+                signal.SequenceId, signal.SenderName, delay);
+        }
+    }
+
+    private static int FindObjectIndex(nint address)
+    {
+        for (var index = 0; index < Objects.Length; index++)
+            if (Objects[index]?.Address == address) return index;
+        return -1;
+    }
+
+    private void UpdateRemotePlaybacks()
+    {
+        var now = Environment.TickCount64;
+        for (var index = pendingRemotePlaybacks.Count - 1; index >= 0; index--)
+        {
+            var pending = pendingRemotePlaybacks[index];
+            if (now < pending.StartAt) continue;
+            pendingRemotePlaybacks.RemoveAt(index);
+            var actor = Objects.FirstOrDefault(candidate => candidate.Address == pending.ActorAddress);
+            if (actor is null || !ActionTimelinePlayback.Start(
+                    pending.ActorAddress, pending.Playback, out var originalBaseOverride))
+            {
+                RemoveRemoteAssignment(pending.Assignment);
+                continue;
+            }
+            activeRemotePlaybacks.Add(new ActiveRemotePlayback(
+                pending.ActorAddress,
+                originalBaseOverride,
+                pending.Assignment,
+                actor.Position,
+                pending.Playback.IsLoop,
+                now + (pending.Playback.IsLoop ? 21_600_000 : 15_000)));
+        }
+
+        for (var index = activeRemotePlaybacks.Count - 1; index >= 0; index--)
+        {
+            var active = activeRemotePlaybacks[index];
+            var actor = Objects.FirstOrDefault(candidate => candidate.Address == active.ActorAddress);
+            var moved = actor is not null &&
+                System.Numerics.Vector3.DistanceSquared(actor.Position, active.StartPosition) > 0.01f;
+            if (actor is not null && now < active.CleanupAt && (!active.IsLoop || !moved)) continue;
+            if (actor is not null && active.IsLoop)
+                ActionTimelinePlayback.Stop(active.ActorAddress, active.OriginalBaseOverride);
+            RemoveRemoteAssignment(active.Assignment);
+            activeRemotePlaybacks.RemoveAt(index);
+        }
+    }
+
+    private void ClearRemotePlaybackForActor(nint actorAddress)
+    {
+        for (var index = pendingRemotePlaybacks.Count - 1; index >= 0; index--)
+        {
+            if (pendingRemotePlaybacks[index].ActorAddress != actorAddress) continue;
+            RemoveRemoteAssignment(pendingRemotePlaybacks[index].Assignment);
+            pendingRemotePlaybacks.RemoveAt(index);
+        }
+        for (var index = activeRemotePlaybacks.Count - 1; index >= 0; index--)
+        {
+            var active = activeRemotePlaybacks[index];
+            if (active.ActorAddress != actorAddress) continue;
+            if (active.IsLoop) ActionTimelinePlayback.Stop(active.ActorAddress, active.OriginalBaseOverride);
+            RemoveRemoteAssignment(active.Assignment);
+            activeRemotePlaybacks.RemoveAt(index);
+        }
+    }
+
+    private void RemoveRemoteAssignment(TemporaryAssignment assignment)
+    {
+        penumbra.Remove(assignment);
+        configuration.ActiveAssignments.Remove(assignment);
+        remoteAssignments.Remove(assignment);
+        configuration.Save(PluginInterface);
+    }
+
     private void ProcessSyncPlaySignals()
     {
         while (syncPlaySignals.TryDequeue(out var signal))
@@ -3144,6 +3167,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingCommandTime = Environment.TickCount64 + delay;
             pendingCommand = preparedCommand;
             pendingPose = preparedPose;
+            pendingDirectPlayback = preparedDirectPlayback is null
+                ? null
+                : new PendingDirectPlayback(
+                    Objects.LocalPlayer?.Address ?? 0,
+                    preparedDirectPlayback,
+                    "group animation");
             pendingSelectionModKey = signal.ModKey;
             lobbyEmoteRefreshTime = 0;
             Status = $"Group ready. Starting in {delay / 1000f:F1}s.";
@@ -3156,6 +3185,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             preparedModKey = null;
             preparedCommand = null;
             preparedPose = null;
+            preparedDirectPlayback = null;
         }
     }
 

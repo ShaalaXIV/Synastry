@@ -11,6 +11,8 @@ public sealed class AnimationHub : Hub
     private static readonly TimeSpan EmptyRoomGracePeriod = TimeSpan.FromSeconds(30);
     private static readonly ConcurrentDictionary<string, Room> Rooms = new(StringComparer.OrdinalIgnoreCase);
     private static readonly ConcurrentDictionary<string, string> ConnectionRooms = new();
+    private static readonly ConcurrentDictionary<string, LocalPresence> ConnectionLocalPresence = new();
+    private static readonly ConcurrentDictionary<string, long> LastLocalAnimationTicks = new();
     private static readonly ConcurrentDictionary<string, string> ConnectionCommunityReporterIds = new();
     private static readonly ConcurrentDictionary<string, string> ConnectionCatalogReporterIds = new();
     private static readonly ConcurrentDictionary<string, int> ConnectionCatalogReportCounts = new();
@@ -462,6 +464,48 @@ public sealed class AnimationHub : Hub
         }
     }
 
+    public async Task SetLocalPresence(string scope, string displayName, uint homeWorldId)
+    {
+        var cleanScope = CleanLocalScope(scope);
+        if (cleanScope.Length == 0) throw new HubException("A valid local animation scope is required.");
+        var next = new LocalPresence(cleanScope, CleanName(displayName), homeWorldId);
+        if (ConnectionLocalPresence.TryGetValue(Context.ConnectionId, out var previous) &&
+            !previous.Scope.Equals(next.Scope, StringComparison.OrdinalIgnoreCase))
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, LocalGroup(previous.Scope));
+        ConnectionLocalPresence[Context.ConnectionId] = next;
+        await Groups.AddToGroupAsync(Context.ConnectionId, LocalGroup(next.Scope));
+    }
+
+    public async Task<LocalAnimationSignalDto> BroadcastLocalAnimation(
+        string fingerprint,
+        uint emoteId,
+        int delayMilliseconds)
+    {
+        if (!ConnectionLocalPresence.TryGetValue(Context.ConnectionId, out var presence))
+            throw new HubException("Set local animation presence first.");
+        var cleanFingerprint = CleanFingerprint(fingerprint);
+        if (cleanFingerprint.Length != 64 || emoteId == 0)
+            throw new HubException("A valid animation fingerprint and emote are required.");
+
+        var now = Environment.TickCount64;
+        if (LastLocalAnimationTicks.TryGetValue(Context.ConnectionId, out var previous) && now - previous < 200)
+            throw new HubException("Local animations are being started too quickly.");
+        LastLocalAnimationTicks[Context.ConnectionId] = now;
+
+        var delay = Math.Clamp(delayMilliseconds, 100, 3000);
+        var signal = new LocalAnimationSignalDto(
+            presence.DisplayName,
+            presence.HomeWorldId,
+            cleanFingerprint,
+            emoteId,
+            DateTimeOffset.UtcNow.AddMilliseconds(delay).ToUnixTimeMilliseconds(),
+            Guid.NewGuid().ToString("N"),
+            delay);
+        await Clients.OthersInGroup(LocalGroup(presence.Scope)).SendAsync("LocalAnimation", signal);
+        statistics.IncrementAnimationsPerformed(1);
+        return signal;
+    }
+
     public async Task<RoomStateDto> SetReady(string modKey)
     {
         var room = GetCurrentRoom();
@@ -567,6 +611,9 @@ public sealed class AnimationHub : Hub
         ConnectionCommunityReporterIds.TryRemove(Context.ConnectionId, out _);
         ConnectionCatalogReporterIds.TryRemove(Context.ConnectionId, out _);
         ConnectionCatalogReportCounts.TryRemove(Context.ConnectionId, out _);
+        if (ConnectionLocalPresence.TryRemove(Context.ConnectionId, out var localPresence))
+            await Groups.RemoveFromGroupAsync(Context.ConnectionId, LocalGroup(localPresence.Scope));
+        LastLocalAnimationTicks.TryRemove(Context.ConnectionId, out _);
         await LeaveRoom();
         await base.OnDisconnectedAsync(exception);
         await Clients.All.SendAsync("OnlineUserCountChanged", relayStatistics.ActiveUsers);
@@ -623,6 +670,10 @@ public sealed class AnimationHub : Hub
     }
     private static string CleanFingerprint(string value) =>
         new(value.Where(Uri.IsHexDigit).Take(64).Select(char.ToUpperInvariant).ToArray());
+    private static string CleanLocalScope(string value) =>
+        new(value.Where(character => char.IsLetterOrDigit(character) || character is ':' or '-' or '_')
+            .Take(80).ToArray());
+    private static string LocalGroup(string scope) => "local:" + scope;
 
     private sealed class Room(string code)
     {
@@ -649,6 +700,8 @@ public sealed class AnimationHub : Hub
         public double Tokens { get; set; } = MaximumNewArtifactsPerPeerBurst;
         public DateTimeOffset UpdatedUtc { get; set; } = DateTimeOffset.UtcNow;
     }
+
+    private sealed record LocalPresence(string Scope, string DisplayName, uint HomeWorldId);
 }
 
 public sealed record RoomStateDto(string RoomCode, IReadOnlyList<RoomMemberDto> Members);
@@ -658,6 +711,14 @@ public sealed record PlaySignalDto(
     long StartUnixMilliseconds,
     string SequenceId,
     int DelayMilliseconds = 0);
+public sealed record LocalAnimationSignalDto(
+    string SenderName,
+    uint SenderHomeWorldId,
+    string Fingerprint,
+    uint EmoteId,
+    long StartUnixMilliseconds,
+    string SequenceId,
+    int DelayMilliseconds);
 public sealed record OptionSelectionDto(string MemberName, string ModKey, string Group, string Option);
 public sealed record RoleLabelDto(string MemberName, string ModKey, string Group, string Option, string Label);
 public sealed record AnimationSuggestionDeclinedDto(string DeclinedBy, string SuggestedBy, string ModKey);
