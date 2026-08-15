@@ -30,8 +30,8 @@ public sealed class PenumbraService : IDisposable
         IReadOnlyDictionary<string, (string[] Options, int GroupType)>?> getAvailableSettings;
     private readonly ICallGateSubscriber<string, int> installMod;
     private readonly ICallGateSubscriber<string[], string[], (string[], string[][])> resolvePlayerPaths;
-    private readonly ICallGateSubscriber<string, Guid, Dictionary<string, string>, string, int, int> addTemporaryMod;
-    private readonly ICallGateSubscriber<string, Guid, int, int> removeTemporaryMod;
+    private readonly ICallGateSubscriber<string, int> addMod;
+    private readonly ICallGateSubscriber<string, string, int> deleteMod;
     private readonly ICallGateSubscriber<string, string, string, int> setModPath;
     private readonly ICallGateSubscriber<string, object?> modAdded;
 
@@ -59,9 +59,8 @@ public sealed class PenumbraService : IDisposable
         installMod = pi.GetIpcSubscriber<string, int>("Penumbra.InstallMod.V5");
         resolvePlayerPaths = pi.GetIpcSubscriber<string[], string[], (string[], string[][])>(
             "Penumbra.ResolvePlayerPaths");
-        addTemporaryMod = pi.GetIpcSubscriber<string, Guid, Dictionary<string, string>, string, int, int>(
-            "Penumbra.AddTemporaryMod.V5");
-        removeTemporaryMod = pi.GetIpcSubscriber<string, Guid, int, int>("Penumbra.RemoveTemporaryMod.V5");
+        addMod = pi.GetIpcSubscriber<string, int>("Penumbra.AddMod.V5");
+        deleteMod = pi.GetIpcSubscriber<string, string, int>("Penumbra.DeleteMod.V5");
         setModPath = pi.GetIpcSubscriber<string, string, string, int>("Penumbra.SetModPath.V5");
         modAdded = pi.GetIpcSubscriber<string, object?>("Penumbra.ModAdded");
         modAdded.Subscribe(OnModAdded);
@@ -107,7 +106,7 @@ public sealed class PenumbraService : IDisposable
     }
 
     public bool Activate(Guid collectionId, string directory, string name,
-        IReadOnlyDictionary<string, List<string>> selectedOptions)
+        IReadOnlyDictionary<string, List<string>> selectedOptions, int priority = 9999)
     {
         try
         {
@@ -129,7 +128,7 @@ public sealed class PenumbraService : IDisposable
             var readonlyOptions = options.ToDictionary(
                 pair => pair.Key,
                 pair => (IReadOnlyList<string>)pair.Value);
-            var settings = (false, true, 9999,
+            var settings = (false, true, priority,
                 (IReadOnlyDictionary<string, IReadOnlyList<string>>)readonlyOptions);
             var result = setTemporary.InvokeFunc(collectionId, directory, name, settings, Source, 0);
             if (result is not (0 or 1))
@@ -226,40 +225,31 @@ public sealed class PenumbraService : IDisposable
         }
     }
 
-    public bool AddCarrierMod(
-        string tag,
-        Guid collectionId,
-        IReadOnlyDictionary<string, string> paths,
-        int priority)
+    public bool AddMod(string directory)
     {
         try
         {
-            var result = addTemporaryMod.InvokeFunc(
-                tag,
-                collectionId,
-                paths.ToDictionary(pair => pair.Key, pair => pair.Value, StringComparer.OrdinalIgnoreCase),
-                "",
-                priority);
+            var result = addMod.InvokeFunc(directory);
             if (result != 0)
-                log.Warning("Penumbra rejected Synastry carrier {CarrierTag}; error code {ErrorCode}.", tag, result);
+                log.Warning("Penumbra could not add Synastry carrier mod {Directory}; error code {ErrorCode}.", directory, result);
             return result == 0;
         }
         catch (Exception ex)
         {
-            log.Warning(ex, "Could not register Synastry carrier {CarrierTag}.", tag);
+            log.Warning(ex, "Could not add Synastry carrier mod {Directory}.", directory);
             return false;
         }
     }
 
-    public bool RemoveCarrierMod(string tag, Guid collectionId, int priority)
+    public bool DeleteMod(string directory, string name)
     {
         try
         {
-            return removeTemporaryMod.InvokeFunc(tag, collectionId, priority) is 0 or 1;
+            return deleteMod.InvokeFunc(directory, name) is 0 or 1;
         }
         catch (Exception ex)
         {
-            log.Warning(ex, "Could not remove Synastry carrier {CarrierTag}.", tag);
+            log.Warning(ex, "Could not delete Synastry carrier mod {Directory}.", directory);
             return false;
         }
     }

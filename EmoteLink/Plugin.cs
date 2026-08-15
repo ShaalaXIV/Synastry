@@ -28,7 +28,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private const string FallbackCommand = "/synastry";
     private const string LoopCarrierCommand = "/beesknees";
     private const string OneShotCarrierCommand = "/cheer";
-    private const string CarrierTag = "Synastry Carrier";
+    private const string CarrierModName = "Synastry Carrier";
+    private const string CarrierDirectoryPrefix = ".synastry-carrier-";
     private const int CarrierPriority = 10_000;
     private const float MaxAlignDistance = 2f;
     private const float MaxMidEmoteAlignDistance = 0.5f;
@@ -42,11 +43,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private sealed record EmotePlaybackInfo(IReadOnlyList<EmoteTimelineInfo> Timelines);
     private sealed record ActiveCarrier(
         Guid CollectionId,
-        string Tag,
-        int Priority,
+        string ModDirectory,
+        string ModName,
         string Command,
         IReadOnlySet<uint> TimelineIds,
-        string TemporaryDirectory,
+        string ModRootDirectory,
         long CreatedAt)
     {
         public bool AnimationStarted { get; set; }
@@ -186,7 +187,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public Plugin()
     {
         configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
-        DeleteCarrierDirectory(Path.Combine(PluginInterface.ConfigDirectory.FullName, "carrier"));
         var upgradedConfiguration = configuration.Version < 8;
         if (upgradedConfiguration) configuration.Version = 8;
         animationIndexCache = AnimationIndexCache.Load(
@@ -206,6 +206,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (generatedReporterIdentity || upgradedConfiguration) configuration.Save(PluginInterface);
         penumbra = new PenumbraService(PluginInterface, Log);
         penumbra.ModAdded += OnPenumbraModAdded;
+        DeleteStaleCarrierMods();
         movement = new MovementService(Interop, Objects);
         poses = new PoseService(Objects);
         try
@@ -310,7 +311,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
 
-        var allMods = penumbra.GetMods();
+        var allMods = penumbra.GetMods()
+            .Where(mod => !mod.Directory.StartsWith(CarrierDirectoryPrefix, StringComparison.OrdinalIgnoreCase))
+            .ToList();
         var currentDirectories = allMods.Select(mod => mod.Directory)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var directory in modsByDirectory.Keys.Where(directory => !currentDirectories.Contains(directory)).ToList())
@@ -616,7 +619,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void OnPenumbraModAdded(string directory)
     {
-        if (string.IsNullOrWhiteSpace(directory) || !queuedAddedModDirectories.TryAdd(directory, 0)) return;
+        if (string.IsNullOrWhiteSpace(directory) ||
+            directory.StartsWith(CarrierDirectoryPrefix, StringComparison.OrdinalIgnoreCase) ||
+            !queuedAddedModDirectories.TryAdd(directory, 0)) return;
         addedModDirectories.Enqueue(directory);
     }
 
@@ -666,7 +671,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             var root = penumbra.GetModRoot();
             if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) return;
-            var allMods = penumbra.GetMods();
+            var allMods = penumbra.GetMods()
+                .Where(mod => !mod.Directory.StartsWith(CarrierDirectoryPrefix, StringComparison.OrdinalIgnoreCase))
+                .ToList();
             var targets = allMods.Where(mod => requested.Contains(mod.Directory)).ToList();
             if (targets.Count == 0)
             {
@@ -1703,11 +1710,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
 
-        var playbackCommand = TryActivateEmoteCarrier(collection.Value.Id, directory, command, out var carrierCommand)
-            ? carrierCommand
-            : command;
+        var usingCarrier = TryActivateEmoteCarrier(collection.Value.Id, directory, command, out var carrierCommand);
+        var playbackCommand = usingCarrier ? carrierCommand : command;
         if (allowGroupPlay && PrepareForGroupPlay(directory, name, playbackCommand, null)) return;
-        ScheduleCommand(name, playbackCommand, 300);
+        ScheduleCommand(name, playbackCommand, usingCarrier ? 750 : 300);
     }
 
     private bool TryActivateEmoteCarrier(
@@ -1784,59 +1790,87 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
 
         var mappings = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-        var temporaryDirectory = Path.Combine(
-            PluginInterface.ConfigDirectory.FullName,
-            "carrier",
-            Guid.NewGuid().ToString("N"));
+        var carrierDirectory = CarrierDirectoryPrefix + Guid.NewGuid().ToString("N");
+        var carrierModRoot = Path.Combine(root, carrierDirectory);
+        var papDirectory = Path.Combine(carrierModRoot, "pap");
         try
         {
-            Directory.CreateDirectory(temporaryDirectory);
+            Directory.CreateDirectory(papDirectory);
             for (var index = 0; index < candidates.Count; index++)
             {
                 var resolvedPath = resolvedPaths[index];
                 if (!Path.IsPathFullyQualified(resolvedPath) || !File.Exists(resolvedPath)) continue;
                 var carrierFile = DataManager.GetFile(candidates[index].CarrierGamePath);
                 if (carrierFile is null) continue;
-                var patchedPath = Path.Combine(temporaryDirectory, $"{index:D3}.pap");
+                var relativePatchedPath = Path.Combine("pap", $"{index:D3}.pap");
+                var patchedPath = Path.Combine(carrierModRoot, relativePatchedPath);
                 var patchedBytes = CarrierPapPatcher.Patch(
                     File.ReadAllBytes(resolvedPath),
                     carrierFile.Data);
                 File.WriteAllBytes(patchedPath, patchedBytes);
-                mappings[candidates[index].CarrierGamePath] = patchedPath;
+                mappings[candidates[index].CarrierGamePath] = relativePatchedPath;
             }
+
+            File.WriteAllText(
+                Path.Combine(carrierModRoot, "meta.json"),
+                JsonSerializer.Serialize(new
+                {
+                    FileVersion = 3,
+                    Name = CarrierModName,
+                    Author = "Synastry",
+                    Description = "Temporary emote carrier. Synastry removes this automatically.",
+                    Version = "1.0",
+                    Website = ""
+                }, new JsonSerializerOptions { WriteIndented = true }));
+            File.WriteAllText(
+                Path.Combine(carrierModRoot, "default_mod.json"),
+                JsonSerializer.Serialize(new
+                {
+                    Version = 0,
+                    Files = mappings,
+                    FileSwaps = new Dictionary<string, string>(),
+                    Manipulations = Array.Empty<object>()
+                }, new JsonSerializerOptions { WriteIndented = true }));
         }
         catch (Exception exception)
         {
             Log.Warning(exception, "Could not create Synastry's temporary carrier PAP.");
-            DeleteCarrierDirectory(temporaryDirectory);
+            DeleteCarrierDirectory(carrierModRoot);
             carrierCommand = sourceCommand;
             return false;
         }
 
         if (mappings.Count == 0)
         {
-            DeleteCarrierDirectory(temporaryDirectory);
+            DeleteCarrierDirectory(carrierModRoot);
             carrierCommand = sourceCommand;
             return false;
         }
 
-        if (!penumbra.AddCarrierMod(CarrierTag, collectionId, mappings, CarrierPriority))
+        if (!penumbra.AddMod(carrierDirectory) ||
+            !penumbra.Activate(
+                collectionId,
+                carrierDirectory,
+                CarrierModName,
+                new Dictionary<string, List<string>>(),
+                CarrierPriority))
         {
-            DeleteCarrierDirectory(temporaryDirectory);
+            penumbra.DeleteMod(carrierDirectory, CarrierModName);
+            DeleteCarrierDirectory(carrierModRoot);
             carrierCommand = sourceCommand;
             return false;
         }
 
         activeCarrier = new ActiveCarrier(
             collectionId,
-            CarrierTag,
-            CarrierPriority,
+            carrierDirectory,
+            CarrierModName,
             carrierCommand,
             carrierInfo.Timelines.Select(timeline => timeline.RowId).ToHashSet(),
-            temporaryDirectory,
+            carrierModRoot,
             Environment.TickCount64);
         Log.Information(
-            "Mapped {MappingCount} selected PAP path(s) from {SourceCommand} to carrier {CarrierCommand}.",
+            "Created temporary Penumbra carrier with {MappingCount} PAP mapping(s) from {SourceCommand} to {CarrierCommand}.",
             mappings.Count,
             sourceCommand,
             carrierCommand);
@@ -2477,8 +2511,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         if (activeCarrier is { } carrier)
         {
-            penumbra.RemoveCarrierMod(carrier.Tag, carrier.CollectionId, carrier.Priority);
-            DeleteCarrierDirectory(carrier.TemporaryDirectory);
+            penumbra.Remove(new TemporaryAssignment(
+                carrier.CollectionId,
+                carrier.ModDirectory,
+                carrier.ModName));
+            penumbra.DeleteMod(carrier.ModDirectory, carrier.ModName);
+            DeleteCarrierDirectory(carrier.ModRootDirectory);
             activeCarrier = null;
         }
         foreach (var assignment in configuration.ActiveAssignments.ToList())
@@ -2501,6 +2539,28 @@ public sealed unsafe class Plugin : IDalamudPlugin
             RunSync(sync.CancelReadyAsync(), "Temporary animation and group readiness cleared.");
         }
         Status = "Temporary animation assignments cleared.";
+    }
+
+    private void DeleteStaleCarrierMods()
+    {
+        var root = penumbra.GetModRoot();
+        if (string.IsNullOrWhiteSpace(root) || !Directory.Exists(root)) return;
+        try
+        {
+            foreach (var directory in Directory.EnumerateDirectories(
+                         root,
+                         CarrierDirectoryPrefix + "*",
+                         SearchOption.TopDirectoryOnly))
+            {
+                var directoryName = Path.GetFileName(directory);
+                penumbra.DeleteMod(directoryName, CarrierModName);
+                DeleteCarrierDirectory(directory);
+            }
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "Could not sweep stale Synastry carrier mods.");
+        }
     }
 
     private static void DeleteCarrierDirectory(string directory)
