@@ -1117,6 +1117,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void SendMod(string directory, string name)
     {
+        Log.Information("Animation send requested for {ModName} ({ModDirectory}).", name, directory);
         if (IsModPrivate(directory))
         {
             Status = $"{name} is private and cannot be sent.";

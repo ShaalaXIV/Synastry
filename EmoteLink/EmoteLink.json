@@ -2,7 +2,7 @@
   "Author": "ShaalaXIV",
   "Name": "Synastry",
   "InternalName": "EmoteLink",
-  "AssemblyVersion": "1.0.59",
+  "AssemblyVersion": "1.0.60",
   "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
   "ApplicableVersion": "any",
   "RepoUrl": "https://github.com/ShaalaXIV/Synastry",
