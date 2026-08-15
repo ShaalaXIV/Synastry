@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.57.0",
+    "AssemblyVersion": "1.0.58.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -13,9 +13,9 @@
     "Tags": [ "penumbra", "animation", "emote", "sync" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.57/Synastry-1.0.57.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.57/Synastry-1.0.57.zip",
-    "Changelog": "Adds compact nested animation folders, /syn, consolidated settings, selectable Penumbra receive folders, and the relay online-user count.",
-    "LastUpdate": "1786689724"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.58/Synastry-1.0.58.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.58/Synastry-1.0.58.zip",
+    "Changelog": "Introduces the redesigned compact Synastry interface, native direct-timeline emote playback, nearby connected-player animation relaying through matching local mods, animation-speed controls, and refined nested animation organization.",
+    "LastUpdate": "1786764423"
   }
 ]
