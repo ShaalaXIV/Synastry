@@ -31,6 +31,9 @@ public sealed class MainWindow : Window
     private readonly List<ModTransferOfferDto> pendingTransferOffers = [];
     private bool transferInboxOpen;
     private RoomInvite? activeRoomInvite;
+    private readonly Queue<AnimationSuggestion> queuedAnimationSuggestions = [];
+    private AnimationSuggestion? activeAnimationSuggestion;
+    private bool openAnimationSuggestionPopup;
     private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> correctionBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> folderRenameBuffers = new(StringComparer.OrdinalIgnoreCase);
@@ -44,6 +47,20 @@ public sealed class MainWindow : Window
     private const string ModPayload = "EMOTELINK_MOD";
     private const string FolderPayload = "EMOTELINK_FOLDER";
     private const string DiscordInviteUrl = "https://discord.com/invite/jhPaQcvWW";
+    private bool tutorialActive;
+    private TutorialStep tutorialStep;
+    private string tutorialFeedback = "";
+    private string tutorialAnimationName = "";
+
+    private enum TutorialStep
+    {
+        Connect,
+        Room,
+        ConfigureAnimation,
+        QueueTogether,
+        TriggerPlayback,
+        Complete
+    }
 
     private enum LibraryScope
     {
@@ -81,12 +98,19 @@ public sealed class MainWindow : Window
     public override void Draw()
     {
         CollectTransferOffers();
+        ObserveTutorialState();
         PushUiStyle();
         try
         {
             DrawDeckHeader();
             ImGui.Spacing();
+            if (tutorialActive)
+            {
+                DrawTutorialCard();
+                ImGui.Spacing();
+            }
             DrawDeckBody();
+            DrawAnimationSuggestionPopup();
             DrawRoomInvitePopup();
             DrawTransferInboxWindow();
         }
@@ -96,16 +120,195 @@ public sealed class MainWindow : Window
         }
     }
 
+    public void StartTutorial()
+    {
+        tutorialActive = true;
+        tutorialStep = TutorialStep.Connect;
+        tutorialFeedback = "";
+        tutorialAnimationName = "";
+        IsOpen = true;
+    }
+
+    public void NotifyGroupPlaybackScheduled()
+    {
+        if (!tutorialActive || tutorialStep < TutorialStep.QueueTogether ||
+            tutorialStep > TutorialStep.TriggerPlayback) return;
+        tutorialStep = TutorialStep.TriggerPlayback;
+        tutorialFeedback = "Everyone is ready. Synastry has received the start signal.";
+    }
+
+    public void NotifyRoomInviteSent(string playerName)
+    {
+        if (!tutorialActive || tutorialStep != TutorialStep.Room) return;
+        tutorialFeedback = $"Invitation sent to {playerName}. Stay on this step until they join the room.";
+    }
+
+    public void NotifyAnimationStarted()
+    {
+        if (!tutorialActive || tutorialStep < TutorialStep.QueueTogether) return;
+        tutorialStep = TutorialStep.Complete;
+        tutorialFeedback = "";
+    }
+
+    public void ShowAnimationSuggestion(AnimationSuggestion suggestion)
+    {
+        if (activeAnimationSuggestion is null)
+        {
+            activeAnimationSuggestion = suggestion;
+            openAnimationSuggestionPopup = true;
+        }
+        else if (SameSuggestion(activeAnimationSuggestion, suggestion))
+        {
+            activeAnimationSuggestion = suggestion;
+        }
+        else if (!queuedAnimationSuggestions.Any(queued => SameSuggestion(queued, suggestion)))
+        {
+            queuedAnimationSuggestions.Enqueue(suggestion);
+        }
+        IsOpen = true;
+    }
+
+    private void ObserveTutorialState()
+    {
+        if (!tutorialActive) return;
+        if (tutorialStep == TutorialStep.Connect && plugin.Sync.IsConnected)
+        {
+            tutorialStep = TutorialStep.Room;
+            tutorialFeedback = "Connected. Now make a room for the people who will animate together.";
+        }
+        if (tutorialStep == TutorialStep.Room && plugin.Sync.Room is { Members.Count: >= 2 })
+        {
+            tutorialStep = TutorialStep.ConfigureAnimation;
+            tutorialFeedback = "Your partner is in the room. Open an animation mod in the center panel.";
+        }
+        else if (tutorialStep == TutorialStep.Room && plugin.Sync.Room is { Members.Count: 1 } &&
+                 !tutorialFeedback.StartsWith("Invitation sent", StringComparison.Ordinal) &&
+                 !tutorialFeedback.StartsWith("Room created", StringComparison.Ordinal))
+        {
+            tutorialFeedback = "Room created. Right-click your partner in-game and choose Invite to Synastry.";
+        }
+
+        if (tutorialStep == TutorialStep.QueueTogether && plugin.Sync.Room is { } room)
+        {
+            var currentReady = room.Members.Any(member =>
+                plugin.Sync.IsCurrentMember(member.ConnectionId) && member.Ready);
+            var everyoneReady = room.Members.Count >= 2 && room.Members.All(member => member.Ready);
+            if (currentReady && !tutorialFeedback.StartsWith("You are queued", StringComparison.Ordinal))
+                tutorialFeedback = "You are queued. Your partner must choose their role and become Ready too.";
+            if (everyoneReady)
+            {
+                tutorialStep = TutorialStep.TriggerPlayback;
+                tutorialFeedback = "Everyone is ready. The relay will send the synchronized start signal.";
+            }
+        }
+    }
+
+    private void DrawTutorialCard()
+    {
+        var height = tutorialStep == TutorialStep.ConfigureAnimation ? 130f : 110f;
+        ImGui.PushStyleColor(ImGuiCol.ChildBg, new Vector4(0.075f, 0.07f, 0.052f, 1f));
+        ImGui.PushStyleColor(ImGuiCol.Border, AccentColor);
+        ImGui.BeginChild("guided-tutorial", new Vector2(0, height), true);
+
+        var stepNumber = Math.Min((int)tutorialStep + 1, 5);
+        ImGui.TextColored(AccentColor, $"GUIDED TUTORIAL   STEP {stepNumber} OF 5");
+        ImGui.SameLine();
+        DrawTutorialProgress(stepNumber);
+        var closeLabel = tutorialStep == TutorialStep.Complete ? "Finish" : "End tutorial";
+        var closeWidth = ButtonWidth(closeLabel);
+        ImGui.SameLine();
+        ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), ImGui.GetWindowContentRegionMax().X - closeWidth));
+        if (ImGui.SmallButton(closeLabel)) tutorialActive = false;
+
+        var (title, instructions) = TutorialCopy();
+        ImGui.TextUnformatted(title);
+        ImGui.TextWrapped(instructions);
+        if (!string.IsNullOrWhiteSpace(tutorialFeedback))
+            ImGui.TextColored(tutorialStep == TutorialStep.ConfigureAnimation ? SomeColor : EveryoneColor,
+                tutorialFeedback);
+
+        ImGui.EndChild();
+        ImGui.PopStyleColor(2);
+    }
+
+    private void DrawTutorialProgress(int currentStep)
+    {
+        for (var index = 1; index <= 5; index++)
+        {
+            ImGui.TextColored(index <= currentStep ? AccentColor : MutedColor, index <= currentStep ? "\u25CF" : "\u25CB");
+            if (index < 5) ImGui.SameLine(0, 4f);
+        }
+    }
+
+    private (string Title, string Instructions) TutorialCopy() => tutorialStep switch
+    {
+        TutorialStep.Connect => (
+            "1. Connect to the animation relay",
+            "Press Connect in the highlighted Current Link panel. This only connects Synastry; it does not put you in a room yet."),
+        TutorialStep.Room => (
+            "2. Create or join a room, then invite your partner",
+            "Create a new room or enter a room code to join one. Then right-click your partner in-game and choose Invite to Synastry. You can also copy and share the room code. This step advances when a second person joins."),
+        TutorialStep.ConfigureAnimation => (
+            "3. Configure and select an animation",
+            "Open a mod in the highlighted Animations panel. IMPORTANT: choose the mod option that contains the animation first. If its options are not set, Penumbra has no PAP selected and pressing the animation can appear to do nothing. Then press the animation/role button (not Solo)."),
+        TutorialStep.QueueTogether => (
+            "4. Queue the animation with another person",
+            $"{(tutorialAnimationName.Length > 0 ? tutorialAnimationName + " is selected. " : "")}You should appear Ready in Current Link. Your partner opens the same animation, chooses their role/options, and presses Ready. This step requires at least two room members."),
+        TutorialStep.TriggerPlayback => (
+            "5. Trigger the synchronized animation",
+            "When everyone is Ready, the relay starts the animation automatically. The room leader can use Force start when appropriate. Keep this open until Synastry confirms playback began."),
+        _ => (
+            "Tutorial complete",
+            "The animation started successfully. You connected, formed a room, configured the mod, queued with a partner, and triggered synchronized playback. You can restart this guide at any time from Settings > How To.")
+    };
+
+    private bool TryTutorialAnimationAction(string directory, string animationName)
+    {
+        if (!tutorialActive || tutorialStep != TutorialStep.ConfigureAnimation) return true;
+        var groups = plugin.GetOptionGroups(directory);
+        var hasSelectedOption = groups.Count == 0 || groups.Any(group =>
+            group.Options.Any(option => plugin.IsOptionSelected(directory, group.Name, option)));
+        if (!hasSelectedOption)
+        {
+            tutorialFeedback = "No mod option is selected yet. Pick the option that contains the animation, then press this button again.";
+            return false;
+        }
+
+        tutorialAnimationName = animationName;
+        tutorialStep = TutorialStep.QueueTogether;
+        tutorialFeedback = "Animation selected. Waiting for Synastry to mark you Ready.";
+        return true;
+    }
+
+    private bool TutorialHighlightsLinkPanel => tutorialActive && tutorialStep is
+        TutorialStep.Connect or TutorialStep.Room or TutorialStep.QueueTogether or TutorialStep.TriggerPlayback;
+
+    private void DrawTutorialHighlightAroundLastItem()
+    {
+        var pulse = 0.72f + 0.28f * (MathF.Sin((float)ImGui.GetTime() * 4f) + 1f) * 0.5f;
+        var color = ImGui.GetColorU32(new Vector4(AccentColor.X, AccentColor.Y, AccentColor.Z, pulse));
+        var padding = new Vector2(3f, 3f);
+        ImGui.GetWindowDrawList().AddRect(
+            ImGui.GetItemRectMin() - padding,
+            ImGui.GetItemRectMax() + padding,
+            color,
+            8f,
+            ImDrawFlags.None,
+            2.5f);
+    }
+
     private void DrawDeckHeader()
     {
         var contentRight = ImGui.GetWindowContentRegionMax().X;
         ImGui.TextColored(AccentColor, "S Y N A S T R Y");
 
         var settingsWidth = ButtonWidth("Settings");
+        var commandsWidth = ButtonWidth("Emote Commands");
+        var headerActionsWidth = commandsWidth + settingsWidth + ImGui.GetStyle().ItemSpacing.X;
         var relayStatus = plugin.Sync.RelayConnectionStatus;
         var relayWidth = ImGui.CalcTextSize(relayStatus).X + 20f;
         var relayX = MathF.Max(ImGui.GetCursorPosX() + 220f, (contentRight - relayWidth) * 0.5f);
-        if (relayX + relayWidth < contentRight - settingsWidth - 18f)
+        if (relayX + relayWidth < contentRight - headerActionsWidth - 18f)
         {
             ImGui.SameLine();
             ImGui.SetCursorPosX(relayX);
@@ -115,7 +318,11 @@ public sealed class MainWindow : Window
         }
 
         ImGui.SameLine();
-        ImGui.SetCursorPosX(contentRight - settingsWidth);
+        ImGui.SetCursorPosX(contentRight - headerActionsWidth);
+        if (ImGui.Button("Emote Commands", new Vector2(commandsWidth, 0))) plugin.OpenCustomCommands();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Assign custom slash commands to Synastry animations.");
+        ImGui.SameLine();
         if (ImGui.Button("Settings", new Vector2(settingsWidth, 0))) plugin.OpenSettings();
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("Open playback, received-animation, community-label, and tutorial settings.");
@@ -151,22 +358,33 @@ public sealed class MainWindow : Window
 
     private void DrawDeckBody()
     {
+        var legendHeight = ImGui.GetFrameHeightWithSpacing() + 8f;
+        var panelsHeight = MathF.Max(120f,
+            ImGui.GetContentRegionAvail().Y - legendHeight - ImGui.GetStyle().ItemSpacing.Y);
+        ImGui.BeginChild("constellation-panels-row", new Vector2(0, panelsHeight), false,
+            ImGuiWindowFlags.NoScrollbar | ImGuiWindowFlags.NoScrollWithMouse);
+
         var flags = ImGuiTableFlags.Resizable | ImGuiTableFlags.BordersInnerV |
                     ImGuiTableFlags.SizingStretchProp;
-        if (!ImGui.BeginTable("constellation-deck", 3, flags, Vector2.Zero)) return;
+        if (ImGui.BeginTable("constellation-deck", 3, flags, Vector2.Zero))
+        {
+            ImGui.TableSetupColumn("Library", ImGuiTableColumnFlags.WidthStretch, 0.24f);
+            ImGui.TableSetupColumn("Animations", ImGuiTableColumnFlags.WidthStretch, 0.53f);
+            ImGui.TableSetupColumn("Current link", ImGuiTableColumnFlags.WidthStretch, 0.23f);
+            ImGui.TableNextRow();
 
-        ImGui.TableSetupColumn("Library", ImGuiTableColumnFlags.WidthStretch, 0.24f);
-        ImGui.TableSetupColumn("Animations", ImGuiTableColumnFlags.WidthStretch, 0.53f);
-        ImGui.TableSetupColumn("Current link", ImGuiTableColumnFlags.WidthStretch, 0.23f);
-        ImGui.TableNextRow();
+            ImGui.TableSetColumnIndex(0);
+            DrawLibraryRail();
+            ImGui.TableSetColumnIndex(1);
+            DrawDeckLibrary();
+            ImGui.TableSetColumnIndex(2);
+            DrawLinkPanel();
+            ImGui.EndTable();
+        }
+        ImGui.EndChild();
 
-        ImGui.TableSetColumnIndex(0);
-        DrawLibraryRail();
-        ImGui.TableSetColumnIndex(1);
-        DrawDeckLibrary();
-        ImGui.TableSetColumnIndex(2);
-        DrawLinkPanel();
-        ImGui.EndTable();
+        ImGui.Separator();
+        DrawLegend();
     }
 
     private void DrawLibraryRail()
@@ -464,6 +682,8 @@ public sealed class MainWindow : Window
         }
         ImGui.EndChild();
         ImGui.EndChild();
+        if (tutorialActive && tutorialStep == TutorialStep.ConfigureAnimation)
+            DrawTutorialHighlightAroundLastItem();
         ImGui.PopStyleColor();
     }
 
@@ -519,8 +739,11 @@ public sealed class MainWindow : Window
             ImGui.TextWrapped("Connect to create or join a synchronized animation room.");
             ImGui.Spacing();
             if (DrawPrimaryButton("Connect", -1f)) plugin.ConnectSync();
+            if (tutorialActive && tutorialStep == TutorialStep.Connect)
+                DrawTutorialHighlightAroundLastItem();
             ImGui.TextDisabled($"Character: {plugin.SyncDisplayName}");
             ImGui.EndChild();
+            if (TutorialHighlightsLinkPanel) DrawTutorialHighlightAroundLastItem();
             ImGui.PopStyleColor();
             return;
         }
@@ -541,6 +764,7 @@ public sealed class MainWindow : Window
             if (ImGui.Button("Create a new room", new Vector2(-1, 0))) plugin.CreateSyncRoom();
             if (ImGui.Button("Disconnect", new Vector2(-1, 0))) plugin.DisconnectSync();
             ImGui.EndChild();
+            if (TutorialHighlightsLinkPanel) DrawTutorialHighlightAroundLastItem();
             ImGui.PopStyleColor();
             return;
         }
@@ -577,6 +801,7 @@ public sealed class MainWindow : Window
         if (plugin.Sync.IsRoomLeader && DrawPrimaryButton("Force start", -1f)) plugin.ForceSyncStart();
         if (ImGui.Button("Leave room", new Vector2(-1, 0))) plugin.LeaveSyncRoom();
         ImGui.EndChild();
+        if (TutorialHighlightsLinkPanel) DrawTutorialHighlightAroundLastItem();
         ImGui.PopStyleColor();
     }
 
@@ -957,6 +1182,8 @@ public sealed class MainWindow : Window
     private static void DrawLegend()
     {
         ImGui.Spacing();
+        ImGui.TextDisabled("What do the colors mean?");
+        ImGui.SameLine(0, 18f);
         DrawLegendItem(EveryoneColor, "Everyone");
         ImGui.SameLine(0, 24f);
         DrawLegendItem(SomeColor, "Some members");
@@ -973,6 +1200,133 @@ public sealed class MainWindow : Window
         ImGui.TextColored(color, "\u25CF");
         ImGui.SameLine();
         ImGui.TextDisabled(label);
+    }
+
+    private void DrawAnimationSuggestionPopup()
+    {
+        if (activeAnimationSuggestion is not null &&
+            !plugin.IsAnimationSuggestionActive(activeAnimationSuggestion))
+            activeAnimationSuggestion = null;
+        if (activeAnimationSuggestion is null && queuedAnimationSuggestions.TryDequeue(out var queued))
+        {
+            activeAnimationSuggestion = queued;
+            openAnimationSuggestionPopup = true;
+        }
+        if (activeAnimationSuggestion is null) return;
+
+        const string popupTitle = "Incoming animation###SynastryAnimationSuggestion";
+        if (openAnimationSuggestionPopup)
+        {
+            ImGui.OpenPopup(popupTitle);
+            openAnimationSuggestionPopup = false;
+        }
+
+        ImGui.SetNextWindowSize(new Vector2(760f, 580f), ImGuiCond.Appearing);
+        var popupOpen = true;
+        if (ImGui.BeginPopupModal(popupTitle, ref popupOpen, ImGuiWindowFlags.NoCollapse))
+        {
+            var suggestion = activeAnimationSuggestion;
+            if (suggestion is null)
+            {
+                ImGui.CloseCurrentPopup();
+                ImGui.EndPopup();
+                return;
+            }
+
+            ImGui.TextColored(ClaimedColor, $"{suggestion.SuggestedBy} activated an animation");
+            ImGui.TextWrapped("Their selected animation is highlighted in purple. Choose the role or animation you want to prepare, or ignore this request.");
+            ImGui.Spacing();
+            ImGui.Separator();
+            ImGui.Spacing();
+            ImGui.TextColored(AccentColor, suggestion.ModName);
+
+            var localMod = plugin.Mods.FirstOrDefault(mod =>
+                mod.Directory.Equals(suggestion.Directory, StringComparison.OrdinalIgnoreCase));
+            var animationActivated = false;
+            if (string.IsNullOrWhiteSpace(localMod.Directory))
+            {
+                ImGui.TextDisabled("This animation mod is no longer available in your local Synastry library.");
+            }
+            else
+            {
+                plugin.EnsureDetectedEmotes(localMod.Directory, localMod.Name);
+                var groups = plugin.GetOptionGroups(localMod.Directory);
+                var detectedPoses = plugin.GetDetectedPoses(localMod.Directory);
+                var detectedEmotes = plugin.GetDetectedEmotes(localMod.Directory);
+                var selectedAnimation = SuggestionAnimationName(
+                    suggestion.ActivatedTrigger, detectedPoses, detectedEmotes);
+                if (selectedAnimation.Length > 0)
+                    ImGui.TextColored(ClaimedColor, $"Selected: {selectedAnimation}");
+                var detailParts = new List<string>();
+                if (groups.Count > 0)
+                    detailParts.Add($"{groups.Count} option group{(groups.Count == 1 ? "" : "s")}");
+                if (detectedPoses.Count > 0)
+                    detailParts.Add($"{detectedPoses.Count} pose{(detectedPoses.Count == 1 ? "" : "s")}");
+                if (detectedEmotes.Count > 0)
+                    detailParts.Add($"{detectedEmotes.Count} emote{(detectedEmotes.Count == 1 ? "" : "s")}");
+                if (detailParts.Count > 0) ImGui.TextDisabled(string.Join("  \u00B7  ", detailParts));
+
+                ImGui.Spacing();
+                ImGui.BeginChild("suggested-animation-mod", new Vector2(0, -42f), true);
+                animationActivated = DrawOptions(
+                    localMod, groups, detectedPoses, detectedEmotes, suggestionMode: true);
+                ImGui.EndChild();
+            }
+
+            if (animationActivated)
+            {
+                activeAnimationSuggestion = null;
+                ImGui.CloseCurrentPopup();
+            }
+            else
+            {
+                if (ImGui.Button("Ignore", new Vector2(120f, 0)))
+                {
+                    plugin.IgnoreAnimationSuggestion(suggestion);
+                    activeAnimationSuggestion = null;
+                    ImGui.CloseCurrentPopup();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Close this request without preparing an animation.");
+            }
+
+            ImGui.EndPopup();
+        }
+
+        if (!popupOpen && activeAnimationSuggestion is { } dismissed)
+        {
+            plugin.IgnoreAnimationSuggestion(dismissed);
+            activeAnimationSuggestion = null;
+        }
+    }
+
+    private static bool SameSuggestion(AnimationSuggestion left, AnimationSuggestion right) =>
+        left.SuggestedBy.Equals(right.SuggestedBy, StringComparison.OrdinalIgnoreCase) &&
+        left.ModKey.Equals(right.ModKey, StringComparison.OrdinalIgnoreCase);
+
+    private static string SuggestionAnimationName(
+        string trigger,
+        IReadOnlyList<PoseTarget> detectedPoses,
+        IReadOnlyList<EmoteTarget> detectedEmotes)
+    {
+        if (trigger.StartsWith("emote:", StringComparison.OrdinalIgnoreCase) &&
+            uint.TryParse(trigger["emote:".Length..], out var emoteId))
+        {
+            var emote = detectedEmotes.FirstOrDefault(candidate => candidate.Id == emoteId);
+            if (emote is not null) return $"{emote.Name} (ID {emote.Id})";
+        }
+        if (trigger.StartsWith("pose:", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = trigger["pose:".Length..].Split(':', 2);
+            if (parts.Length == 2 && Enum.TryParse<PoseKind>(parts[0], true, out var kind) &&
+                byte.TryParse(parts[1], out var index))
+            {
+                var pose = detectedPoses.FirstOrDefault(candidate =>
+                    candidate.Kind == kind && candidate.Index == index);
+                if (pose is not null) return PoseDisplayName(pose);
+            }
+        }
+        return "";
     }
 
     private void DrawRoomInvitePopup()
@@ -1371,11 +1725,16 @@ public sealed class MainWindow : Window
         ImGui.PopID();
     }
 
-    private void DrawOptions((string Directory, string Name) mod, IReadOnlyList<ModOptionGroup> groups,
-        IReadOnlyList<PoseTarget> detectedPoses, IReadOnlyList<EmoteTarget> detectedEmotes)
+    private bool DrawOptions(
+        (string Directory, string Name) mod,
+        IReadOnlyList<ModOptionGroup> groups,
+        IReadOnlyList<PoseTarget> detectedPoses,
+        IReadOnlyList<EmoteTarget> detectedEmotes,
+        bool suggestionMode = false)
     {
+        var animationActivated = false;
         if (detectedPoses.Count > 0 || detectedEmotes.Count > 0)
-            DrawAnimationButtons(mod, detectedPoses, detectedEmotes);
+            animationActivated = DrawAnimationButtons(mod, detectedPoses, detectedEmotes, suggestionMode);
         if (groups.Count > 0)
         {
             ImGui.Spacing();
@@ -1386,7 +1745,8 @@ public sealed class MainWindow : Window
             ImGui.PushID(group.Name);
             var groupSelectedBy = plugin.GetRemoteGroupSelector(mod.Directory, group.Name);
             if (groupSelectedBy is not null) ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
-            var groupOpen = ImGui.TreeNodeEx(group.Name, ImGuiTreeNodeFlags.None);
+            var groupFlags = suggestionMode ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
+            var groupOpen = ImGui.TreeNodeEx(group.Name, groupFlags);
             if (groupSelectedBy is not null)
             {
                 ImGui.PopStyleColor();
@@ -1426,11 +1786,16 @@ public sealed class MainWindow : Window
             }
             ImGui.PopID();
         }
+        return animationActivated;
     }
 
-    private void DrawAnimationButtons((string Directory, string Name) mod,
-        IReadOnlyList<PoseTarget> detectedPoses, IReadOnlyList<EmoteTarget> detectedEmotes)
+    private bool DrawAnimationButtons(
+        (string Directory, string Name) mod,
+        IReadOnlyList<PoseTarget> detectedPoses,
+        IReadOnlyList<EmoteTarget> detectedEmotes,
+        bool suggestionMode)
     {
+        var animationActivated = false;
         var actionCount = detectedPoses.Count + detectedEmotes.Count;
         var available = ImGui.GetContentRegionAvail().X;
         var columns = Math.Clamp((int)(available / 230f), 1, 3);
@@ -1445,7 +1810,7 @@ public sealed class MainWindow : Window
 
         available = ImGui.GetContentRegionAvail().X;
         var cellWidth = (available - ImGui.GetStyle().ItemSpacing.X * (columns - 1)) / columns;
-        var soloWidth = plugin.Sync.IsInRoom ? ButtonWidth("Solo") : 0f;
+        var soloWidth = plugin.Sync.IsInRoom && !suggestionMode ? ButtonWidth("Solo") : 0f;
         var actionWidth = cellWidth - soloWidth - (soloWidth > 0 ? ImGui.GetStyle().ItemSpacing.X : 0f);
         var cellIndex = 0;
 
@@ -1455,8 +1820,15 @@ public sealed class MainWindow : Window
             ImGui.PushID($"detected-{pose.Kind}-{pose.Index}");
             if (DrawRoleActionButton(mod.Directory, "$detected-pose", $"{pose.Kind}:{pose.Index}",
                     PoseDisplayName(pose), showAssignmentWhenUnlabeled: true, width: actionWidth))
-                plugin.ActivateDetectedPose(mod.Directory, mod.Name, pose);
-            if (plugin.Sync.IsInRoom)
+            {
+                var animationName = PoseDisplayName(pose);
+                if (suggestionMode || TryTutorialAnimationAction(mod.Directory, animationName))
+                {
+                    plugin.ActivateDetectedPose(mod.Directory, mod.Name, pose);
+                    animationActivated = true;
+                }
+            }
+            if (plugin.Sync.IsInRoom && !suggestionMode)
             {
                 ImGui.SameLine();
                 if (ImGui.Button("Solo", new Vector2(soloWidth, 0)))
@@ -1473,8 +1845,14 @@ public sealed class MainWindow : Window
             var animationName = $"{emote.Name} (ID {emote.Id})";
             if (DrawRoleActionButton(mod.Directory, "$detected-emote", emote.Id.ToString(),
                     animationName, showAssignmentWhenUnlabeled: true, width: actionWidth))
-                plugin.ActivateDetectedEmote(mod.Directory, mod.Name, emote);
-            if (plugin.Sync.IsInRoom)
+            {
+                if (suggestionMode || TryTutorialAnimationAction(mod.Directory, animationName))
+                {
+                    plugin.ActivateDetectedEmote(mod.Directory, mod.Name, emote);
+                    animationActivated = true;
+                }
+            }
+            if (plugin.Sync.IsInRoom && !suggestionMode)
             {
                 ImGui.SameLine();
                 if (ImGui.Button("Solo", new Vector2(soloWidth, 0)))
@@ -1485,7 +1863,10 @@ public sealed class MainWindow : Window
         }
 
         ImGui.EndChild();
+        if (tutorialActive && tutorialStep == TutorialStep.ConfigureAnimation)
+            DrawTutorialHighlightAroundLastItem();
         ImGui.PopStyleColor(2);
+        return animationActivated;
     }
 
     private bool DrawRoleActionButton(

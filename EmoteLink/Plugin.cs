@@ -62,7 +62,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] private static IDataManager DataManager { get; set; } = null!;
     [PluginService] private static IChatGui Chat { get; set; } = null!;
     [PluginService] private static IContextMenu ContextMenu { get; set; } = null!;
-    [PluginService] private static ITextureProvider TextureProvider { get; set; } = null!;
     [PluginService] private static IClientState ClientState { get; set; } = null!;
     [PluginService] private static IUnlockState UnlockState { get; set; } = null!;
 
@@ -77,7 +76,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly WindowSystem windows = new("Synastry");
     private readonly MainWindow mainWindow;
     private readonly SettingsWindow settingsWindow;
-    private readonly HowToWindow howToWindow;
+    private readonly CustomCommandsWindow customCommandsWindow;
+    private readonly HashSet<string> registeredCustomCommands = new(StringComparer.OrdinalIgnoreCase);
     private bool waitingForAnimation;
     private long activationTime;
     private readonly Dictionary<string, string> emoteCommandsByName = new(StringComparer.OrdinalIgnoreCase);
@@ -142,6 +142,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly ConcurrentQueue<RoleLabelDto> receivedRoleLabels = new();
     private readonly ConcurrentQueue<CommunityRoleLabelDto> receivedCommunityRoleLabels = new();
     private readonly ConcurrentDictionary<string, AnimationSuggestion> activeAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentDictionary<string, byte> ignoredAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
+    private readonly ConcurrentQueue<AnimationSuggestion> incomingAnimationSuggestions = new();
     private readonly ConcurrentDictionary<string, string> remoteReadyModKeys = new(StringComparer.OrdinalIgnoreCase);
     private string? remoteSelectionRoom;
     private bool roleSyncPending;
@@ -198,8 +200,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public Plugin()
     {
         configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
-        var upgradedConfiguration = configuration.Version < 8;
-        if (upgradedConfiguration) configuration.Version = 8;
+        var upgradedConfiguration = configuration.Version < 9;
+        if (upgradedConfiguration) configuration.Version = 9;
+        configuration.CustomAnimationCommands ??= [];
         animationIndexCache = AnimationIndexCache.Load(
             Path.Combine(PluginInterface.ConfigDirectory.FullName, "animation-index.json"), Log);
         _ = Task.Run(SweepStaleTransferPackages);
@@ -252,17 +255,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
         };
         mainWindow = new MainWindow(this);
         settingsWindow = new SettingsWindow(this);
-        howToWindow = new HowToWindow(TextureProvider);
+        customCommandsWindow = new CustomCommandsWindow(this);
         BuildEmoteLookup();
         windows.AddWindow(mainWindow);
         windows.AddWindow(settingsWindow);
-        windows.AddWindow(howToWindow);
+        windows.AddWindow(customCommandsWindow);
 
         if (!configuration.HasSeenHowTo)
         {
             configuration.HasSeenHowTo = true;
             configuration.Save(PluginInterface);
-            howToWindow.IsOpen = true;
+            mainWindow.StartTutorial();
         }
 
         PluginInterface.UiBuilder.Draw += windows.Draw;
@@ -273,12 +276,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Chat.ChatMessage += OnChatMessage;
         Commands.AddHandler(PrimaryCommand, new CommandInfo(HandleCommand)
         {
-            HelpMessage = "Open Synastry, join with /syn join ROOMCODE, or select a localhost dev relay with /syn relay URL."
+            HelpMessage = "Open Synastry, start the guide with /syn tutorial, join with /syn join ROOMCODE, or select a localhost dev relay with /syn relay URL."
         });
         Commands.AddHandler(FallbackCommand, new CommandInfo(HandleCommand)
         {
             HelpMessage = "Fallback command for Synastry. The shorter /syn command is also available."
         });
+        RegisterConfiguredAnimationCommands();
 
         // Recover from an unload/crash that left our tracked overrides behind.
         ClearTemporaryAssignments();
@@ -287,6 +291,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void HandleCommand(string _, string arguments)
     {
+        if (Regex.IsMatch(arguments, @"^\s*tutorial\s*$", RegexOptions.IgnoreCase))
+        {
+            OpenHowTo();
+            return;
+        }
         var match = Regex.Match(arguments, @"^\s*join\s+([A-Za-z0-9]{4,8})\s*$", RegexOptions.IgnoreCase);
         if (match.Success) JoinSyncRoom(match.Groups[1].Value);
         else if (Regex.IsMatch(arguments, @"^\s*relay\s+(?:default|reset)\s*$", RegexOptions.IgnoreCase))
@@ -1272,6 +1281,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var recipient = cleanWorld.Length == 0 ? cleanName : $"{cleanName}@{cleanWorld}";
         ExecuteCommand($"/tell {recipient} Synastry room invitation: {roomCode}");
         Status = $"Invited {cleanName} to room {roomCode}.";
+        mainWindow.NotifyRoomInviteSent(cleanName);
     }
 
     private void OnChatMessage(IHandleableChatMessage chatMessage)
@@ -1349,6 +1359,223 @@ public sealed unsafe class Plugin : IDalamudPlugin
         CancelGroupReadinessForSolo();
         ActivateInternal(directory, name, null, false, emote.Command);
     }
+
+    public IReadOnlyList<CustomAnimationCommand> CustomAnimationCommands => configuration.CustomAnimationCommands
+        .OrderBy(assignment => assignment.Command, StringComparer.OrdinalIgnoreCase)
+        .ToList();
+
+    public List<AnimationCommandTarget> GetAvailableAnimationCommandTargets()
+    {
+        var targets = new List<AnimationCommandTarget>();
+        foreach (var mod in Mods)
+        {
+            EnsureDetectedEmotes(mod.Directory, mod.Name);
+            foreach (var pose in GetDetectedPoses(mod.Directory))
+                targets.Add(new AnimationCommandTarget(
+                    mod.Directory,
+                    mod.Name,
+                    CustomAnimationTriggerKind.Pose,
+                    $"{pose.Kind}:{pose.Index}",
+                    PoseDisplayName(pose)));
+            foreach (var emote in GetDetectedEmotes(mod.Directory))
+                targets.Add(new AnimationCommandTarget(
+                    mod.Directory,
+                    mod.Name,
+                    CustomAnimationTriggerKind.Emote,
+                    emote.Id.ToString(),
+                    $"{emote.Name} (ID {emote.Id})"));
+        }
+        return targets
+            .OrderBy(target => target.ModName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(target => target.AnimationName, StringComparer.OrdinalIgnoreCase)
+            .ThenBy(target => target.ModDirectory, StringComparer.OrdinalIgnoreCase)
+            .ToList();
+    }
+
+    public bool AssignCustomAnimationCommand(string rawCommand, AnimationCommandTarget target)
+    {
+        if (!TryNormalizeCustomCommand(rawCommand, out var command, out var error))
+        {
+            Status = error;
+            return false;
+        }
+        if (command.Equals(PrimaryCommand, StringComparison.OrdinalIgnoreCase) ||
+            command.Equals(FallbackCommand, StringComparison.OrdinalIgnoreCase))
+        {
+            Status = $"{command} is reserved by Synastry. Choose another command.";
+            return false;
+        }
+        if (!modsByDirectory.ContainsKey(target.ModDirectory))
+        {
+            Status = $"{target.ModName} is no longer in the animation library.";
+            return false;
+        }
+
+        var previous = configuration.CustomAnimationCommands.FirstOrDefault(assignment =>
+            assignment.Command.Equals(command, StringComparison.OrdinalIgnoreCase));
+        var wasRegistered = registeredCustomCommands.Remove(command);
+        if (wasRegistered) Commands.RemoveHandler(command);
+        if (!TryRegisterCustomAnimationCommand(command, out error))
+        {
+            if (wasRegistered) TryRegisterCustomAnimationCommand(command, out _);
+            Status = error;
+            return false;
+        }
+
+        configuration.CustomAnimationCommands.RemoveAll(assignment =>
+            assignment.Command.Equals(command, StringComparison.OrdinalIgnoreCase));
+        configuration.CustomAnimationCommands.Add(new CustomAnimationCommand
+        {
+            Command = command,
+            ModDirectory = target.ModDirectory,
+            ModName = target.ModName,
+            TriggerKind = target.TriggerKind,
+            TriggerValue = target.TriggerValue,
+            AnimationName = target.AnimationName
+        });
+        configuration.Save(PluginInterface);
+        Status = previous is null
+            ? $"Assigned {command} to {target.AnimationName}."
+            : $"Reassigned {command} to {target.AnimationName}.";
+        return true;
+    }
+
+    public void RemoveCustomAnimationCommand(string rawCommand)
+    {
+        if (!TryNormalizeCustomCommand(rawCommand, out var command, out _)) return;
+        var removed = configuration.CustomAnimationCommands.RemoveAll(assignment =>
+            assignment.Command.Equals(command, StringComparison.OrdinalIgnoreCase));
+        if (registeredCustomCommands.Remove(command)) Commands.RemoveHandler(command);
+        if (removed == 0) return;
+        configuration.Save(PluginInterface);
+        Status = $"Removed custom animation command {command}.";
+    }
+
+    public bool RunCustomAnimationCommand(string rawCommand)
+    {
+        if (!TryNormalizeCustomCommand(rawCommand, out var command, out var error))
+        {
+            Status = error;
+            return false;
+        }
+        return ExecuteCustomAnimationCommand(command);
+    }
+
+    private void RegisterConfiguredAnimationCommands()
+    {
+        var cleaned = new List<CustomAnimationCommand>();
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var changed = false;
+        foreach (var assignment in configuration.CustomAnimationCommands)
+        {
+            if (!TryNormalizeCustomCommand(assignment.Command, out var command, out _) ||
+                command.Equals(PrimaryCommand, StringComparison.OrdinalIgnoreCase) ||
+                command.Equals(FallbackCommand, StringComparison.OrdinalIgnoreCase) ||
+                !seen.Add(command))
+            {
+                changed = true;
+                continue;
+            }
+            if (!assignment.Command.Equals(command, StringComparison.Ordinal))
+            {
+                assignment.Command = command;
+                changed = true;
+            }
+            cleaned.Add(assignment);
+            if (!TryRegisterCustomAnimationCommand(command, out var error))
+                Log.Warning("Could not register custom animation command {Command}: {Error}", command, error);
+        }
+        if (!changed) return;
+        configuration.CustomAnimationCommands = cleaned;
+        configuration.Save(PluginInterface);
+    }
+
+    private bool TryRegisterCustomAnimationCommand(string command, out string error)
+    {
+        if (registeredCustomCommands.Contains(command))
+        {
+            error = "";
+            return true;
+        }
+        if (!Commands.AddHandler(command, new CommandInfo((_, _) => ExecuteCustomAnimationCommand(command))
+            {
+                HelpMessage = "Run a custom Synastry animation assignment."
+            }))
+        {
+            error = $"{command} is already registered by another plugin. Choose another command.";
+            return false;
+        }
+        registeredCustomCommands.Add(command);
+        error = "";
+        return true;
+    }
+
+    private bool ExecuteCustomAnimationCommand(string command)
+    {
+        var assignment = configuration.CustomAnimationCommands.FirstOrDefault(candidate =>
+            candidate.Command.Equals(command, StringComparison.OrdinalIgnoreCase));
+        if (assignment is null)
+        {
+            Status = $"No Synastry animation is assigned to {command}.";
+            return false;
+        }
+        if (!modsByDirectory.TryGetValue(assignment.ModDirectory, out var mod))
+        {
+            Status = $"{command} cannot run because {assignment.ModName} is not in the current animation library.";
+            return false;
+        }
+
+        if (assignment.TriggerKind == CustomAnimationTriggerKind.Pose)
+        {
+            var parts = assignment.TriggerValue.Split(':', 2);
+            if (parts.Length == 2 && Enum.TryParse<PoseKind>(parts[0], true, out var kind) &&
+                byte.TryParse(parts[1], out var index))
+            {
+                var pose = GetDetectedPoses(mod.Directory).FirstOrDefault(candidate =>
+                    candidate.Kind == kind && candidate.Index == index);
+                if (pose is not null)
+                {
+                    ActivateDetectedPose(mod.Directory, mod.Name, pose);
+                    return true;
+                }
+            }
+        }
+        else if (uint.TryParse(assignment.TriggerValue, out var emoteId))
+        {
+            EnsureDetectedEmotes(mod.Directory, mod.Name);
+            var emote = GetDetectedEmotes(mod.Directory).FirstOrDefault(candidate => candidate.Id == emoteId);
+            if (emote is not null)
+            {
+                ActivateDetectedEmote(mod.Directory, mod.Name, emote);
+                return true;
+            }
+        }
+
+        Status = $"{command} cannot run because {assignment.AnimationName} is no longer detected in {mod.Name}.";
+        return false;
+    }
+
+    private static bool TryNormalizeCustomCommand(string rawCommand, out string command, out string error)
+    {
+        var clean = rawCommand.Trim().TrimStart('/');
+        if (!Regex.IsMatch(clean, @"^[A-Za-z][A-Za-z0-9_-]{0,31}$"))
+        {
+            command = "";
+            error = "Commands must start with a letter and contain only letters, numbers, underscores, or hyphens (32 characters maximum).";
+            return false;
+        }
+        command = "/" + clean.ToLowerInvariant();
+        error = "";
+        return true;
+    }
+
+    private static string PoseDisplayName(PoseTarget pose) => pose.Kind switch
+    {
+        PoseKind.Sit => $"Chair Sit {pose.Index}",
+        PoseKind.GroundSit => $"Ground Sit {pose.Index}",
+        PoseKind.Doze => $"Doze {pose.Index}",
+        _ => $"Idle {pose.Index}"
+    };
 
     private void PublishDetectedTriggerSelection(string directory, string trigger)
     {
@@ -1432,6 +1659,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private int GetMatchSortTier(string directory)
     {
+        if (sync.IsInRoom && IsModPrivate(directory)) return 5;   // Private mods always stay at the bottom in rooms.
         if (GetRemoteModSelector(directory) is not null) return 0; // Purple: suggested.
         if (IsModPrivate(directory)) return 3;                    // Cyan: private.
         var (matches, members) = GetModMatch(directory);
@@ -2541,6 +2769,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void OnUpdate(IFramework _)
     {
+        ProcessAnimationSuggestionNotifications();
         UpdateLocalPresence();
         ProcessModRefresh();
         ProcessReceivedRoleLabels();
@@ -2591,6 +2820,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
         if (animationStarted && pendingSelectionModKey is not null)
         {
+            mainWindow.NotifyAnimationStarted();
             ClearRemoteSelections(pendingSelectionModKey);
             pendingSelectionModKey = null;
             if (configuration.AutomaticEmoteSync)
@@ -2759,18 +2989,51 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         remoteOptionSelections[selection.MemberName + "\n" + selection.ModKey + "\n" + selection.Group] = selection;
         InvalidateLibraryOrder();
-        QueueAnimationSuggestion(selection.MemberName, selection.ModKey);
+        var activatedTrigger = selection.Group.Equals("$detected-trigger", StringComparison.OrdinalIgnoreCase)
+            ? selection.Option
+            : "";
+        QueueAnimationSuggestion(selection.MemberName, selection.ModKey, activatedTrigger,
+            notify: activatedTrigger.Length > 0);
     }
 
-    private void QueueAnimationSuggestion(string memberName, string modKey)
+    private void QueueAnimationSuggestion(
+        string memberName,
+        string modKey,
+        string activatedTrigger = "",
+        bool notify = false)
     {
         var suggestionKey = SuggestionKey(memberName, modKey);
+        if (notify) ignoredAnimationSuggestions.TryRemove(suggestionKey, out _);
+        else if (ignoredAnimationSuggestions.ContainsKey(suggestionKey)) return;
         var mod = Mods.FirstOrDefault(candidate => modSyncKeys.TryGetValue(candidate.Directory, out var key) &&
             key.Equals(modKey, StringComparison.OrdinalIgnoreCase));
         if (string.IsNullOrWhiteSpace(mod.Directory)) return;
-        var suggestion = new AnimationSuggestion(memberName, modKey, mod.Directory, mod.Name);
+        if (activatedTrigger.Length == 0 &&
+            activeAnimationSuggestions.TryGetValue(suggestionKey, out var existing))
+            activatedTrigger = existing.ActivatedTrigger;
+        var suggestion = new AnimationSuggestion(memberName, modKey, mod.Directory, mod.Name, activatedTrigger);
         activeAnimationSuggestions[suggestionKey] = suggestion;
+        if (notify) incomingAnimationSuggestions.Enqueue(suggestion);
         Log.Information("Marked animation suggestion from {MemberName}: {ModName}.", memberName, mod.Name);
+    }
+
+    private void ProcessAnimationSuggestionNotifications()
+    {
+        while (incomingAnimationSuggestions.TryDequeue(out var suggestion))
+            mainWindow.ShowAnimationSuggestion(suggestion);
+    }
+
+    public bool IsAnimationSuggestionActive(AnimationSuggestion suggestion) =>
+        sync.IsInRoom && activeAnimationSuggestions.ContainsKey(
+            SuggestionKey(suggestion.SuggestedBy, suggestion.ModKey));
+
+    public void IgnoreAnimationSuggestion(AnimationSuggestion suggestion)
+    {
+        ignoredAnimationSuggestions[SuggestionKey(suggestion.SuggestedBy, suggestion.ModKey)] = 0;
+        ClearRemoteSelections(suggestion.SuggestedBy, suggestion.ModKey);
+        if (!sync.IsInRoom) return;
+        RunSync(sync.DeclineAnimationSuggestionAsync(suggestion.ModKey, suggestion.SuggestedBy),
+            $"Ignored {suggestion.SuggestedBy}'s animation suggestion.");
     }
 
     private void OnAnimationSuggestionDeclined(AnimationSuggestionDeclinedDto decline)
@@ -2800,6 +3063,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             remoteSelectionRoom = null;
             remoteOptionSelections.Clear();
             activeAnimationSuggestions.Clear();
+            ignoredAnimationSuggestions.Clear();
+            while (incomingAnimationSuggestions.TryDequeue(out _)) { }
             remoteReadyModKeys.Clear();
             roleSyncPending = false;
             while (receivedRoleLabels.TryDequeue(out _)) { }
@@ -2811,6 +3076,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             remoteSelectionRoom = roomCode;
             remoteOptionSelections.Clear();
             activeAnimationSuggestions.Clear();
+            ignoredAnimationSuggestions.Clear();
+            while (incomingAnimationSuggestions.TryDequeue(out _)) { }
             remoteReadyModKeys.Clear();
             roleSyncPending = true;
         }
@@ -3206,6 +3473,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingSelectionModKey = signal.ModKey;
             lobbyEmoteRefreshTime = 0;
             Status = $"Group ready. Starting in {delay / 1000f:F1}s.";
+            mainWindow.NotifyGroupPlaybackScheduled();
             Log.Information(
                 "Group play {SequenceId} received; scheduling {ModKey} in {DelayMilliseconds} ms ({TimingMode}).",
                 signal.SequenceId,
@@ -3344,7 +3612,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
         settingsWindow.Open();
     }
 
-    public void OpenHowTo() => howToWindow.IsOpen = true;
+    public void OpenCustomCommands()
+    {
+        customCommandsWindow.Open();
+    }
+
+    public void OpenHowTo()
+    {
+        settingsWindow.IsOpen = false;
+        mainWindow.StartTutorial();
+    }
 
     public void Dispose()
     {
@@ -3375,6 +3652,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         PluginInterface.UiBuilder.Draw -= windows.Draw;
         PluginInterface.UiBuilder.OpenMainUi -= ToggleWindow;
         PluginInterface.UiBuilder.OpenConfigUi -= OpenSettings;
+        foreach (var command in registeredCustomCommands.ToList()) Commands.RemoveHandler(command);
+        registeredCustomCommands.Clear();
         Commands.RemoveHandler(PrimaryCommand);
         Commands.RemoveHandler(FallbackCommand);
         penumbra.ModAdded -= OnPenumbraModAdded;
@@ -3384,6 +3663,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
     }
 }
 
-public sealed record AnimationSuggestion(string SuggestedBy, string ModKey, string Directory, string ModName);
+public sealed record AnimationSuggestion(
+    string SuggestedBy,
+    string ModKey,
+    string Directory,
+    string ModName,
+    string ActivatedTrigger = "");
 public sealed record EmoteTarget(uint Id, string Name, string Command);
+public sealed record AnimationCommandTarget(
+    string ModDirectory,
+    string ModName,
+    CustomAnimationTriggerKind TriggerKind,
+    string TriggerValue,
+    string AnimationName);
 public sealed record RoomInvite(string SenderName, string RoomCode);
