@@ -5,7 +5,7 @@ namespace EmoteLink;
 
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 8;
+    public int Version { get; set; } = 9;
     public bool HasSeenHowTo { get; set; }
     public List<TemporaryAssignment> ActiveAssignments { get; set; } = [];
     public List<ModCategory> Categories { get; set; } = [];
@@ -27,6 +27,7 @@ public sealed class Configuration : IPluginConfiguration
     public string ReceivedModFolder { get; set; } = "";
     public bool AutomaticEmoteSync { get; set; } = true;
     public bool SitDozeAnywhere { get; set; }
+    public List<CustomAnimationCommand> CustomAnimationCommands { get; set; } = [];
 
     public void Save(IDalamudPluginInterface pluginInterface) => pluginInterface.SavePluginConfig(this);
 }
@@ -46,4 +47,20 @@ public sealed class ManualPoseAssignment
 {
     public PoseKind Kind { get; set; }
     public byte Index { get; set; }
+}
+
+public enum CustomAnimationTriggerKind
+{
+    Pose,
+    Emote
+}
+
+public sealed class CustomAnimationCommand
+{
+    public string Command { get; set; } = "";
+    public string ModDirectory { get; set; } = "";
+    public string ModName { get; set; } = "";
+    public CustomAnimationTriggerKind TriggerKind { get; set; }
+    public string TriggerValue { get; set; } = "";
+    public string AnimationName { get; set; } = "";
 }

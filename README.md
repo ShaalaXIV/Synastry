@@ -46,11 +46,14 @@ Synastry is not intended for exchanging paid or otherwise restricted animations.
 ## Other features
 
 - Automatically lists Penumbra mods containing animation files.
+- Assign custom slash commands such as `/wicked` to any indexed emote or pose from the **Emote Commands** window.
 - Collapsible option groups support large packs with hundreds of choices.
 - Create nested folders and drag complete folder trees or individual mods into them. Folders keep their open/closed state after a move, and mods sort alphabetically within each availability-color tier.
-- Mark mods private from their right-click menu.
+- Mark mods private from their right-click menu. In a room, private mods stay below public mods that have no shared match.
+- The full-width color legend explains room availability, suggestions, privacy, and unmatched animations.
 - Temporarily activate animations without disturbing unrelated Penumbra settings.
 - Ready a room for synchronized playback or play an animation locally with **Solo**. Each member keeps their own prepared actor role, even when the roles come from different mod entries. Group playback sends the normal animation trigger once. **Auto EmoteSync** can be disabled in the room controls; when enabled, Synastry runs its lobby-only EmoteSync six seconds later.
+- Room members receive an actionable animation-activation popup showing the complete local mod, with the sender's selected animation highlighted in purple. They can choose their own role or ignore the request.
 - Use the footer to run lobby-only **EmoteSync** manually. When Simple Heels is loaded, **Temp Offset** opens `/heels temp` and **Livepose** opens `/heels livepose`.
 - Right-click another player to send a room invitation they can accept or decline immediately.
 - Align your character with a nearby target before playback.
