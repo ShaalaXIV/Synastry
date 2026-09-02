@@ -57,7 +57,15 @@ public sealed unsafe class AnywherePoseService : IDisposable
         savedSitRotation = player->GameObject.Rotation;
         var agent = AgentModule.Instance()->GetAgentByInternalId(AgentId.Emote);
         if (agent is null) return;
-        useEmote((nint)agent, 96, nint.Zero, 0, 0);
+        suppressSnap = true;
+        try
+        {
+            useEmote((nint)agent, 96, nint.Zero, 0, 0);
+        }
+        finally
+        {
+            suppressSnap = false;
+        }
     }
 
     private byte ShouldSnapDetour(Character* character, SnapPosition* snapPosition) =>

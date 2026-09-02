@@ -1,7 +1,7 @@
 <Project Sdk="Dalamud.NET.Sdk/15.0.0">
   <PropertyGroup>
     <TargetFramework>net10.0-windows</TargetFramework>
-    <Version>1.0.61</Version>
+    <Version>1.0.73</Version>
     <AssemblyName>EmoteLink</AssemblyName>
     <RootNamespace>EmoteLink</RootNamespace>
     <Description>A small Penumbra animation launcher with synchronized group play.</Description>
@@ -13,6 +13,9 @@
   </PropertyGroup>
   <ItemGroup>
     <PackageReference Include="Microsoft.AspNetCore.SignalR.Client" Version="10.0.10" />
+    <PackageReference Include="NoireLib" Version="2.0.1" GeneratePathProperty="true">
+      <ExcludeAssets>analyzers</ExcludeAssets>
+    </PackageReference>
   </ItemGroup>
   <ItemGroup>
     <Content Include="EmoteLink.json">
@@ -20,4 +23,9 @@
     </Content>
     <EmbeddedResource Include="Assets\HowTo\*.png" />
   </ItemGroup>
+  <Target Name="RemoveNoireLibSourceGenerator" BeforeTargets="CoreCompile">
+    <ItemGroup>
+      <Analyzer Remove="$(PkgNoireLib)\analyzers\dotnet\cs\NoireLib.SourceGenerators.dll" />
+    </ItemGroup>
+  </Target>
 </Project>

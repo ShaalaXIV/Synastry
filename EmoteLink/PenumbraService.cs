@@ -28,6 +28,8 @@ public sealed class PenumbraService : IDisposable
     private readonly ICallGateSubscriber<string> getModDirectory;
     private readonly ICallGateSubscriber<string, string,
         IReadOnlyDictionary<string, (string[] Options, int GroupType)>?> getAvailableSettings;
+    private readonly ICallGateSubscriber<string, string, int> reloadMod;
+    private readonly ICallGateSubscriber<string, int> addMod;
     private readonly ICallGateSubscriber<string, int> installMod;
     private readonly ICallGateSubscriber<string, string, string, int> setModPath;
     private readonly ICallGateSubscriber<string, object?> modAdded;
@@ -53,6 +55,8 @@ public sealed class PenumbraService : IDisposable
         getModDirectory = pi.GetIpcSubscriber<string>("Penumbra.GetModDirectory");
         getAvailableSettings = pi.GetIpcSubscriber<string, string,
             IReadOnlyDictionary<string, (string[] Options, int GroupType)>?>("Penumbra.GetAvailableModSettings.V5");
+        reloadMod = pi.GetIpcSubscriber<string, string, int>("Penumbra.ReloadMod.V5");
+        addMod = pi.GetIpcSubscriber<string, int>("Penumbra.AddMod.V5");
         installMod = pi.GetIpcSubscriber<string, int>("Penumbra.InstallMod.V5");
         setModPath = pi.GetIpcSubscriber<string, string, string, int>("Penumbra.SetModPath.V5");
         modAdded = pi.GetIpcSubscriber<string, object?>("Penumbra.ModAdded");
@@ -183,6 +187,38 @@ public sealed class PenumbraService : IDisposable
         {
             log.Warning(ex, "Could not inspect changed items for {Mod}.", name);
             return [];
+        }
+    }
+
+    public (bool Success, string Error) Reload(string directory, string name)
+    {
+        try
+        {
+            var result = reloadMod.InvokeFunc(directory, name);
+            return result is 0 or 1
+                ? (true, "")
+                : (false, PenumbraError(result));
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "Could not reload converted Penumbra mod {ModName}.", name);
+            return (false, ex.GetBaseException().Message);
+        }
+    }
+
+    public (bool Success, string Error) AddMod(string directory)
+    {
+        try
+        {
+            var result = addMod.InvokeFunc(directory);
+            return result is 0 or 1
+                ? (true, "")
+                : (false, PenumbraError(result));
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "Could not register managed Penumbra mod {ModDirectory}.", directory);
+            return (false, ex.GetBaseException().Message);
         }
     }
 
@@ -395,6 +431,16 @@ public sealed class PenumbraService : IDisposable
             return false;
         }
     }
+
+    private static string PenumbraError(int code) => code switch
+    {
+        2 => "CollectionMissing (code 2)",
+        3 => "ModMissing (code 3)",
+        9 => "FileMissing (code 9)",
+        11 => "InvalidArgument (code 11)",
+        17 => "SystemDisposed (code 17)",
+        _ => $"Penumbra error code {code}"
+    };
 
     private void OnModAdded(string directory) => ModAdded?.Invoke(directory);
 
