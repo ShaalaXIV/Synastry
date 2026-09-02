@@ -47,6 +47,35 @@ public sealed class SettingsWindow : Window
                 ? "Allow chair-sit and doze animations to start without nearby furniture."
                 : "Unavailable because the required game hooks could not be initialized.");
 
+        var convertedCount = plugin.ConvertedAnimationCount;
+        if (convertedCount == 0) ImGui.BeginDisabled();
+        if (ImGui.Button($"Restore All Converted Animations ({convertedCount:N0})"))
+            ImGui.OpenPopup("Restore Original Animation Files?###RestoreAllConvertedAnimations");
+        if (convertedCount == 0) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(convertedCount == 0
+                ? "No Synastry-converted animations need to be restored."
+                : "Restore every animation Synastry converted in place to its original creator files.");
+
+        if (ImGui.BeginPopupModal(
+                "Restore Original Animation Files?###RestoreAllConvertedAnimations",
+                ImGuiWindowFlags.AlwaysAutoResize))
+        {
+            ImGui.TextWrapped(
+                $"Restore all {plugin.ConvertedAnimationCount:N0} Synastry-converted animation(s)? " +
+                "Folders, option selections, labels, and custom commands will not be changed.");
+            ImGui.Spacing();
+            if (ImGui.Button("Restore All", new Vector2(120, 0)))
+            {
+                plugin.RestoreAllConvertedAnimations();
+                ImGui.CloseCurrentPopup();
+            }
+            ImGui.SameLine();
+            if (ImGui.Button("Cancel", new Vector2(120, 0)))
+                ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+        }
+
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();

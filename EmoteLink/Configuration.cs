@@ -5,7 +5,7 @@ namespace EmoteLink;
 
 public sealed class Configuration : IPluginConfiguration
 {
-    public int Version { get; set; } = 9;
+    public int Version { get; set; } = 10;
     public bool HasSeenHowTo { get; set; }
     public List<TemporaryAssignment> ActiveAssignments { get; set; } = [];
     public List<ModCategory> Categories { get; set; } = [];
@@ -28,6 +28,7 @@ public sealed class Configuration : IPluginConfiguration
     public bool AutomaticEmoteSync { get; set; } = true;
     public bool SitDozeAnywhere { get; set; }
     public List<CustomAnimationCommand> CustomAnimationCommands { get; set; } = [];
+    public Dictionary<uint, string> TypedEmoteDefaults { get; set; } = [];
 
     public void Save(IDalamudPluginInterface pluginInterface) => pluginInterface.SavePluginConfig(this);
 }

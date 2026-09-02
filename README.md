@@ -103,3 +103,8 @@ dotnet build EmoteLink.slnx -c Release
 The relay source and deployment notes are in `EmoteLink.Relay`.
 
 Synastry is licensed under AGPL-3.0-or-later.
+
+The in-place emote carrier beta uses
+[NoireLib](https://github.com/Aspher0/NoireLib) by Aspher0 for PAP retargeting and follows the
+emote-swap approach demonstrated by
+[BypassEmote](https://github.com/Aspher0/BypassEmote). Both are used under AGPL-compatible terms.

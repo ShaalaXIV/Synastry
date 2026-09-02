@@ -1655,6 +1655,14 @@ public sealed class MainWindow : Window
                 plugin.SetModsPrivate(targets, false);
             if (ImGui.IsItemHovered())
                 ImGui.SetTooltip("Private mods are not advertised or transferable in group play.");
+            if (targets.Count == 1 && plugin.IsModConverted(mod.Directory))
+            {
+                ImGui.Separator();
+                if (ImGui.MenuItem("Restore original animation files"))
+                    plugin.RestoreConvertedMod(mod.Directory, mod.Name);
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip("Restore Synastry's backup and remove the permanent carrier conversion.");
+            }
             if (ImGui.BeginMenu(targets.Count > 1 ? "Move selected to folder" : "Move to folder"))
             {
                 if (ImGui.MenuItem("Uncategorized"))
@@ -1707,6 +1715,7 @@ public sealed class MainWindow : Window
             }
         }
         var detailParts = new List<string>();
+        if (plugin.IsModConverted(mod.Directory)) detailParts.Add("permanent carrier");
         if (groups.Count > 0) detailParts.Add($"{groups.Count} option group{(groups.Count == 1 ? "" : "s")}");
         if (detectedPoses.Count > 0) detailParts.Add($"{detectedPoses.Count} pose{(detectedPoses.Count == 1 ? "" : "s")}");
         if (detectedEmotes.Count > 0) detailParts.Add($"{detectedEmotes.Count} emote{(detectedEmotes.Count == 1 ? "" : "s")}");
@@ -1744,6 +1753,48 @@ public sealed class MainWindow : Window
         {
             ImGui.PushID(group.Name);
             var groupSelectedBy = plugin.GetRemoteGroupSelector(mod.Directory, group.Name);
+            if (!group.IsMultiSelect)
+            {
+                var selectedOption = group.Options.FirstOrDefault(option =>
+                    plugin.IsOptionSelected(mod.Directory, group.Name, option));
+                var preview = selectedOption ?? "Not set";
+                if (groupSelectedBy is not null) ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
+                ImGui.SetNextItemWidth(MathF.Min(260f, MathF.Max(120f, ImGui.GetContentRegionAvail().X * 0.52f)));
+                var comboOpen = ImGui.BeginCombo(group.Name, preview);
+                var groupHovered = ImGui.IsItemHovered();
+                if (groupSelectedBy is not null) ImGui.PopStyleColor();
+                if (groupHovered && groupSelectedBy is not null)
+                    ImGui.SetTooltip($"{groupSelectedBy} selected an option in this group.");
+                if (comboOpen)
+                {
+                    if (ImGui.Selectable("Not set", selectedOption is null))
+                        plugin.ClearOptionSelection(mod.Directory, group.Name);
+                    if (selectedOption is null) ImGui.SetItemDefaultFocus();
+                    ImGui.Separator();
+                    foreach (var option in group.Options)
+                    {
+                        ImGui.PushID(option);
+                        var selected = option.Equals(selectedOption, StringComparison.OrdinalIgnoreCase);
+                        var selectedBy = plugin.GetRemoteOptionSelector(mod.Directory, group.Name, option);
+                        var pose = plugin.GetOptionPose(mod.Directory, group.Name, option);
+                        var label = pose is null ? option : $"{option}  ({PoseDisplayName(pose)})";
+                        if (selectedBy is not null) ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
+                        if (ImGui.Selectable(label, selected))
+                            plugin.SetOptionSelected(mod.Directory, group.Name, option, true,
+                                multiSelect: false, broadcastSelection: false);
+                        if (selected) ImGui.SetItemDefaultFocus();
+                        if (selectedBy is not null)
+                        {
+                            ImGui.PopStyleColor();
+                            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"{selectedBy} selected this option.");
+                        }
+                        ImGui.PopID();
+                    }
+                    ImGui.EndCombo();
+                }
+                ImGui.PopID();
+                continue;
+            }
             if (groupSelectedBy is not null) ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
             var groupFlags = suggestionMode ? ImGuiTreeNodeFlags.DefaultOpen : ImGuiTreeNodeFlags.None;
             var groupOpen = ImGui.TreeNodeEx(group.Name, groupFlags);

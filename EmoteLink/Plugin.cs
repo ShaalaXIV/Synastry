@@ -8,10 +8,14 @@ using Dalamud.IoC;
 using Dalamud.Plugin;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
+using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Render;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
 using FFXIVClientStructs.FFXIV.Client.System.String;
 using FFXIVClientStructs.FFXIV.Client.UI;
+using FFXIVClientStructs.FFXIV.Client.UI.Agent;
+using NoireLib;
+using NoireLib.Hooking;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Collections.Concurrent;
@@ -34,9 +38,49 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private const string PublicRelayUrl = "https://emotelink.aethercast.org";
 
     private sealed record PendingPenumbraInstall(ModTransferOfferDto Offer, string Path, string ReceiveFolder);
-    private sealed record EmoteTimelineInfo(int Slot, uint RowId, string Key, bool IsLoop);
-    private sealed record EmotePlaybackInfo(uint EmoteId, IReadOnlyList<EmoteTimelineInfo> Timelines);
+    private sealed record EmoteTimelineInfo(int Slot, uint RowId, string Key, bool IsPersistentLoop);
+    private sealed record EmotePlaybackInfo(
+        uint EmoteId,
+        string Command,
+        IReadOnlyList<EmoteTimelineInfo> Timelines);
     private sealed record PendingDirectPlayback(nint ActorAddress, EmotePlayback Playback, string ModName);
+    private sealed record CarrierPlayback(uint EmoteId, string Command, string ModName);
+    private sealed record PendingCarrierPlayback(
+        CarrierPlayback Playback,
+        long NextAttempt,
+        long Deadline);
+    private enum CarrierFamily
+    {
+        None,
+        LoopingDance,
+        StandingLoop,
+        PropLoop,
+        Dote,
+        OneShot,
+    }
+    private static readonly HashSet<string> GroundLoopCommands = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "/playdead",
+        "/pushups",
+        "/situps",
+        "/slump",
+    };
+    private static readonly HashSet<string> PropLoopCommands = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "/sweep",
+        "/shakedrink",
+        "/bouquet",
+        "/tomescroll",
+        "/study",
+        "/gridaniangulp",
+        "/uldahngulp",
+        "/lominsangulp",
+        "/savortea",
+        "/pen",
+        "/carrybook",
+        "/conduct",
+        "/devourtaco",
+    };
     private sealed record ActiveDirectPlayback(nint ActorAddress, ushort OriginalBaseOverride);
     private sealed record PendingRemotePlayback(
         nint ActorAddress,
@@ -68,6 +112,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly Configuration configuration;
     private readonly AnimationIndexCache animationIndexCache;
     private readonly PenumbraService penumbra;
+    private readonly InPlaceEmoteConverter inPlaceEmoteConverter;
+    private readonly VanillaEmoteRedirectService vanillaEmoteRedirect;
     private readonly MovementService movement;
     private readonly PoseService poses;
     private readonly AnywherePoseService? anywherePoses;
@@ -77,6 +123,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly MainWindow mainWindow;
     private readonly SettingsWindow settingsWindow;
     private readonly CustomCommandsWindow customCommandsWindow;
+    private readonly TypedEmoteChooserWindow typedEmoteChooserWindow;
+    private readonly NoireHook<AgentEmote.Delegates.ExecuteEmote>? agentExecuteEmoteHook;
     private readonly HashSet<string> registeredCustomCommands = new(StringComparer.OrdinalIgnoreCase);
     private bool waitingForAnimation;
     private long activationTime;
@@ -89,6 +137,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         new(StringComparer.OrdinalIgnoreCase);
     private string? pendingCommand;
     private PendingDirectPlayback? pendingDirectPlayback;
+    private PendingCarrierPlayback? pendingCarrierPlayback;
     private long pendingCommandTime;
     private PoseTarget? pendingPose;
     private string? pendingSelectionModKey;
@@ -99,6 +148,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly Dictionary<string, bool> optionGroupMulti = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> modSyncKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> modCatalogKeys = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> convertedMods = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, (string Directory, string Name)> modsByDirectory =
         new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<(string Directory, string Name)>> organizedModsCache =
@@ -115,6 +165,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private int movementFrames;
     private readonly ConcurrentQueue<PlaySignalDto> syncPlaySignals = new();
     private readonly ConcurrentQueue<LocalAnimationSignalDto> localAnimationSignals = new();
+    private readonly ConcurrentQueue<uint> typedEmoteRequests = new();
+    private readonly ConcurrentDictionary<uint, byte> queuedTypedEmoteRequests = new();
     private readonly List<PendingRemotePlayback> pendingRemotePlaybacks = [];
     private readonly List<ActiveRemotePlayback> activeRemotePlaybacks = [];
     private readonly HashSet<TemporaryAssignment> remoteAssignments = [];
@@ -122,6 +174,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private string? preparedCatalogFingerprint;
     private string? preparedCommand;
     private EmotePlayback? preparedDirectPlayback;
+    private CarrierPlayback? preparedCarrierPlayback;
     private PoseTarget? preparedPose;
     private ActiveDirectPlayback? activeDirectPlayback;
     private nint alignmentTargetAddress;
@@ -199,10 +252,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public Plugin()
     {
+        NoireLibMain.Initialize(PluginInterface, this);
         configuration = PluginInterface.GetPluginConfig() as Configuration ?? new Configuration();
         var upgradedConfiguration = configuration.Version < 9;
         if (upgradedConfiguration) configuration.Version = 9;
         configuration.CustomAnimationCommands ??= [];
+        configuration.TypedEmoteDefaults ??= [];
         animationIndexCache = AnimationIndexCache.Load(
             Path.Combine(PluginInterface.ConfigDirectory.FullName, "animation-index.json"), Log);
         _ = Task.Run(SweepStaleTransferPackages);
@@ -219,6 +274,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
         if (generatedReporterIdentity || upgradedConfiguration) configuration.Save(PluginInterface);
         penumbra = new PenumbraService(PluginInterface, Log);
+        inPlaceEmoteConverter = new InPlaceEmoteConverter(
+            DataManager,
+            Log,
+            PluginInterface.ConfigDirectory.FullName);
+        vanillaEmoteRedirect = new VanillaEmoteRedirectService(DataManager, Log);
         penumbra.ModAdded += OnPenumbraModAdded;
         movement = new MovementService(Interop, Objects);
         poses = new PoseService(Objects);
@@ -256,10 +316,26 @@ public sealed unsafe class Plugin : IDalamudPlugin
         mainWindow = new MainWindow(this);
         settingsWindow = new SettingsWindow(this);
         customCommandsWindow = new CustomCommandsWindow(this);
+        typedEmoteChooserWindow = new TypedEmoteChooserWindow(this);
         BuildEmoteLookup();
+        try
+        {
+            agentExecuteEmoteHook = new NoireHook<AgentEmote.Delegates.ExecuteEmote>(
+                DetourAgentExecuteEmote,
+                true,
+                "Synastry typed emote interception");
+            Log.Information(
+                "Typed locked-emote interception initialized (enabled: {Enabled}).",
+                agentExecuteEmoteHook.IsEnabled);
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "Typed locked-emote interception could not be initialized.");
+        }
         windows.AddWindow(mainWindow);
         windows.AddWindow(settingsWindow);
         windows.AddWindow(customCommandsWindow);
+        windows.AddWindow(typedEmoteChooserWindow);
 
         if (!configuration.HasSeenHowTo)
         {
@@ -306,6 +382,98 @@ public sealed unsafe class Plugin : IDalamudPlugin
         else ToggleWindow();
     }
 
+    private void DetourAgentExecuteEmote(
+        AgentEmote* agent,
+        ushort emoteId,
+        EmoteController.PlayEmoteOption* playEmoteOption,
+        bool addToHistory,
+        bool liveUpdateHistory)
+    {
+        var hook = agentExecuteEmoteHook;
+        if (hook is null) return;
+        try
+        {
+            if (Objects.LocalPlayer is not null &&
+                emotePlaybackById.ContainsKey(emoteId) &&
+                !IsEmoteUnlocked(emoteId))
+            {
+                QueueTypedEmoteRequest(emoteId);
+                return;
+            }
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "Could not inspect emote {EmoteId}; allowing the game to handle it normally.", emoteId);
+        }
+
+        hook.Original(agent, emoteId, playEmoteOption, addToHistory, liveUpdateHistory);
+    }
+
+    private void ProcessTypedEmoteRequest()
+    {
+        if (!typedEmoteRequests.TryDequeue(out var emoteId)) return;
+        queuedTypedEmoteRequests.TryRemove(emoteId, out _);
+        if (!emotePlaybackById.TryGetValue(emoteId, out var info)) return;
+
+        // The unlock state can change between the hook and the next framework update.
+        // If it did, send the command back through the normal game path.
+        if (IsEmoteUnlocked(emoteId))
+        {
+            ExecuteCommand(info.Command);
+            return;
+        }
+
+        ActivateVanillaEmoteRedirect(info);
+    }
+
+    private void QueueTypedEmoteRequest(uint emoteId)
+    {
+        if (queuedTypedEmoteRequests.TryAdd(emoteId, 0))
+            typedEmoteRequests.Enqueue(emoteId);
+    }
+
+    private List<TypedEmoteCandidate> GetTypedEmoteCandidates(uint emoteId)
+    {
+        var candidates = new List<TypedEmoteCandidate>();
+        foreach (var mod in Mods)
+        {
+            if (!modEmotes.TryGetValue(mod.Directory, out var emotes)) continue;
+            var emote = emotes.FirstOrDefault(candidate => candidate.Id == emoteId);
+            if (emote is not null)
+                candidates.Add(new TypedEmoteCandidate(mod.Directory, mod.Name, emote));
+        }
+        return candidates;
+    }
+
+    public void ActivateTypedEmote(TypedEmoteCandidate candidate)
+    {
+        if (!modsByDirectory.TryGetValue(candidate.Directory, out var mod) ||
+            !modEmotes.TryGetValue(candidate.Directory, out var emotes) ||
+            emotes.FirstOrDefault(emote => emote.Id == candidate.Emote.Id) is not { } currentEmote)
+        {
+            ReportPlaybackFailure(candidate.ModName, "This animation is no longer in the current Synastry index.");
+            return;
+        }
+
+        RememberTypedEmoteDefault(currentEmote.Id, mod.Directory);
+        PublishDetectedTriggerSelection(mod.Directory, $"emote:{currentEmote.Id}");
+        ActivateInternal(mod.Directory, mod.Name, null, requestedCommand: currentEmote.Command);
+    }
+
+    public void IgnoreTypedEmote(string command)
+    {
+        Status = $"Ignored locked emote {command}.";
+    }
+
+    private void RememberTypedEmoteDefault(uint emoteId, string directory)
+    {
+        if (configuration.TypedEmoteDefaults.TryGetValue(emoteId, out var current) &&
+            current.Equals(directory, StringComparison.OrdinalIgnoreCase))
+            return;
+        configuration.TypedEmoteDefaults[emoteId] = directory;
+        configuration.Save(PluginInterface);
+    }
+
     public void RefreshMods()
     {
         if (modRefreshCancellation is not null)
@@ -331,7 +499,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
 
-        var allMods = penumbra.GetMods().ToList();
+        var allMods = penumbra.GetMods()
+            .Where(mod => !vanillaEmoteRedirect.IsManagedMod(root, mod.Directory))
+            .ToList();
+        convertedMods.Clear();
+        foreach (var mod in allMods)
+            if (inPlaceEmoteConverter.IsConverted(root, mod.Directory))
+                convertedMods.Add(mod.Directory);
         var currentDirectories = allMods.Select(mod => mod.Directory)
             .ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var directory in modsByDirectory.Keys.Where(directory => !currentDirectories.Contains(directory)).ToList())
@@ -536,8 +710,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
         (string Directory, string Name) mod,
         PortableAnimationIndexPayload payload)
     {
-        modSyncKeys[mod.Directory] = BuildModSyncKey(mod.Name, payload.PapGamePaths);
-        modCatalogKeys[mod.Directory] = CatalogFingerprint(modSyncKeys[mod.Directory]);
+        var computedSyncKey = BuildModSyncKey(mod.Name, payload.PapGamePaths);
+        var identity = ResolveCatalogIdentity(mod.Directory, computedSyncKey);
+        modSyncKeys[mod.Directory] = identity.SyncKey;
+        modCatalogKeys[mod.Directory] = identity.Fingerprint;
         foreach (var optionPose in payload.OptionPoses)
             optionPoses[OptionPoseKey(mod.Directory, optionPose.Group, optionPose.Option)] =
                 new PoseTarget(optionPose.Kind, optionPose.Index);
@@ -600,8 +776,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         if (!cached.IsAnimationMod) return false;
 
-        modSyncKeys[mod.Directory] = cached.SyncKey;
-        modCatalogKeys[mod.Directory] = CatalogFingerprint(cached.SyncKey);
+        var identity = ResolveCatalogIdentity(mod.Directory, cached.SyncKey);
+        modSyncKeys[mod.Directory] = identity.SyncKey;
+        modCatalogKeys[mod.Directory] = identity.Fingerprint;
         foreach (var optionPose in cached.OptionPoses)
             optionPoses[OptionPoseKey(mod.Directory, optionPose.Group, optionPose.Option)] =
                 new PoseTarget(optionPose.Kind, optionPose.Index);
@@ -637,6 +814,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void OnPenumbraModAdded(string directory)
     {
+        if (directory.Equals(VanillaEmoteRedirectService.ModDirectory, StringComparison.OrdinalIgnoreCase)) return;
         if (string.IsNullOrWhiteSpace(directory) || !queuedAddedModDirectories.TryAdd(directory, 0)) return;
         addedModDirectories.Enqueue(directory);
     }
@@ -824,6 +1002,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
             RunSync(sync.SetOptionSelectionAsync(modKey, group, option), $"Selected {option} for the room.");
     }
 
+    public void ClearOptionSelection(string directory, string group)
+    {
+        if (!configuration.ModOptionSelections.TryGetValue(directory, out var groups) ||
+            !groups.Remove(group)) return;
+        if (groups.Count == 0) configuration.ModOptionSelections.Remove(directory);
+        SaveOrganization();
+    }
+
     public string? GetRemoteOptionSelector(string directory, string group, string option)
     {
         if (!sync.IsInRoom || !modSyncKeys.TryGetValue(directory, out var modKey)) return null;
@@ -901,6 +1087,83 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public bool IsModPrivate(string directory) => configuration.PrivateMods.Contains(directory);
 
+    public bool IsModConverted(string directory) => convertedMods.Contains(directory);
+    public int ConvertedAnimationCount => convertedMods.Count;
+
+    public void RestoreConvertedMod(string directory, string name)
+    {
+        var result = inPlaceEmoteConverter.Restore(penumbra.GetModRoot(), directory, name);
+        if (!result.Success)
+        {
+            ReportPlaybackFailure(name, result.Message);
+            return;
+        }
+        convertedMods.Remove(directory);
+        var reload = penumbra.Reload(directory, name);
+        if (!reload.Success)
+        {
+            ReportPlaybackFailure(
+                name,
+                $"The original files were restored, but Penumbra could not reload the mod: {reload.Error}. " +
+                "Use Rediscover Mods in Penumbra.");
+            return;
+        }
+        Status = result.Message + " Refreshing the animation library...";
+        RefreshMods();
+    }
+
+    public void RestoreAllConvertedAnimations()
+    {
+        var targets = convertedMods
+            .Select(directory => modsByDirectory.TryGetValue(directory, out var mod)
+                ? mod
+                : (Directory: directory, Name: directory))
+            .ToList();
+        if (targets.Count == 0)
+        {
+            Status = "No converted animations need to be restored.";
+            return;
+        }
+
+        var restored = 0;
+        var failures = new List<string>();
+        foreach (var mod in targets)
+        {
+            var result = inPlaceEmoteConverter.Restore(
+                penumbra.GetModRoot(),
+                mod.Directory,
+                mod.Name);
+            if (!result.Success)
+            {
+                failures.Add($"{mod.Name}: {result.Message}");
+                continue;
+            }
+
+            convertedMods.Remove(mod.Directory);
+            restored++;
+            var reload = penumbra.Reload(mod.Directory, mod.Name);
+            if (!reload.Success)
+                failures.Add($"{mod.Name}: restored, but Penumbra reload failed ({reload.Error})");
+        }
+
+        if (restored > 0)
+            RefreshMods();
+
+        if (failures.Count == 0)
+        {
+            Status = $"Restored {restored:N0} converted animation(s) to their original files. Library refresh started.";
+            Chat.Print($"[Synastry] {Status}");
+            return;
+        }
+
+        Status =
+            $"Restored {restored:N0} converted animation(s); {failures.Count:N0} could not be fully restored. " +
+            "Check /xllog for details.";
+        Chat.PrintError($"[Synastry] {Status}");
+        foreach (var failure in failures)
+            Log.Warning("Bulk animation restore issue: {Failure}", failure);
+    }
+
     public void SetModPrivate(string directory, bool isPrivate)
     {
         if (isPrivate) configuration.PrivateMods.Add(directory);
@@ -959,7 +1222,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         configuration.SitDozeAnywhere = enabled;
         configuration.Save(PluginInterface);
         Status = enabled
-            ? "Sit/doze anywhere enabled. Chair-sit and doze animations will skip furniture checks."
+            ? "Sit/doze anywhere enabled. Chair-sit and doze animations will play in place."
             : "Sit/doze anywhere disabled. Chair-sit and doze will use normal game placement.";
     }
 
@@ -990,6 +1253,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
             ? "Received animations will remain at the top level of Penumbra's mod list."
             : $"Received animations will be organized in Penumbra mod-list folder {result.Folder}.";
         return true;
+    }
+
+    private (string SyncKey, string Fingerprint) ResolveCatalogIdentity(
+        string directory,
+        string computedSyncKey)
+    {
+        if (inPlaceEmoteConverter.TryGetOriginalIdentity(
+                penumbra.GetModRoot(),
+                directory,
+                out var originalSyncKey,
+                out var originalFingerprint))
+            return (originalSyncKey, originalFingerprint);
+        return (computedSyncKey, CatalogFingerprint(computedSyncKey));
     }
 
     public void ApplyOption(string directory, string name, string group, string option, bool selected)
@@ -1132,6 +1408,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Status = $"{name} is private and cannot be sent.";
             return;
         }
+        if (IsModConverted(directory))
+        {
+            Status =
+                $"{name} is locally converted and cannot be transferred in this beta. " +
+                "Restore it first so recipients receive the creator's original files.";
+            Chat.PrintError($"[Synastry] {Status}");
+            return;
+        }
         if (!sync.IsInRoom)
         {
             Status = "Join a room before sending a mod.";
@@ -1216,6 +1500,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         preparedCommand = null;
         preparedPose = null;
         preparedDirectPlayback = null;
+        preparedCarrierPlayback = null;
         RunSync(sync.CancelReadyAsync(), "Group-play readiness cancelled.");
     }
 
@@ -1232,6 +1517,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         preparedCommand = null;
         preparedPose = null;
         preparedDirectPlayback = null;
+        preparedCarrierPlayback = null;
         if (!sync.IsInRoom) return;
         _ = sync.CancelReadyAsync().ContinueWith(task =>
         {
@@ -1499,7 +1785,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
         if (!Commands.AddHandler(command, new CommandInfo((_, _) => ExecuteCustomAnimationCommand(command))
             {
-                HelpMessage = "Run a custom Synastry animation assignment."
+                HelpMessage = "Run a custom Synastry animation assignment.",
+                ShowInHelp = false
             }))
         {
             error = $"{command} is already registered by another plugin. Choose another command.";
@@ -1918,13 +2205,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
             requestedPose = detected[0];
         ClearTemporaryAssignmentsInternal(false, false);
         var collection = penumbra.GetPlayerCollection();
+        if (collection is null)
+        {
+            ReportPlaybackFailure(name, "Penumbra has no collection assigned to your character.");
+            return;
+        }
+        if (TryDescribeMissingOptionSelection(collection.Value.Id, directory, name, out var optionFailure))
+        {
+            ReportPlaybackFailure(name, optionFailure);
+            return;
+        }
         var selections = configuration.ModOptionSelections.TryGetValue(directory, out var savedOptions)
             ? savedOptions
             : new Dictionary<string, List<string>>();
-        if (collection is null || !penumbra.Activate(collection.Value.Id, directory, name, selections))
+        if (!penumbra.Activate(collection.Value.Id, directory, name, selections))
         {
             Log.Warning("Temporary activation failed for {Mod}.", name);
-            Status = $"Could not activate {name}.";
+            ReportPlaybackFailure(
+                name,
+                "Penumbra rejected the temporary activation. Check that the mod is enabled for your character's collection.");
             return;
         }
 
@@ -1946,17 +2245,20 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var command = requestedCommand ?? DetectEmoteCommand(directory, name);
         if (command is null)
         {
-            Status = $"Activated {name}, but no emote command was detected.";
-            Chat.PrintError($"[Synastry] {name} was activated, but its emote could not be detected.");
+            ReportPlaybackFailure(
+                name,
+                "No emote command could be detected. Select the option containing the animation, refresh the library, and try again.");
             return;
         }
 
         if (!TryCreatePlayback(command, out var playback))
         {
-            Status = $"Activated {name}, but {command} has no playable action timeline.";
-            Chat.PrintError($"[Synastry] {command} has no playable action timeline in the current game data.");
+            ReportPlaybackFailure(
+                name,
+                $"{command} has no PAP-backed action timeline in the current game data.");
             return;
         }
+        RememberTypedEmoteDefault(playback.EmoteId, directory);
 
         // Preserve the game's normal networked emote path whenever the character owns it.
         // Direct timeline playback is only the fallback that bypasses a locked emote.
@@ -1967,6 +2269,68 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
 
+        var conversion = TryConvertLockedEmote(directory, name, command);
+        if (conversion.Success)
+        {
+            convertedMods.Add(directory);
+            if (conversion.ChangedFiles)
+            {
+                var reload = penumbra.Reload(directory, name);
+                if (!reload.Success)
+                {
+                    ReportPlaybackFailure(
+                        name,
+                        $"The files were converted, but Penumbra could not reload them: {reload.Error}. " +
+                        "Use Rediscover Mods in Penumbra, then try again.");
+                    return;
+                }
+                if (!penumbra.Activate(collection.Value.Id, directory, name, selections))
+                {
+                    ReportPlaybackFailure(
+                        name,
+                        "Penumbra reloaded the conversion but would not reactivate the selected mod options.");
+                    return;
+                }
+            }
+            var carrier = new CarrierPlayback(
+                conversion.CarrierEmoteId,
+                conversion.CarrierCommand,
+                name);
+            if (allowGroupPlay &&
+                PrepareForGroupPlay(directory, name, null, null, playback, carrier))
+                return;
+            ScheduleCarrierPlayback(carrier, conversion.ChangedFiles ? 650 : 300);
+            if (sync.IsConnected && modCatalogKeys.TryGetValue(directory, out var convertedFingerprint) &&
+                convertedFingerprint.Length == 64)
+                _ = BroadcastLocalPlaybackAsync(convertedFingerprint, playback, pendingCommandTime);
+            return;
+        }
+
+        if (conversion.ChangedFiles)
+        {
+            convertedMods.Remove(directory);
+            var reload = penumbra.Reload(directory, name);
+            if (!reload.Success)
+            {
+                ReportPlaybackFailure(
+                    name,
+                    $"The obsolete carrier was restored, but Penumbra could not reload the mod: {reload.Error}. " +
+                    "Use Rediscover Mods in Penumbra, then try again.");
+                return;
+            }
+            if (!penumbra.Activate(collection.Value.Id, directory, name, selections))
+            {
+                ReportPlaybackFailure(
+                    name,
+                    "Penumbra reloaded the restored mod but would not reactivate its selected options.");
+                return;
+            }
+        }
+
+        ReportPlaybackNotice(
+            name,
+            $"Permanent carrier conversion was unavailable: {conversion.Message} " +
+            "Synastry is using the legacy direct-play fallback for this attempt.");
         if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, null, playback)) return;
         ScheduleDirectPlayback(name, Objects.LocalPlayer?.Address ?? 0, playback, 300);
         if (sync.IsConnected && modCatalogKeys.TryGetValue(directory, out var fingerprint) && fingerprint.Length == 64)
@@ -1978,7 +2342,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         string modName,
         string? command,
         PoseTarget? pose,
-        EmotePlayback? directPlayback)
+        EmotePlayback? directPlayback,
+        CarrierPlayback? carrierPlayback = null)
     {
         if (!sync.IsInRoom) return false;
         preparedModKey = modSyncKeys.TryGetValue(directory, out var key) ? key : NormalizeModKey(modName);
@@ -1986,6 +2351,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         preparedCommand = command;
         preparedPose = pose;
         preparedDirectPlayback = directPlayback;
+        preparedCarrierPlayback = carrierPlayback;
         Status = $"Prepared {modName}; waiting for everyone in room {sync.Room!.RoomCode}.";
         RunSync(sync.SetReadyAsync(preparedModKey), $"Ready with {modName}; waiting for the group.");
         return true;
@@ -2010,6 +2376,412 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = $"Activated {modName}; starting its native timeline.";
         pendingDirectPlayback = new PendingDirectPlayback(actorAddress, playback, modName);
         pendingCommandTime = Environment.TickCount64 + delayMs;
+    }
+
+    private void ScheduleCarrierPlayback(CarrierPlayback playback, long delayMs)
+    {
+        var startAt = Environment.TickCount64 + delayMs;
+        pendingCarrierPlayback = new PendingCarrierPlayback(playback, startAt, startAt + 600);
+        pendingCommandTime = startAt;
+        Status = $"Activated {playback.ModName}; starting its permanent carrier {playback.Command}.";
+    }
+
+    private void ActivateVanillaEmoteRedirect(EmotePlaybackInfo source)
+    {
+        var collection = penumbra.GetPlayerCollection();
+        if (collection is null)
+        {
+            ActivateLockedVanillaDirectFallback(
+                source,
+                "Penumbra has no collection assigned to your character.");
+            return;
+        }
+
+        ClearTemporaryAssignmentsInternal(false, false);
+        var sourceCandidate = new EmoteConversionCandidate(
+            source.EmoteId,
+            source.Command,
+            source.Timelines.Select(timeline => new EmoteConversionTimeline(
+                timeline.Slot,
+                timeline.Key,
+                timeline.IsPersistentLoop)).ToList());
+        var carriers = BuildCarrierCandidates(source, true);
+        var build = vanillaEmoteRedirect.Build(penumbra.GetModRoot(), sourceCandidate, carriers);
+        if (!build.Success)
+        {
+            ActivateLockedVanillaDirectFallback(source, build.Message);
+            return;
+        }
+
+        var registeredBeforeBuild = penumbra.GetMods().Any(mod =>
+            mod.Directory.Equals(VanillaEmoteRedirectService.ModDirectory, StringComparison.OrdinalIgnoreCase));
+        if (!registeredBeforeBuild)
+        {
+            var added = penumbra.AddMod(VanillaEmoteRedirectService.ModDirectory);
+            if (!added.Success)
+            {
+                ActivateLockedVanillaDirectFallback(
+                    source,
+                    $"Penumbra could not register Synastry Redirect: {added.Error}");
+                return;
+            }
+        }
+
+        var registeredMod = penumbra.GetMods().FirstOrDefault(mod =>
+            mod.Directory.Equals(VanillaEmoteRedirectService.ModDirectory, StringComparison.OrdinalIgnoreCase));
+        if (string.IsNullOrWhiteSpace(registeredMod.Directory))
+        {
+            ActivateLockedVanillaDirectFallback(
+                source,
+                "Penumbra accepted the Synastry Redirect folder but did not register it as a valid mod.");
+            return;
+        }
+
+        var reload = penumbra.Reload(
+            registeredMod.Directory,
+            registeredMod.Name);
+        if (!reload.Success)
+        {
+            ActivateLockedVanillaDirectFallback(
+                source,
+                $"Penumbra could not reload Synastry Redirect: {reload.Error}");
+            return;
+        }
+
+        var selections = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        if (!penumbra.Activate(
+                collection.Value.Id,
+                registeredMod.Directory,
+                registeredMod.Name,
+                selections,
+                10000))
+        {
+            ActivateLockedVanillaDirectFallback(
+                source,
+                "Penumbra would not temporarily enable Synastry Redirect.");
+            return;
+        }
+
+        configuration.ActiveAssignments.Add(new TemporaryAssignment(
+            collection.Value.Id,
+            registeredMod.Directory,
+            registeredMod.Name));
+        configuration.Save(PluginInterface);
+        waitingForAnimation = true;
+        activationTime = Environment.TickCount64;
+        movementTrackingStart = activationTime + 1200;
+        hasMovementSample = false;
+        movementFrames = 0;
+        ReportPlaybackNotice(
+            source.Command,
+            $"Synastry Redirect rebuilt the locked vanilla emote through {build.CarrierCommand}.");
+        ScheduleCarrierPlayback(
+            new CarrierPlayback(
+                build.CarrierEmoteId,
+                build.CarrierCommand,
+                $"locked {source.Command}"),
+            registeredBeforeBuild ? 650 : 900);
+    }
+
+    private void ActivateLockedVanillaDirectFallback(EmotePlaybackInfo source, string redirectFailure)
+    {
+        if (!TryCreatePlayback(source, out var playback) || Objects.LocalPlayer is not { } player)
+        {
+            ReportPlaybackFailure(
+                source.Command,
+                $"Synastry Redirect was unavailable: {redirectFailure} The native timeline could not be started.");
+            return;
+        }
+
+        ClearTemporaryAssignmentsInternal(false, false);
+        waitingForAnimation = true;
+        activationTime = Environment.TickCount64;
+        movementTrackingStart = activationTime + 1200;
+        hasMovementSample = false;
+        movementFrames = 0;
+        ReportPlaybackNotice(
+            source.Command,
+            $"Synastry Redirect was unavailable: {redirectFailure} " +
+            "Using local-only direct playback; other players will not see this fallback.");
+        ScheduleDirectPlayback($"locked {source.Command}", player.Address, playback, 50);
+    }
+
+    private InPlaceConversionResult TryConvertLockedEmote(
+        string directory,
+        string modName,
+        string command)
+    {
+        if (IsRefreshingMods)
+            return new InPlaceConversionResult(
+                false,
+                "The animation library is refreshing. Wait for it to finish and try again.");
+        if (!emotePlaybackByCommand.TryGetValue(command, out var source))
+            return new InPlaceConversionResult(false, $"Timeline information for {command} is unavailable.");
+        if (!modSyncKeys.TryGetValue(directory, out var originalSyncKey) ||
+            !modCatalogKeys.TryGetValue(directory, out var originalFingerprint))
+            return new InPlaceConversionResult(
+                false,
+                "The mod's original identity is not indexed yet. Refresh the library and try again.");
+
+        var sourceLoop = source.Timelines.Any(timeline => timeline.IsPersistentLoop);
+        var family = ClassifyCarrierFamily(command, source, sourceLoop);
+        var candidates = BuildCarrierCandidates(source, false);
+
+        if (candidates.Count == 0)
+        {
+            var reason = MissingCarrierMessage(family);
+            if (!inPlaceEmoteConverter.IsConverted(penumbra.GetModRoot(), directory))
+                return new InPlaceConversionResult(false, reason);
+        }
+
+        return inPlaceEmoteConverter.Convert(
+            penumbra.GetModRoot(),
+            directory,
+            modName,
+            originalSyncKey,
+            originalFingerprint,
+            source.EmoteId,
+            source.Command,
+            source.Timelines.Select(timeline => new EmoteConversionTimeline(
+                timeline.Slot,
+                timeline.Key,
+                timeline.IsPersistentLoop)).ToList(),
+            candidates);
+    }
+
+    private List<EmoteConversionCandidate> BuildCarrierCandidates(
+        EmotePlaybackInfo source,
+        bool standaloneVanillaRedirect)
+    {
+        var sourceLoop = source.Timelines.Any(timeline => timeline.IsPersistentLoop);
+        var family = ClassifyCarrierFamily(source.Command, source, sourceLoop);
+        var sourceSlots = source.Timelines.Select(timeline => timeline.Slot).ToHashSet();
+        return emotePlaybackById.Values
+            .Where(candidate =>
+                candidate.EmoteId != source.EmoteId &&
+                IsEmoteUnlocked(candidate.EmoteId) &&
+                IsSafeCarrierEmote(candidate.EmoteId) &&
+                candidate.Timelines.Any(timeline => timeline.IsPersistentLoop) == sourceLoop &&
+                candidate.Timelines.Any(timeline => sourceSlots.Contains(timeline.Slot)))
+            .Where(candidate => standaloneVanillaRedirect
+                ? IsAllowedStandaloneCarrier(family, sourceLoop, candidate.Command)
+                : IsAllowedCarrier(family, candidate.Command))
+            .OrderBy(candidate => standaloneVanillaRedirect
+                ? StandaloneCarrierPriority(family, sourceLoop, candidate.Command)
+                : CarrierPriority(family, candidate.Command))
+            .ThenByDescending(candidate =>
+                sourceSlots.SetEquals(candidate.Timelines.Select(timeline => timeline.Slot)))
+            .ThenBy(candidate => Math.Abs(candidate.Timelines.Count - source.Timelines.Count))
+            .ThenBy(candidate => candidate.EmoteId)
+            .Select(candidate => new EmoteConversionCandidate(
+                candidate.EmoteId,
+                candidate.Command,
+                candidate.Timelines.Select(timeline => new EmoteConversionTimeline(
+                    timeline.Slot,
+                    timeline.Key,
+                    timeline.IsPersistentLoop)).ToList()))
+            .ToList();
+    }
+
+    private static CarrierFamily ClassifyCarrierFamily(
+        string sourceCommand,
+        EmotePlaybackInfo source,
+        bool sourceLoop)
+    {
+        if (sourceCommand.Equals("/dote", StringComparison.OrdinalIgnoreCase))
+            return CarrierFamily.Dote;
+        if (!sourceLoop)
+            return CarrierFamily.OneShot;
+        if (source.Timelines.Any(timeline =>
+                timeline.Key.StartsWith("emote/dance", StringComparison.OrdinalIgnoreCase)) ||
+            sourceCommand.Equals("/songbird", StringComparison.OrdinalIgnoreCase))
+            return CarrierFamily.LoopingDance;
+        if (PropLoopCommands.Contains(sourceCommand))
+            return CarrierFamily.PropLoop;
+        if (!GroundLoopCommands.Contains(sourceCommand) &&
+            source.Timelines.Any(timeline =>
+                timeline.Key.StartsWith("emote/loop_emot", StringComparison.OrdinalIgnoreCase)))
+            return CarrierFamily.StandingLoop;
+        return CarrierFamily.None;
+    }
+
+    private static bool IsAllowedCarrier(CarrierFamily family, string candidateCommand)
+    {
+        return family switch
+        {
+            CarrierFamily.LoopingDance =>
+                candidateCommand.Equals("/stepdance", StringComparison.OrdinalIgnoreCase) ||
+                candidateCommand.Equals("/harvestdance", StringComparison.OrdinalIgnoreCase) ||
+                candidateCommand.Equals("/balldance", StringComparison.OrdinalIgnoreCase) ||
+                candidateCommand.Equals("/beesknees", StringComparison.OrdinalIgnoreCase) ||
+                candidateCommand.Equals("/golddance", StringComparison.OrdinalIgnoreCase) ||
+                candidateCommand.Equals("/thavdance", StringComparison.OrdinalIgnoreCase),
+            CarrierFamily.StandingLoop =>
+                candidateCommand.Equals("/wringhands", StringComparison.OrdinalIgnoreCase) ||
+                candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase),
+            CarrierFamily.PropLoop =>
+                candidateCommand.Equals("/water", StringComparison.OrdinalIgnoreCase) ||
+                candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase),
+            CarrierFamily.Dote =>
+                candidateCommand.Equals("/blowkiss", StringComparison.OrdinalIgnoreCase),
+            CarrierFamily.OneShot =>
+                candidateCommand.Equals("/wave", StringComparison.OrdinalIgnoreCase) ||
+                candidateCommand.Equals("/clap", StringComparison.OrdinalIgnoreCase) ||
+                candidateCommand.Equals("/cheer", StringComparison.OrdinalIgnoreCase) ||
+                candidateCommand.Equals("/bow", StringComparison.OrdinalIgnoreCase),
+            _ => false,
+        };
+    }
+
+    private static int CarrierPriority(CarrierFamily family, string candidateCommand)
+    {
+        if (family == CarrierFamily.LoopingDance)
+        {
+            if (candidateCommand.Equals("/beesknees", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (candidateCommand.Equals("/golddance", StringComparison.OrdinalIgnoreCase)) return 1;
+            if (candidateCommand.Equals("/thavdance", StringComparison.OrdinalIgnoreCase)) return 2;
+            if (candidateCommand.Equals("/balldance", StringComparison.OrdinalIgnoreCase)) return 3;
+            if (candidateCommand.Equals("/harvestdance", StringComparison.OrdinalIgnoreCase)) return 4;
+            if (candidateCommand.Equals("/stepdance", StringComparison.OrdinalIgnoreCase)) return 5;
+        }
+        if (family == CarrierFamily.StandingLoop)
+        {
+            if (candidateCommand.Equals("/wringhands", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase)) return 1;
+        }
+        if (family == CarrierFamily.PropLoop)
+        {
+            if (candidateCommand.Equals("/water", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase)) return 1;
+        }
+        if (family == CarrierFamily.Dote &&
+            candidateCommand.Equals("/blowkiss", StringComparison.OrdinalIgnoreCase)) return 0;
+        if (family == CarrierFamily.OneShot)
+        {
+            if (candidateCommand.Equals("/wave", StringComparison.OrdinalIgnoreCase)) return 0;
+            if (candidateCommand.Equals("/clap", StringComparison.OrdinalIgnoreCase)) return 1;
+            if (candidateCommand.Equals("/cheer", StringComparison.OrdinalIgnoreCase)) return 2;
+            if (candidateCommand.Equals("/bow", StringComparison.OrdinalIgnoreCase)) return 3;
+        }
+        return int.MaxValue;
+    }
+
+    private static bool IsAllowedStandaloneCarrier(
+        CarrierFamily family,
+        bool sourceLoop,
+        string candidateCommand)
+    {
+        if (IsAllowedCarrier(family, candidateCommand)) return true;
+        if (sourceLoop)
+            return candidateCommand.Equals("/wringhands", StringComparison.OrdinalIgnoreCase) ||
+                   candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase) ||
+                   candidateCommand.Equals("/stepdance", StringComparison.OrdinalIgnoreCase) ||
+                   candidateCommand.Equals("/harvestdance", StringComparison.OrdinalIgnoreCase) ||
+                   candidateCommand.Equals("/balldance", StringComparison.OrdinalIgnoreCase) ||
+                   candidateCommand.Equals("/beesknees", StringComparison.OrdinalIgnoreCase) ||
+                   candidateCommand.Equals("/golddance", StringComparison.OrdinalIgnoreCase) ||
+                   candidateCommand.Equals("/thavdance", StringComparison.OrdinalIgnoreCase) ||
+                   candidateCommand.Equals("/water", StringComparison.OrdinalIgnoreCase);
+        return candidateCommand.Equals("/wave", StringComparison.OrdinalIgnoreCase) ||
+               candidateCommand.Equals("/clap", StringComparison.OrdinalIgnoreCase) ||
+               candidateCommand.Equals("/cheer", StringComparison.OrdinalIgnoreCase) ||
+               candidateCommand.Equals("/bow", StringComparison.OrdinalIgnoreCase);
+    }
+
+    private static int StandaloneCarrierPriority(
+        CarrierFamily family,
+        bool sourceLoop,
+        string candidateCommand)
+    {
+        var preferred = CarrierPriority(family, candidateCommand);
+        if (preferred != int.MaxValue) return preferred;
+        if (sourceLoop)
+        {
+            if (candidateCommand.Equals("/wringhands", StringComparison.OrdinalIgnoreCase)) return 20;
+            if (candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase)) return 21;
+            if (candidateCommand.Equals("/stepdance", StringComparison.OrdinalIgnoreCase)) return 22;
+            if (candidateCommand.Equals("/harvestdance", StringComparison.OrdinalIgnoreCase)) return 23;
+            if (candidateCommand.Equals("/balldance", StringComparison.OrdinalIgnoreCase)) return 24;
+            if (candidateCommand.Equals("/beesknees", StringComparison.OrdinalIgnoreCase)) return 25;
+            if (candidateCommand.Equals("/golddance", StringComparison.OrdinalIgnoreCase)) return 26;
+            if (candidateCommand.Equals("/thavdance", StringComparison.OrdinalIgnoreCase)) return 27;
+            if (candidateCommand.Equals("/water", StringComparison.OrdinalIgnoreCase)) return 28;
+        }
+        if (candidateCommand.Equals("/wave", StringComparison.OrdinalIgnoreCase)) return 20;
+        if (candidateCommand.Equals("/clap", StringComparison.OrdinalIgnoreCase)) return 21;
+        if (candidateCommand.Equals("/cheer", StringComparison.OrdinalIgnoreCase)) return 22;
+        if (candidateCommand.Equals("/bow", StringComparison.OrdinalIgnoreCase)) return 23;
+        return int.MaxValue;
+    }
+
+    private static string MissingCarrierMessage(CarrierFamily family) => family switch
+    {
+        CarrierFamily.LoopingDance =>
+            "This animation uses the Looping Dance Rework. Unlock Bee's Knees, Gold Dance, Thavnairian Dance, " +
+            "Ball Dance, Harvest Dance, or Step Dance, then try again.",
+        CarrierFamily.StandingLoop =>
+            "This standing loop needs Wring Hands or Sweep as an inexpensive carrier.",
+        CarrierFamily.PropLoop =>
+            "This prop loop needs Water or Sweep as an inexpensive carrier.",
+        CarrierFamily.Dote =>
+            "Synastry routes /dote through /blowkiss. Unlock Blow Kiss, then try again.",
+        CarrierFamily.OneShot =>
+            "This one-shot animation needs Wave, Clap, Cheer, or Bow as a starter carrier.",
+        _ =>
+            "This animation belongs to a special posture, prop, VFX, or one-shot family without an approved carrier.",
+    };
+
+    private static bool IsSafeCarrierEmote(uint emoteId)
+    {
+        var row = DataManager.GetExcelSheet<Lumina.Excel.Sheets.Emote>()?.GetRow(emoteId);
+        if (row is not { } emote ||
+            emote.EmoteCategory.RowId is not (1 or 2) ||
+            emote.EmoteMode.RowId is 1 or 2 ||
+            emote.DrawsWeapon ||
+            emote.RowId is 90 or 218 or 219 or 243 or 244 or 253)
+            return false;
+        foreach (var timelineReference in emote.ActionTimeline)
+        {
+            if (timelineReference.RowId == 0 || timelineReference.ValueNullable is not { } timeline) continue;
+            if (timeline.LoadType == 1 || timeline.ActionTimelineIDMode == 2) return false;
+        }
+        return true;
+    }
+
+    private bool TryDescribeMissingOptionSelection(
+        Guid collectionId,
+        string directory,
+        string name,
+        out string message)
+    {
+        message = "";
+        if (!optionGroups.TryGetValue(directory, out var groups) || groups.Count == 0) return false;
+        var current = penumbra.GetCurrentOptions(collectionId, directory, name);
+        configuration.ModOptionSelections.TryGetValue(directory, out var saved);
+        var missing = groups
+            .Where(group => !group.IsMultiSelect && group.Options.Count > 0)
+            .Where(group =>
+                !(saved?.TryGetValue(group.Name, out var selected) == true && selected.Count > 0) &&
+                !(current.TryGetValue(group.Name, out var currentSelected) && currentSelected.Count > 0))
+            .Select(group => group.Name)
+            .ToList();
+        if (missing.Count == 0) return false;
+        message = "Options not set. Please ensure all required options are selected.";
+        return true;
+    }
+
+    private void ReportPlaybackFailure(string modName, string reason)
+    {
+        Status = $"{modName} did not play: {reason}";
+        Chat.PrintError($"[Synastry] {Status}");
+        Log.Warning("Animation playback did not start for {ModName}: {Reason}", modName, reason);
+    }
+
+    private void ReportPlaybackNotice(string modName, string reason)
+    {
+        Status = $"{modName}: {reason}";
+        Chat.Print($"[Synastry] {Status}");
+        Log.Information("Animation playback notice for {ModName}: {Reason}", modName, reason);
     }
 
     private Task BroadcastLocalPlaybackAsync(string fingerprint, EmotePlayback playback, long startAt)
@@ -2238,9 +3010,21 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             var textCommand = row.TextCommand.ValueNullable;
             if (textCommand is null) continue;
-            var command = textCommand.Value.Command.ToString();
+            var officialCommands = new[]
+                {
+                    textCommand.Value.Command.ToString(),
+                    textCommand.Value.ShortCommand.ToString(),
+                    textCommand.Value.Alias.ToString(),
+                    textCommand.Value.ShortAlias.ToString()
+                }
+                .Where(value => !string.IsNullOrWhiteSpace(value))
+                .Select(value => value.Trim().ToLowerInvariant())
+                .Where(value => value.StartsWith('/'))
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+            var command = officialCommands.FirstOrDefault();
             var name = row.Name.ExtractText();
-            if (command.Length == 0 || name.Length == 0) continue;
+            if (command is null || name.Length == 0) continue;
             AddEmoteName(row.RowId, name, command);
             var timelines = row.ActionTimeline
                 .Select((timeline, slot) => (timeline, slot))
@@ -2249,14 +3033,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     item.slot,
                     item.timeline.RowId,
                     NormalizeTimelineKey(item.timeline.Value.Key.ExtractText()),
-                    item.timeline.Value.IsLoop))
+                    item.timeline.Value.Pause))
                 .Where(timeline => timeline.Key.Length > 0)
-                .DistinctBy(timeline => (timeline.RowId, timeline.Key.ToUpperInvariant(), timeline.IsLoop))
+                .DistinctBy(timeline =>
+                    (timeline.RowId, timeline.Key.ToUpperInvariant(), timeline.IsPersistentLoop))
                 .ToList();
             if (timelines.Count > 0)
             {
-                var playback = new EmotePlaybackInfo(row.RowId, timelines);
-                emotePlaybackByCommand.TryAdd(command, playback);
+                var playback = new EmotePlaybackInfo(row.RowId, command, timelines);
+                foreach (var officialCommand in officialCommands)
+                    emotePlaybackByCommand.TryAdd(officialCommand, playback);
                 emotePlaybackById.TryAdd(row.RowId, playback);
             }
         }
@@ -2280,10 +3066,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         playback = null!;
         var main = info.Timelines.FirstOrDefault(timeline => timeline.Slot == 0) ??
-                   info.Timelines.FirstOrDefault(timeline => timeline.IsLoop) ??
+                   info.Timelines.FirstOrDefault(timeline => timeline.IsPersistentLoop) ??
                    info.Timelines.FirstOrDefault();
         if (main is null || main.RowId > ushort.MaxValue) return false;
-        var isLoop = main.IsLoop || info.Timelines.Any(timeline => timeline.IsLoop);
+        var isLoop = main.IsPersistentLoop || info.Timelines.Any(timeline => timeline.IsPersistentLoop);
         var intro = isLoop ? info.Timelines.FirstOrDefault(timeline => timeline.Slot == 1) : null;
         playback = new EmotePlayback(
             info.EmoteId,
@@ -2679,6 +3465,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         waitingForAnimation = false;
         pendingCommand = null;
         pendingDirectPlayback = null;
+        pendingCarrierPlayback = null;
         pendingPose = null;
         pendingSelectionModKey = null;
         lobbyEmoteRefreshTime = 0;
@@ -2692,6 +3479,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             preparedCommand = null;
             preparedPose = null;
             preparedDirectPlayback = null;
+            preparedCarrierPlayback = null;
             RunSync(sync.CancelReadyAsync(), "Temporary animation and group readiness cleared.");
         }
         Status = "Temporary animation assignments cleared.";
@@ -2769,6 +3557,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void OnUpdate(IFramework _)
     {
+        ProcessTypedEmoteRequest();
         ProcessAnimationSuggestionNotifications();
         UpdateLocalPresence();
         ProcessModRefresh();
@@ -2798,6 +3587,34 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingCommand = null;
             ExecuteCommand(command);
             animationStarted = true;
+        }
+        if (pendingCarrierPlayback is not null &&
+            Environment.TickCount64 >= pendingCarrierPlayback.NextAttempt)
+        {
+            var pending = pendingCarrierPlayback;
+            if (TryExecuteCarrierEmote(pending.Playback.EmoteId))
+            {
+                pendingCarrierPlayback = null;
+                animationStarted = true;
+                Status =
+                    $"Started {pending.Playback.ModName} through permanent carrier {pending.Playback.Command}.";
+            }
+            else if (Environment.TickCount64 < pending.Deadline)
+            {
+                pendingCarrierPlayback = pending with
+                {
+                    NextAttempt = Environment.TickCount64 + 50
+                };
+            }
+            else
+            {
+                pendingCarrierPlayback = null;
+                pendingSelectionModKey = null;
+                ReportPlaybackFailure(
+                    pending.Playback.ModName,
+                    $"The game refused carrier {pending.Playback.Command}. " +
+                    "Stop your current action, leave restricted character states, and try again.");
+            }
         }
         if (pendingDirectPlayback is not null && Environment.TickCount64 >= pendingCommandTime)
         {
@@ -2847,6 +3664,18 @@ public sealed unsafe class Plugin : IDalamudPlugin
         UpdatePoseCycling();
         if (!waitingForAnimation) return;
         UpdateMovementCleanup();
+    }
+
+    private static bool TryExecuteCarrierEmote(uint emoteId)
+    {
+        if (emoteId > ushort.MaxValue) return false;
+        var manager = FFXIVClientStructs.FFXIV.Client.Game.Control.EmoteManager.Instance();
+        if (manager is null) return false;
+        var targetId = Objects.LocalPlayer is { } player
+            ? NoireLib.Helpers.GameObjectHelper.GetTargetId(player)
+            : NoireLib.Helpers.EmoteHelper.NoEmoteTargetId;
+        var option = NoireLib.Helpers.EmoteHelper.EmoteOptionFor(targetId);
+        return manager->ExecuteEmote((ushort)emoteId, &option);
     }
 
     private void ProcessTransferOffers()
@@ -3461,7 +4290,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
             pendingCommandTime = Environment.TickCount64 + delay;
             pendingCommand = preparedCommand;
             pendingPose = preparedPose;
-            pendingDirectPlayback = preparedDirectPlayback is null
+            pendingCarrierPlayback = preparedCarrierPlayback is null
+                ? null
+                : new PendingCarrierPlayback(
+                    preparedCarrierPlayback,
+                    pendingCommandTime,
+                    pendingCommandTime + 600);
+            pendingDirectPlayback = preparedCarrierPlayback is not null || preparedDirectPlayback is null
                 ? null
                 : new PendingDirectPlayback(
                     Objects.LocalPlayer?.Address ?? 0,
@@ -3485,6 +4320,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             preparedCommand = null;
             preparedPose = null;
             preparedDirectPlayback = null;
+            preparedCarrierPlayback = null;
         }
     }
 
@@ -3625,6 +4461,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        agentExecuteEmoteHook?.Dispose();
         var refreshCancellation = modRefreshCancellation;
         modRefreshCancellation = null;
         refreshCancellation?.Cancel();
@@ -3660,6 +4497,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         penumbra.Dispose();
         sync.DisposeAsync().AsTask().GetAwaiter().GetResult();
         windows.RemoveAllWindows();
+        NoireLibMain.Dispose();
     }
 }
 
@@ -3670,6 +4508,7 @@ public sealed record AnimationSuggestion(
     string ModName,
     string ActivatedTrigger = "");
 public sealed record EmoteTarget(uint Id, string Name, string Command);
+public sealed record TypedEmoteCandidate(string Directory, string ModName, EmoteTarget Emote);
 public sealed record AnimationCommandTarget(
     string ModDirectory,
     string ModName,

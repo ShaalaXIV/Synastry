@@ -24,6 +24,47 @@
           "Microsoft.AspNetCore.SignalR.Client.Core": "10.0.10"
         }
       },
+      "NoireLib": {
+        "type": "Direct",
+        "requested": "[2.0.1, )",
+        "resolved": "2.0.1",
+        "contentHash": "urkafST3lssZC2S3BaKz2HnViu/bUHiI5luzkY05/r49WhQMxA0vhDyuDQYzzIEMikAPh45HlD2AQjxvVFAwrA==",
+        "dependencies": {
+          "BCrypt.Net-Next": "4.2.0",
+          "Castle.Core": "5.2.1",
+          "Konscious.Security.Cryptography.Argon2": "1.3.1",
+          "Newtonsoft.Json": "13.0.4",
+          "SharpGLTF.Core": "1.0.6",
+          "System.Data.SQLite": "2.0.4"
+        }
+      },
+      "BCrypt.Net-Next": {
+        "type": "Transitive",
+        "resolved": "4.2.0",
+        "contentHash": "gwLD2KfCuwQesP17aVh4h6lpiMPEVt5Lbpndo0ej903hNUUTtyxt3ARdDjmuydBRTAUICc7OVKVbaOvc6SQYXA=="
+      },
+      "Castle.Core": {
+        "type": "Transitive",
+        "resolved": "5.2.1",
+        "contentHash": "wHARzQA695jwwKreOzNsq54KiGqKP38tv8hi8e2FXDEC/sA6BtrX90tVPDkOfVu13PbEzr00TCV8coikl+D1Iw==",
+        "dependencies": {
+          "System.Diagnostics.EventLog": "6.0.0"
+        }
+      },
+      "Konscious.Security.Cryptography.Argon2": {
+        "type": "Transitive",
+        "resolved": "1.3.1",
+        "contentHash": "T+OAGwzYYXftahpOxO7J4xA5K6urxwGnWQf3M+Jpi+76Azv/0T3M5SuN+h7/QvXuiqNw3ZEZ5QqVLI5ygDAylw==",
+        "dependencies": {
+          "Konscious.Security.Cryptography.Blake2": "1.1.1",
+          "System.Memory": "4.5.4"
+        }
+      },
+      "Konscious.Security.Cryptography.Blake2": {
+        "type": "Transitive",
+        "resolved": "1.1.1",
+        "contentHash": "odwOyzj/J/lHJZNwFWJGU/LRecBShupAJ2S8TQqZfhUe9niHzu/voBYK5wuVKsvSpzbfupKQYZguVyIk1sgOkQ=="
+      },
       "Microsoft.AspNetCore.Connections.Abstractions": {
         "type": "Transitive",
         "resolved": "10.0.10",
@@ -127,6 +168,31 @@
         "type": "Transitive",
         "resolved": "10.0.10",
         "contentHash": "5wu/GrYVd8mG2DVUw3vFJzF+O336TyTGg/Kmcgw9bfwYhCoFiV5lR5QeEmKecJyrW4W54nMfD3p3589E8a7czQ=="
+      },
+      "Newtonsoft.Json": {
+        "type": "Transitive",
+        "resolved": "13.0.4",
+        "contentHash": "pdgNNMai3zv51W5aq268sujXUyx7SNdE2bj1wZcWjAQrKMFZV260lbqYop1d2GM67JI1huLRwxo9ZqnfF/lC6A=="
+      },
+      "SharpGLTF.Core": {
+        "type": "Transitive",
+        "resolved": "1.0.6",
+        "contentHash": "m3qIvUnpvRRfQ0fp0TFfpPk+vsHkCIOf/uIVJ19fe9dwa29KCO/PeHVXKAph8nsFxFLXitTIIqCa5W8JGLMhBg=="
+      },
+      "System.Data.SQLite": {
+        "type": "Transitive",
+        "resolved": "2.0.4",
+        "contentHash": "iiawN8l6QBzLZTK2BQRyq/1XmvDONghjvXoDhkkQgPTG8bRIsmIxJV1+Lc75fviNgMnjAE3wxReVJAF7P1hkoQ=="
+      },
+      "System.Diagnostics.EventLog": {
+        "type": "Transitive",
+        "resolved": "6.0.0",
+        "contentHash": "lcyUiXTsETK2ALsZrX+nWuHSIQeazhqPphLfaRxzdGaG93+0kELqpgEHtwWOlQe7+jSFnKwaCAgL4kjeZCQJnw=="
+      },
+      "System.Memory": {
+        "type": "Transitive",
+        "resolved": "4.5.4",
+        "contentHash": "1MbJTHS1lZ4bS4FmsJjnuGJOu88ZzTT2rLvrhW7Ygic+pC0NWA+3hgAen0HRdsocuQXCkUTdFn9yHJJhsijDXw=="
       }
     }
   }
