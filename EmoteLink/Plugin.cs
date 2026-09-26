@@ -145,7 +145,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly Dictionary<string, PoseTarget> optionPoses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<PoseTarget>> modPoses = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, IReadOnlyList<EmoteTarget>> modEmotes = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, bool> optionGroupMulti = new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> optionDefaultsChecked = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> modSyncKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> modCatalogKeys = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> convertedMods = new(StringComparer.OrdinalIgnoreCase);
@@ -717,8 +717,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         foreach (var optionPose in payload.OptionPoses)
             optionPoses[OptionPoseKey(mod.Directory, optionPose.Group, optionPose.Option)] =
                 new PoseTarget(optionPose.Kind, optionPose.Index);
-        foreach (var (group, multi) in payload.MultiSelectGroups)
-            optionGroupMulti[OptionGroupKey(mod.Directory, group)] = multi;
         modPoses[mod.Directory] = payload.Poses;
         var groups = payload.OptionGroups
             .Select(group => new ModOptionGroup(group.Name, group.Options, group.IsMultiSelect))
@@ -936,12 +934,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             foreach (var group in groups)
             {
-                optionGroupMulti.Remove(OptionGroupKey(directory, group.Name));
                 foreach (var option in group.Options)
                     optionPoses.Remove(OptionPoseKey(directory, group.Name, option));
             }
         }
         optionGroups.Remove(directory);
+        optionDefaultsChecked.Remove(directory);
         modPoses.Remove(directory);
         modEmotes.Remove(directory);
         modSyncKeys.Remove(directory);
@@ -1000,14 +998,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         SaveOrganization();
         if (broadcastSelection && selected && sync.IsInRoom && modSyncKeys.TryGetValue(directory, out var modKey))
             RunSync(sync.SetOptionSelectionAsync(modKey, group, option), $"Selected {option} for the room.");
-    }
-
-    public void ClearOptionSelection(string directory, string group)
-    {
-        if (!configuration.ModOptionSelections.TryGetValue(directory, out var groups) ||
-            !groups.Remove(group)) return;
-        if (groups.Count == 0) configuration.ModOptionSelections.Remove(directory);
-        SaveOrganization();
     }
 
     public string? GetRemoteOptionSelector(string directory, string group, string option)
@@ -2210,20 +2200,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
             ReportPlaybackFailure(name, "Penumbra has no collection assigned to your character.");
             return;
         }
-        if (TryDescribeMissingOptionSelection(collection.Value.Id, directory, name, out var optionFailure))
+        ClearRemotePlaybacksInCollection(collection.Value.Id);
+        var selections = GetActivationSelections(directory);
+        var activation = penumbra.Activate(collection.Value.Id, directory, name, selections);
+        if (!activation.Success)
         {
-            ReportPlaybackFailure(name, optionFailure);
-            return;
-        }
-        var selections = configuration.ModOptionSelections.TryGetValue(directory, out var savedOptions)
-            ? savedOptions
-            : new Dictionary<string, List<string>>();
-        if (!penumbra.Activate(collection.Value.Id, directory, name, selections))
-        {
-            Log.Warning("Temporary activation failed for {Mod}.", name);
-            ReportPlaybackFailure(
-                name,
-                "Penumbra rejected the temporary activation. Check that the mod is enabled for your character's collection.");
+            ReportPlaybackFailure(name, activation.Error);
             return;
         }
 
@@ -2284,11 +2266,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
                         "Use Rediscover Mods in Penumbra, then try again.");
                     return;
                 }
-                if (!penumbra.Activate(collection.Value.Id, directory, name, selections))
+                var reactivation = penumbra.Activate(collection.Value.Id, directory, name, selections);
+                if (!reactivation.Success)
                 {
                     ReportPlaybackFailure(
                         name,
-                        "Penumbra reloaded the conversion but would not reactivate the selected mod options.");
+                        $"Penumbra reloaded the conversion but would not reactivate it: {reactivation.Error}");
                     return;
                 }
             }
@@ -2318,11 +2301,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     "Use Rediscover Mods in Penumbra, then try again.");
                 return;
             }
-            if (!penumbra.Activate(collection.Value.Id, directory, name, selections))
+            var reactivation = penumbra.Activate(collection.Value.Id, directory, name, selections);
+            if (!reactivation.Success)
             {
                 ReportPlaybackFailure(
                     name,
-                    "Penumbra reloaded the restored mod but would not reactivate its selected options.");
+                    $"Penumbra reloaded the restored mod but would not reactivate it: {reactivation.Error}");
                 return;
             }
         }
@@ -2398,6 +2382,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
 
         ClearTemporaryAssignmentsInternal(false, false);
+        ClearRemotePlaybacksInCollection(collection.Value.Id);
         var sourceCandidate = new EmoteConversionCandidate(
             source.EmoteId,
             source.Command,
@@ -2449,16 +2434,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
 
         var selections = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
-        if (!penumbra.Activate(
-                collection.Value.Id,
-                registeredMod.Directory,
-                registeredMod.Name,
-                selections,
-                10000))
+        var redirectActivation = penumbra.Activate(
+            collection.Value.Id,
+            registeredMod.Directory,
+            registeredMod.Name,
+            selections,
+            10000);
+        if (!redirectActivation.Success)
         {
             ActivateLockedVanillaDirectFallback(
                 source,
-                "Penumbra would not temporarily enable Synastry Redirect.");
+                $"Penumbra would not temporarily enable Synastry Redirect: {redirectActivation.Error}");
             return;
         }
 
@@ -2529,7 +2515,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         if (candidates.Count == 0)
         {
-            var reason = MissingCarrierMessage(family);
+            var reason = MissingCarrierMessage(family, sourceLoop);
             if (!inPlaceEmoteConverter.IsConverted(penumbra.GetModRoot(), directory))
                 return new InPlaceConversionResult(false, reason);
         }
@@ -2555,6 +2541,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
     {
         var sourceLoop = source.Timelines.Any(timeline => timeline.IsPersistentLoop);
         var family = ClassifyCarrierFamily(source.Command, source, sourceLoop);
+        // Emotes outside the curated families would otherwise have no carrier at all and fall
+        // back to local-only direct play. They use the same generic carriers as a locked vanilla emote.
+        var useGenericCarriers = standaloneVanillaRedirect || family == CarrierFamily.None;
         var sourceSlots = source.Timelines.Select(timeline => timeline.Slot).ToHashSet();
         return emotePlaybackById.Values
             .Where(candidate =>
@@ -2563,10 +2552,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 IsSafeCarrierEmote(candidate.EmoteId) &&
                 candidate.Timelines.Any(timeline => timeline.IsPersistentLoop) == sourceLoop &&
                 candidate.Timelines.Any(timeline => sourceSlots.Contains(timeline.Slot)))
-            .Where(candidate => standaloneVanillaRedirect
+            .Where(candidate => useGenericCarriers
                 ? IsAllowedStandaloneCarrier(family, sourceLoop, candidate.Command)
                 : IsAllowedCarrier(family, candidate.Command))
-            .OrderBy(candidate => standaloneVanillaRedirect
+            .OrderBy(candidate => useGenericCarriers
                 ? StandaloneCarrierPriority(family, sourceLoop, candidate.Command)
                 : CarrierPriority(family, candidate.Command))
             .ThenByDescending(candidate =>
@@ -2714,7 +2703,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         return int.MaxValue;
     }
 
-    private static string MissingCarrierMessage(CarrierFamily family) => family switch
+    private static string MissingCarrierMessage(CarrierFamily family, bool sourceLoop) => family switch
     {
         CarrierFamily.LoopingDance =>
             "This animation uses the Looping Dance Rework. Unlock Bee's Knees, Gold Dance, Thavnairian Dance, " +
@@ -2727,8 +2716,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
             "Synastry routes /dote through /blowkiss. Unlock Blow Kiss, then try again.",
         CarrierFamily.OneShot =>
             "This one-shot animation needs Wave, Clap, Cheer, or Bow as a starter carrier.",
+        _ when sourceLoop =>
+            "This looping animation needs Wring Hands, Sweep, Water, or one of the looping dances as a carrier. " +
+            "Unlock one of them, then try again.",
         _ =>
-            "This animation belongs to a special posture, prop, VFX, or one-shot family without an approved carrier.",
+            "This animation needs Wave, Clap, Cheer, or Bow as a carrier. Unlock one of them, then try again.",
     };
 
     private static bool IsSafeCarrierEmote(uint emoteId)
@@ -2748,26 +2740,64 @@ public sealed unsafe class Plugin : IDalamudPlugin
         return true;
     }
 
-    private bool TryDescribeMissingOptionSelection(
-        Guid collectionId,
-        string directory,
-        string name,
-        out string message)
+    private IReadOnlyDictionary<string, List<string>> GetActivationSelections(string directory)
     {
-        message = "";
-        if (!optionGroups.TryGetValue(directory, out var groups) || groups.Count == 0) return false;
-        var current = penumbra.GetCurrentOptions(collectionId, directory, name);
+        EnsureDefaultOptionSelections(directory);
+        return configuration.ModOptionSelections.TryGetValue(directory, out var saved)
+            ? saved
+            : new Dictionary<string, List<string>>();
+    }
+
+    /// <summary>
+    /// Fills every option group the user has not chosen yet with the mod author's Penumbra
+    /// defaults, so Synastry starts from the same setup Penumbra shows for a fresh install.
+    /// Explicit choices are never replaced.
+    /// </summary>
+    public void EnsureDefaultOptionSelections(string directory)
+    {
+        if (optionDefaultsChecked.Contains(directory) ||
+            !optionGroups.TryGetValue(directory, out var groups)) return;
         configuration.ModOptionSelections.TryGetValue(directory, out var saved);
-        var missing = groups
-            .Where(group => !group.IsMultiSelect && group.Options.Count > 0)
-            .Where(group =>
-                !(saved?.TryGetValue(group.Name, out var selected) == true && selected.Count > 0) &&
-                !(current.TryGetValue(group.Name, out var currentSelected) && currentSelected.Count > 0))
-            .Select(group => group.Name)
-            .ToList();
-        if (missing.Count == 0) return false;
-        message = "Options not set. Please ensure all required options are selected.";
-        return true;
+        if (groups.All(group => saved?.ContainsKey(group.Name) == true))
+        {
+            optionDefaultsChecked.Add(directory);
+            return;
+        }
+
+        // Checked once per indexed state; this runs every frame while a mod's options are open.
+        optionDefaultsChecked.Add(directory);
+        var root = penumbra.GetModRoot();
+        if (string.IsNullOrWhiteSpace(root)) return;
+        var defaults = AnimationManifestScanner.ReadOptionDefaults(Path.Combine(root, directory));
+        if (defaults.Count == 0) return;
+
+        saved ??= new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        var seeded = 0;
+        foreach (var group in groups)
+        {
+            if (saved.ContainsKey(group.Name)) continue;
+            var groupDefaults = defaults.GetValueOrDefault(group.Name) ??
+                                defaults.FirstOrDefault(pair => pair.Key.Trim()
+                                    .Equals(group.Name.Trim(), StringComparison.OrdinalIgnoreCase)).Value;
+            if (groupDefaults is null) continue;
+            // Keep the index's spelling so the option UI recognizes the choice; activation maps
+            // it back to Penumbra's exact option names.
+            var options = groupDefaults
+                .Select(option => group.Options.FirstOrDefault(candidate =>
+                    candidate.Trim().Equals(option.Trim(), StringComparison.OrdinalIgnoreCase)))
+                .OfType<string>()
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .Take(group.IsMultiSelect ? int.MaxValue : 1)
+                .ToList();
+            if (!group.IsMultiSelect && options.Count == 0) continue;
+            saved[group.Name] = options;
+            seeded++;
+        }
+
+        if (seeded == 0) return;
+        configuration.ModOptionSelections[directory] = saved;
+        SaveOrganization();
+        Log.Debug("Applied Penumbra default options to {Count} unset group(s) in {ModDirectory}.", seeded, directory);
     }
 
     private void ReportPlaybackFailure(string modName, string reason)
@@ -2841,21 +2871,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private static string CatalogFingerprint(string modSyncKey) =>
         Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(modSyncKey)));
 
-    private static SortedSet<string> ReadPapGamePaths(string modPath)
-    {
-        var gamePaths = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var file in Directory.EnumerateFiles(modPath, "*.json", SearchOption.TopDirectoryOnly))
-        {
-            try
-            {
-                using var document = JsonDocument.Parse(File.ReadAllText(file));
-                CollectPapGamePaths(document.RootElement, gamePaths);
-            }
-            catch { }
-        }
-        return gamePaths;
-    }
-
     private static string BuildModSyncKey(string modName, IEnumerable<string> gamePaths)
     {
         var identity = NormalizeModKey(modName) + "\n" + string.Join('\n', gamePaths.Select(path => path.ToLowerInvariant()));
@@ -2863,136 +2878,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         return $"{NormalizeModKey(modName)}:{hash}";
     }
 
-    private static void CollectPapGamePaths(JsonElement element, ISet<string> paths)
-    {
-        if (element.ValueKind == JsonValueKind.Object)
-        {
-            foreach (var property in element.EnumerateObject())
-            {
-                if (property.NameEquals("Files") && property.Value.ValueKind == JsonValueKind.Object)
-                {
-                    foreach (var file in property.Value.EnumerateObject())
-                        if (file.Name.EndsWith(".pap", StringComparison.OrdinalIgnoreCase))
-                            paths.Add(file.Name.Replace('\\', '/'));
-                }
-                else CollectPapGamePaths(property.Value, paths);
-            }
-        }
-        else if (element.ValueKind == JsonValueKind.Array)
-        {
-            foreach (var item in element.EnumerateArray()) CollectPapGamePaths(item, paths);
-        }
-    }
-
-    private void IndexPoseOptions(string modPath, string directory)
-    {
-        var modPapPaths = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
-        foreach (var file in Directory.EnumerateFiles(modPath, "*.json", SearchOption.TopDirectoryOnly))
-        {
-            try
-            {
-                using var document = JsonDocument.Parse(File.ReadAllText(file));
-                var root = document.RootElement;
-                CollectPapGamePaths(root, modPapPaths);
-                if (file.EndsWith("default_mod.json", StringComparison.OrdinalIgnoreCase)) continue;
-                if (file.EndsWith("meta.json", StringComparison.OrdinalIgnoreCase))
-                {
-                    if (root.TryGetProperty("Groups", out var groupsElement) &&
-                        groupsElement.ValueKind == JsonValueKind.Array)
-                    {
-                        foreach (var groupElement in groupsElement.EnumerateArray())
-                            IndexPoseOptionGroup(groupElement, directory);
-                    }
-                    continue;
-                }
-
-                IndexPoseOptionGroup(root, directory);
-            }
-            catch (Exception ex)
-            {
-                Log.Debug(ex, "Could not inspect pose options in {File}.", file);
-            }
-        }
-        modPoses[directory] = DetectPoseTargets(modPapPaths);
-    }
-
-    private void IndexPoseOptionGroup(JsonElement groupElement, string directory)
-    {
-        if (groupElement.ValueKind != JsonValueKind.Object ||
-            !groupElement.TryGetProperty("Name", out var groupNameElement) ||
-            !groupElement.TryGetProperty("Options", out var optionsElement)) return;
-        var groupName = groupNameElement.GetString();
-        if (string.IsNullOrWhiteSpace(groupName) || optionsElement.ValueKind != JsonValueKind.Array) return;
-        var isMulti = groupElement.TryGetProperty("Type", out var typeElement) &&
-            string.Equals(typeElement.GetString(), "Multi", StringComparison.OrdinalIgnoreCase);
-        optionGroupMulti[OptionGroupKey(directory, groupName)] = isMulti;
-
-        foreach (var optionElement in optionsElement.EnumerateArray())
-        {
-            if (!optionElement.TryGetProperty("Name", out var optionNameElement) ||
-                !optionElement.TryGetProperty("Files", out var filesElement)) continue;
-            var optionName = optionNameElement.GetString();
-            if (string.IsNullOrWhiteSpace(optionName) || filesElement.ValueKind != JsonValueKind.Object) continue;
-            var paths = filesElement.EnumerateObject().Select(property => property.Name).ToList();
-            var pose = DetectPoseTarget(paths, optionName);
-            if (pose is not null) optionPoses[OptionPoseKey(directory, groupName, optionName)] = pose;
-        }
-    }
-
-    private static PoseTarget? DetectPoseTarget(IReadOnlyList<string> paths, string optionName)
-        => DetectPoseTargets(paths, optionName).FirstOrDefault();
-
-    private static IReadOnlyList<PoseTarget> DetectPoseTargets(IEnumerable<string> paths, string optionName = "")
-    {
-        var poses = new List<PoseTarget>();
-        foreach (var rawPath in paths.Where(path => path.EndsWith(".pap", StringComparison.OrdinalIgnoreCase)))
-        {
-            var path = rawPath.Replace('\\', '/').ToLowerInvariant();
-            var candidates = new[]
-            {
-                (Kind: PoseKind.GroundSit, Pattern: @"j_pose(\d+)"),
-                (Kind: PoseKind.Sit, Pattern: @"s_pose(\d+)"),
-                (Kind: PoseKind.Doze, Pattern: @"l_pose(\d+)"),
-                (Kind: PoseKind.Idle, Pattern: @"(?:^|[/_])pose(\d+)")
-            };
-            foreach (var candidate in candidates)
-            {
-                var match = Regex.Match(path, candidate.Pattern, RegexOptions.IgnoreCase);
-                if (match.Success && byte.TryParse(match.Groups[1].Value, out var index) &&
-                    index <= PoseService.MaxPoseIndex)
-                {
-                    var pose = new PoseTarget(candidate.Kind, index);
-                    if (!poses.Contains(pose)) poses.Add(pose);
-                    break;
-                }
-            }
-            if (path.Contains("/resident/idle.pap") && !poses.Contains(new PoseTarget(PoseKind.Idle, 0)))
-                poses.Add(new PoseTarget(PoseKind.Idle, 0));
-
-            PoseKind? kind = path.Contains("/jmn/") ? PoseKind.GroundSit
-                : path.Contains("/sit/") ? PoseKind.Sit
-                : path.Contains("/doze/") ? PoseKind.Doze
-                : null;
-            if (kind is not null)
-            {
-                var labelIndex = Regex.Match(optionName, @"(\d+)(?!.*\d)");
-                var pose = new PoseTarget(kind.Value,
-                    labelIndex.Success && byte.TryParse(labelIndex.Value, out var index)
-                        ? PoseService.ClampIndex(index)
-                        : (byte)0);
-                if (!poses.Contains(pose)) poses.Add(pose);
-            }
-        }
-        return poses
-            .OrderBy(pose => pose.Kind)
-            .ThenBy(pose => pose.Index)
-            .ToList();
-    }
-
     private static string OptionPoseKey(string directory, string group, string option) =>
         $"{directory}\u001f{group}\u001f{option}";
-
-    private static string OptionGroupKey(string directory, string group) => $"{directory}\u001f{group}";
 
     private static string PoseLabel(PoseTarget pose) => pose.Kind switch
     {
@@ -3635,6 +3522,14 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 Status = $"Could not start {pending.ModName}'s action timeline.";
             }
         }
+        if (animationStarted)
+        {
+            // Group starts can arrive long after activation, and chair sits walk into the seat.
+            // Measure movement from the real start so neither can cancel the override.
+            movementTrackingStart = Environment.TickCount64 + 2000;
+            hasMovementSample = false;
+            movementFrames = 0;
+        }
         if (animationStarted && pendingSelectionModKey is not null)
         {
             mainWindow.NotifyAnimationStarted();
@@ -4008,16 +3903,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 fingerprint, parts[1], parts[2], label, configuration.CommunityReporterId,
                 metadata.ModName, metadata.AnimationName);
         }
-        var fingerprints = modCatalogKeys
-            .Where(pair => !IsModPrivate(pair.Key))
-            .Select(pair => pair.Value)
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-        _ = sync.GetCommunityRoleLabelsAsync(fingerprints).ContinueWith(task =>
-        {
-            if (!task.IsCompletedSuccessfully) return;
-            foreach (var label in task.Result) receivedCommunityRoleLabels.Enqueue(label);
-        }, TaskScheduler.Default);
+        // The relay answers at most 1,000 fingerprints per request, matching DownloadCommunityTags.
+        foreach (var batch in modCatalogKeys
+                     .Where(pair => !IsModPrivate(pair.Key))
+                     .Select(pair => pair.Value)
+                     .Distinct(StringComparer.OrdinalIgnoreCase)
+                     .Chunk(1000))
+            _ = sync.GetCommunityRoleLabelsAsync(batch).ContinueWith(task =>
+            {
+                if (!task.IsCompletedSuccessfully) return;
+                foreach (var label in task.Result) receivedCommunityRoleLabels.Enqueue(label);
+            }, TaskScheduler.Default);
     }
 
     private void ProcessReceivedCommunityRoleLabels()
@@ -4177,14 +4073,29 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
             var objectIndex = FindObjectIndex(actor.Address);
             var collection = objectIndex < 0 ? null : penumbra.GetCollectionForObject(objectIndex);
-            var selections = configuration.ModOptionSelections.TryGetValue(mod.Directory, out var savedOptions)
-                ? savedOptions
-                : new Dictionary<string, List<string>>();
             ClearRemotePlaybackForActor(actor.Address);
-            if (collection is null || !penumbra.Activate(collection.Value.Id, mod.Directory, mod.Name, selections))
+            if (collection is null)
             {
-                Log.Debug("Skipped nearby animation {SequenceId}; Penumbra could not activate {ModName} for {Sender}.",
-                    signal.SequenceId, mod.Name, signal.SenderName);
+                Log.Debug("Skipped nearby animation {SequenceId}; {Sender} has no Penumbra collection.",
+                    signal.SequenceId, signal.SenderName);
+                continue;
+            }
+            // Temporary settings apply to a whole collection. When the sender resolves to the
+            // collection the local player is animating with, mirroring them would either replace
+            // or compete with the local override, so the local animation wins.
+            if (HasLocalAssignmentInCollection(collection.Value.Id))
+            {
+                Log.Debug(
+                    "Skipped nearby animation {SequenceId}; {Sender} shares the collection of your active animation.",
+                    signal.SequenceId, signal.SenderName);
+                continue;
+            }
+            var activation = penumbra.Activate(
+                collection.Value.Id, mod.Directory, mod.Name, GetActivationSelections(mod.Directory));
+            if (!activation.Success)
+            {
+                Log.Debug("Skipped nearby animation {SequenceId}; Penumbra could not activate {ModName} for {Sender}: {Error}",
+                    signal.SequenceId, mod.Name, signal.SenderName, activation.Error);
                 continue;
             }
 
@@ -4263,6 +4174,21 @@ public sealed unsafe class Plugin : IDalamudPlugin
             RemoveRemoteAssignment(active.Assignment);
             activeRemotePlaybacks.RemoveAt(index);
         }
+    }
+
+    private bool HasLocalAssignmentInCollection(Guid collectionId) =>
+        configuration.ActiveAssignments.Any(assignment =>
+            assignment.CollectionId == collectionId && !remoteAssignments.Contains(assignment));
+
+    private void ClearRemotePlaybacksInCollection(Guid collectionId)
+    {
+        var actors = pendingRemotePlaybacks.Where(pending => pending.Assignment.CollectionId == collectionId)
+            .Select(pending => pending.ActorAddress)
+            .Concat(activeRemotePlaybacks.Where(active => active.Assignment.CollectionId == collectionId)
+                .Select(active => active.ActorAddress))
+            .Distinct()
+            .ToList();
+        foreach (var actor in actors) ClearRemotePlaybackForActor(actor);
     }
 
     private void RemoveRemoteAssignment(TemporaryAssignment assignment)
@@ -4470,6 +4396,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         refreshCancellation?.Dispose();
         modRefreshWorker = null;
         modScanFramePermit.Dispose();
+        // Keep the mods validated so far; otherwise an unload mid-refresh rescans them next time.
+        animationIndexCache.Save();
         ClearAnimationSpeedState();
         animationSpeedController?.Dispose();
         movement.Dispose();

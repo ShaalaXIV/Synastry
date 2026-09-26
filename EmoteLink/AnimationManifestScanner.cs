@@ -149,6 +149,66 @@ internal static class AnimationManifestScanner
         };
     }
 
+    /// <summary>
+    /// Reads each option group's author defaults with Penumbra's exact names. This stays out of
+    /// the portable payload because the relay accepts only the fixed v1 payload properties.
+    /// </summary>
+    public static Dictionary<string, List<string>> ReadOptionDefaults(string modPath)
+    {
+        var defaults = new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+        if (!Directory.Exists(modPath)) return defaults;
+        foreach (var file in Directory.EnumerateFiles(modPath, "*.json", SearchOption.TopDirectoryOnly))
+        {
+            var fileName = Path.GetFileName(file);
+            var isMeta = fileName.Equals("meta.json", StringComparison.OrdinalIgnoreCase);
+            if (!isMeta && !fileName.StartsWith("group_", StringComparison.OrdinalIgnoreCase)) continue;
+            try
+            {
+                using var document = ParseManifest(File.ReadAllBytes(file));
+                var root = document.RootElement;
+                if (!isMeta)
+                    AddOptionDefault(root, defaults);
+                else if (root.TryGetProperty("Groups", out var groups) && groups.ValueKind == JsonValueKind.Array)
+                    foreach (var group in groups.EnumerateArray())
+                        AddOptionDefault(group, defaults);
+            }
+            catch (Exception exception) when (exception is JsonException or IOException or UnauthorizedAccessException)
+            {
+                // Unreadable manifests simply leave Penumbra's own defaults in charge.
+            }
+        }
+        return defaults;
+    }
+
+    private static void AddOptionDefault(JsonElement group, IDictionary<string, List<string>> defaults)
+    {
+        if (group.ValueKind != JsonValueKind.Object ||
+            !group.TryGetProperty("Name", out var nameElement) || nameElement.ValueKind != JsonValueKind.String ||
+            !group.TryGetProperty("Options", out var optionsElement) ||
+            optionsElement.ValueKind != JsonValueKind.Array) return;
+        var groupName = nameElement.GetString();
+        if (string.IsNullOrWhiteSpace(groupName)) return;
+        var options = optionsElement.EnumerateArray()
+            .Select(option => option.ValueKind == JsonValueKind.Object &&
+                              option.TryGetProperty("Name", out var optionName) &&
+                              optionName.ValueKind == JsonValueKind.String
+                ? optionName.GetString() ?? ""
+                : "")
+            .ToList();
+        ulong setting = 0;
+        if (group.TryGetProperty("DefaultSettings", out var defaultElement) &&
+            defaultElement.ValueKind == JsonValueKind.Number && !defaultElement.TryGetUInt64(out setting))
+            setting = 0;
+        var isSingle = !group.TryGetProperty("Type", out var typeElement) ||
+                       string.Equals(typeElement.GetString(), "Single", StringComparison.OrdinalIgnoreCase);
+        // Penumbra stores a single-select default as an option index and every other group type
+        // as a bit mask of enabled options.
+        var selected = isSingle
+            ? new List<string> { options.ElementAtOrDefault(setting < (ulong)options.Count ? (int)setting : 0) ?? "" }
+            : options.Where((_, index) => index < 64 && (setting & (1UL << index)) != 0).ToList();
+        defaults[groupName] = selected.Where(option => option.Length > 0).ToList();
+    }
+
     public static string SerializePayload(PortableAnimationIndexPayload payload) =>
         JsonSerializer.Serialize(payload, PayloadSerializerOptions);
 
