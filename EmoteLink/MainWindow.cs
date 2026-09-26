@@ -1746,6 +1746,7 @@ public sealed class MainWindow : Window
             animationActivated = DrawAnimationButtons(mod, detectedPoses, detectedEmotes, suggestionMode);
         if (groups.Count > 0)
         {
+            plugin.EnsureDefaultOptionSelections(mod.Directory);
             ImGui.Spacing();
             ImGui.TextColored(AccentColor, "MOD OPTIONS");
         }
@@ -1757,7 +1758,7 @@ public sealed class MainWindow : Window
             {
                 var selectedOption = group.Options.FirstOrDefault(option =>
                     plugin.IsOptionSelected(mod.Directory, group.Name, option));
-                var preview = selectedOption ?? "Not set";
+                var preview = selectedOption ?? "Mod default";
                 if (groupSelectedBy is not null) ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
                 ImGui.SetNextItemWidth(MathF.Min(260f, MathF.Max(120f, ImGui.GetContentRegionAvail().X * 0.52f)));
                 var comboOpen = ImGui.BeginCombo(group.Name, preview);
@@ -1767,10 +1768,6 @@ public sealed class MainWindow : Window
                     ImGui.SetTooltip($"{groupSelectedBy} selected an option in this group.");
                 if (comboOpen)
                 {
-                    if (ImGui.Selectable("Not set", selectedOption is null))
-                        plugin.ClearOptionSelection(mod.Directory, group.Name);
-                    if (selectedOption is null) ImGui.SetItemDefaultFocus();
-                    ImGui.Separator();
                     foreach (var option in group.Options)
                     {
                         ImGui.PushID(option);

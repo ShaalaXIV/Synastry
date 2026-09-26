@@ -105,7 +105,7 @@ public sealed class PenumbraService : IDisposable
         }
     }
 
-    public bool Activate(Guid collectionId, string directory, string name,
+    public (bool Success, string Error) Activate(Guid collectionId, string directory, string name,
         IReadOnlyDictionary<string, List<string>> selectedOptions, int priority = 9999)
     {
         try
@@ -114,33 +114,104 @@ public sealed class PenumbraService : IDisposable
             if (code != 0)
             {
                 log.Warning("Could not read Penumbra settings for {Mod}; error code {ErrorCode}.", name, code);
-                return false;
+                return (false, DescribeActivationError(code));
             }
 
+            // Penumbra rejects the whole request when any group or option name is not an exact
+            // match, including a single-select group sent with no option. Saved selections can
+            // drift from the installed mod (trimmed names, updated packs, older Synastry builds),
+            // so every name is resolved against the mod's current option list first.
+            var available = GetAvailableGroups(directory, name);
+            var options = new Dictionary<string, IReadOnlyList<string>>(StringComparer.Ordinal);
+            var dropped = new List<string>();
             // A newly installed mod can legitimately have no collection settings yet.
             // Penumbra's temporary-settings API creates default settings in that case and
             // emits the cache refresh needed to make the mod's PAP files immediately usable.
-            var options = current is { } currentSettings
-                ? currentSettings.Item3.ToDictionary(pair => pair.Key, pair => pair.Value.ToList())
-                : new Dictionary<string, List<string>>(StringComparer.OrdinalIgnoreCase);
+            if (current is { } currentSettings)
+                foreach (var (group, selections) in currentSettings.Item3)
+                    AddResolvedSelection(options, available, group, selections, null);
             foreach (var (group, selections) in selectedOptions)
-                options[group] = selections.ToList();
-            var readonlyOptions = options.ToDictionary(
-                pair => pair.Key,
-                pair => (IReadOnlyList<string>)pair.Value);
-            var settings = (false, true, priority,
-                (IReadOnlyDictionary<string, IReadOnlyList<string>>)readonlyOptions);
+                AddResolvedSelection(options, available, group, selections, dropped);
+            if (dropped.Count > 0)
+                log.Warning("Ignored saved options for {Mod} that no longer match Penumbra: {Dropped}",
+                    name, string.Join("; ", dropped));
+
+            var settings = (false, true, priority, (IReadOnlyDictionary<string, IReadOnlyList<string>>)options);
             var result = setTemporary.InvokeFunc(collectionId, directory, name, settings, Source, 0);
-            if (result is not (0 or 1))
-                log.Warning("Penumbra rejected temporary activation for {Mod}; error code {ErrorCode}.", name, result);
-            return result is 0 or 1;
+            if (result is 0 or 1) return (true, "");
+            log.Warning("Penumbra rejected temporary activation for {Mod}; error code {ErrorCode}.", name, result);
+            return (false, DescribeActivationError(result));
         }
         catch (Exception ex)
         {
             log.Error(ex, "Could not temporarily activate {Mod}.", name);
-            return false;
+            return (false, $"Penumbra could not be reached: {ex.GetBaseException().Message}");
         }
     }
+
+    private static void AddResolvedSelection(
+        IDictionary<string, IReadOnlyList<string>> options,
+        IReadOnlyDictionary<string, PenumbraOptionGroup>? available,
+        string group,
+        IReadOnlyList<string> selections,
+        List<string>? dropped)
+    {
+        if (available is null)
+        {
+            // Without Penumbra's option list the request is sent unchanged, as before.
+            options[group] = selections.ToList();
+            return;
+        }
+
+        var target = MatchName(available.Keys, group);
+        if (target is null)
+        {
+            dropped?.Add($"group '{group}'");
+            return;
+        }
+
+        var definition = available[target];
+        var resolved = new List<string>(selections.Count);
+        foreach (var selection in selections)
+        {
+            var option = MatchName(definition.Options, selection);
+            if (option is null) dropped?.Add($"'{group}' option '{selection}'");
+            else if (!resolved.Contains(option, StringComparer.Ordinal)) resolved.Add(option);
+        }
+
+        if (!definition.IsMultiSelect)
+        {
+            // Penumbra cannot leave a single-select group empty. Keep the collection's or the
+            // mod's default choice instead of sending a request it will reject.
+            if (resolved.Count == 0) return;
+            resolved.RemoveRange(1, resolved.Count - 1);
+        }
+        options[target] = resolved;
+    }
+
+    private static string? MatchName(IEnumerable<string> candidates, string requested)
+    {
+        var list = candidates as IReadOnlyCollection<string> ?? candidates.ToList();
+        return list.FirstOrDefault(candidate => candidate.Equals(requested, StringComparison.Ordinal)) ??
+               list.FirstOrDefault(candidate => candidate.Equals(requested, StringComparison.OrdinalIgnoreCase)) ??
+               list.FirstOrDefault(candidate =>
+                   candidate.Trim().Equals(requested.Trim(), StringComparison.OrdinalIgnoreCase));
+    }
+
+    private static string DescribeActivationError(int code) => code switch
+    {
+        2 => "Penumbra could not find your character's collection (CollectionMissing).",
+        3 => "Penumbra no longer has this mod under that folder. Refresh the library and try again (ModMissing).",
+        4 or 5 => "A saved option no longer exists in this mod. Re-select its options and try again " +
+                  $"({(code == 4 ? "OptionGroupMissing" : "OptionMissing")}).",
+        17 => "Penumbra is shutting down (SystemDisposed).",
+        19 => "Another plugin has locked this mod's temporary settings in your collection " +
+              "(TemporarySettingDisallowed). Clear that plugin's override or its temporary settings in Penumbra.",
+        20 => "Your character's collection cannot hold temporary settings, for example the None or a " +
+              "temporary collection (TemporarySettingImpossible).",
+        22 => "Your character's collection is not active in Penumbra (CollectionInactive).",
+        _ => $"Penumbra rejected the temporary activation (error code {code})."
+    };
 
     public string? GetModRoot()
     {
@@ -152,32 +223,24 @@ public sealed class PenumbraService : IDisposable
         }
     }
 
-    public IReadOnlyList<ModOptionGroup> GetOptionGroups(string directory, string name)
+    /// <summary>
+    /// Penumbra's exact group and option names. Only <c>Single</c> (0) groups are single-select;
+    /// <c>Multi</c> (1), <c>Imc</c> (2), and <c>Combining</c> (3) all accept several options.
+    /// </summary>
+    public IReadOnlyDictionary<string, PenumbraOptionGroup>? GetAvailableGroups(string directory, string name)
     {
         try
         {
-            var groups = getAvailableSettings.InvokeFunc(directory, name);
-            return groups?.Select(group => new ModOptionGroup(
-                    group.Key, group.Value.Options, group.Value.GroupType == 2))
-                .ToList() ?? [];
+            return getAvailableSettings.InvokeFunc(directory, name)?.ToDictionary(
+                group => group.Key,
+                group => new PenumbraOptionGroup(group.Value.Options, group.Value.GroupType != 0),
+                StringComparer.Ordinal);
         }
         catch (Exception ex)
         {
             log.Warning(ex, "Could not read options for {Mod}.", name);
-            return [];
+            return null;
         }
-    }
-
-    public Dictionary<string, List<string>> GetCurrentOptions(Guid collectionId, string directory, string name)
-    {
-        try
-        {
-            var (code, settings) = getSettings.InvokeFunc(collectionId, directory, name, false);
-            return code == 0 && settings is not null
-                ? settings.Value.Item3.ToDictionary(pair => pair.Key, pair => pair.Value.ToList())
-                : [];
-        }
-        catch { return []; }
     }
 
     public IReadOnlyList<string> GetChangedItemNames(string directory, string name)
@@ -448,5 +511,7 @@ public sealed class PenumbraService : IDisposable
 }
 
 internal sealed record PenumbraModListEntry(string Identifier, string Name, string Folder, string FullPath);
+
+public sealed record PenumbraOptionGroup(IReadOnlyList<string> Options, bool IsMultiSelect);
 
 public sealed record ModOptionGroup(string Name, IReadOnlyList<string> Options, bool IsMultiSelect);
