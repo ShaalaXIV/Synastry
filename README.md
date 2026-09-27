@@ -43,6 +43,15 @@ When Penumbra finishes an accepted install, Synastry indexes only that mod and u
 
 Synastry is not intended for exchanging paid or otherwise restricted animations. Please support community creators and only share files you are permitted to share. A creator can ask the relay moderation team to block an exact package, animation fingerprint, or mod family from future sharing.
 
+## FREE USE mode
+
+A room member can turn on **FREE USE mode** in the room panel to hand their role choice to the rest of the room. Everyone sees a **FREE USE** tag on that member.
+
+- When someone picks their own role, Synastry asks which role each FREE USE member should play. Their role shows in purple, and the prompt copies their mod options so they can be adjusted for the other role before choosing.
+- The FREE USE member's Synastry applies those options temporarily, without saving them, prepares the chosen role, and readies automatically. A chat line says who chose what.
+- The relay only delivers a choice to a member who still has FREE USE on and already has that animation. Private mods are never used.
+- FREE USE turns off when the member leaves the room, and can be switched off at any time.
+
 ## Other features
 
 - Automatically lists Penumbra mods containing animation files.

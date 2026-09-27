@@ -1,3 +1,4 @@
+using Microsoft.AspNetCore.SignalR;
 using Microsoft.AspNetCore.SignalR.Client;
 using Microsoft.AspNetCore.Http.Connections;
 using System.Security.Cryptography;
@@ -18,6 +19,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
     private IReadOnlyDictionary<string, int> matchCounts = EmptyMatchCounts;
     private int onlineUserCount = -1;
     private string? desiredRoomCode;
+    private bool desiredFreeUse;
     private string desiredDisplayName = "Player";
     private string desiredLocalScope = "";
     private uint desiredHomeWorldId;
@@ -33,6 +35,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public event Action<RoleLabelDto>? RoleLabelChanged;
     public event Action<CommunityRoleLabelDto>? CommunityRoleLabelChanged;
     public event Action<AnimationSuggestionDeclinedDto>? AnimationSuggestionDeclined;
+    public event Action<FreeUseDirectiveDto>? FreeUseDirected;
     public string Status { get; private set; } = "Disconnected";
     public bool IsConnected => connection?.State == HubConnectionState.Connected;
     public int? OnlineUserCount => Volatile.Read(ref onlineUserCount) is var count && count >= 0 ? count : null;
@@ -45,6 +48,8 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public RoomStateDto? Room => Volatile.Read(ref room);
     public IReadOnlyDictionary<string, int> MatchCounts => Volatile.Read(ref matchCounts);
     public bool IsInRoom => Volatile.Read(ref room) is not null;
+    public bool IsFreeUse => Room?.Members.Any(member =>
+        member.ConnectionId == connection?.ConnectionId && member.FreeUse) == true;
 
     public async Task ConnectAsync(string baseUrl)
     {
@@ -73,12 +78,14 @@ public sealed class AnimationSyncService : IAsyncDisposable
         hub.On<int>("OnlineUserCountChanged", UpdateOnlineUserCount);
         hub.On<AnimationSuggestionDeclinedDto>("AnimationSuggestionDeclined",
             decline => AnimationSuggestionDeclined?.Invoke(decline));
+        hub.On<FreeUseDirectiveDto>("FreeUseDirected", directive => FreeUseDirected?.Invoke(directive));
         hub.On<string>("RemovedFromRoom", reason =>
         {
             lock (gate)
             {
                 Volatile.Write(ref room, null);
                 desiredRoomCode = null;
+                desiredFreeUse = false;
                 Volatile.Write(ref matchCounts, EmptyMatchCounts);
             }
             Status = reason;
@@ -429,7 +436,11 @@ public sealed class AnimationSyncService : IAsyncDisposable
 
     public async Task LeaveRoomAsync()
     {
-        lock (gate) desiredRoomCode = null;
+        lock (gate)
+        {
+            desiredRoomCode = null;
+            desiredFreeUse = false;
+        }
         if (connection?.State == HubConnectionState.Connected) await connection.InvokeAsync("LeaveRoom");
         Volatile.Write(ref room, null);
         Volatile.Write(ref matchCounts, EmptyMatchCounts);
@@ -468,6 +479,41 @@ public sealed class AnimationSyncService : IAsyncDisposable
             "BroadcastLocalAnimation", clean, emoteId, Math.Clamp(delayMilliseconds, 100, 3000));
     }
 
+    public async Task SetFreeUseAsync(bool enabled)
+    {
+        RoomStateDto state;
+        try
+        {
+            state = await RequireConnection().InvokeAsync<RoomStateDto>("SetFreeUse", enabled);
+        }
+        catch (HubException exception) when (IsMissingHubMethod(exception))
+        {
+            throw new InvalidOperationException("The connected relay does not support FREE USE yet.", exception);
+        }
+        lock (gate) desiredFreeUse = enabled;
+        UpdateRoom(state);
+    }
+
+    public async Task DirectFreeUseAsync(string targetConnectionId, FreeUseDirectionRequest request)
+    {
+        try
+        {
+            await RequireConnection().InvokeAsync("DirectFreeUse", targetConnectionId, request);
+        }
+        catch (HubException exception)
+        {
+            throw new InvalidOperationException(RelayMessage(exception), exception);
+        }
+    }
+
+    // SignalR wraps a relay refusal as "An unexpected error occurred invoking ... HubException: reason".
+    private static string RelayMessage(HubException exception)
+    {
+        const string marker = "HubException: ";
+        var index = exception.Message.LastIndexOf(marker, StringComparison.Ordinal);
+        return index >= 0 ? exception.Message[(index + marker.Length)..] : exception.Message;
+    }
+
     public async Task CancelReadyAsync()
     {
         var state = await RequireConnection().InvokeAsync<RoomStateDto>("CancelReady");
@@ -490,7 +536,11 @@ public sealed class AnimationSyncService : IAsyncDisposable
     {
         var hub = connection;
         connection = null;
-        lock (gate) desiredRoomCode = null;
+        lock (gate)
+        {
+            desiredRoomCode = null;
+            desiredFreeUse = false;
+        }
         Volatile.Write(ref room, null);
         Volatile.Write(ref matchCounts, EmptyMatchCounts);
         Interlocked.Exchange(ref onlineUserCount, -1);
@@ -519,6 +569,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         string? code;
         string displayName;
         IReadOnlyList<string> fingerprints;
+        bool freeUse;
         lock (gate)
         {
             Volatile.Write(ref room, null);
@@ -526,6 +577,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
             code = desiredRoomCode;
             displayName = desiredDisplayName;
             fingerprints = catalog;
+            freeUse = desiredFreeUse;
         }
 
         if (code is null)
@@ -543,12 +595,17 @@ public sealed class AnimationSyncService : IAsyncDisposable
             if (!ReferenceEquals(connection, hub)) return;
             UpdateRoom(state);
             await hub.InvokeAsync("SetCatalog", fingerprints);
+            if (freeUse) UpdateRoom(await hub.InvokeAsync<RoomStateDto>("SetFreeUse", true));
             Diagnostic?.Invoke($"Automatically rejoined room {code} after reconnecting.", null);
         }
         catch (Exception exception)
         {
             if (!ReferenceEquals(connection, hub)) return;
-            lock (gate) desiredRoomCode = null;
+            lock (gate)
+            {
+                desiredRoomCode = null;
+                desiredFreeUse = false;
+            }
             Status = $"Reconnected, but room {code} could not be rejoined: {exception.GetBaseException().Message}";
             Diagnostic?.Invoke($"Could not automatically rejoin room {code}.", exception);
             Notify();
@@ -576,6 +633,10 @@ public sealed class AnimationSyncService : IAsyncDisposable
             Diagnostic?.Invoke("The connected relay does not support local animation presence.", exception);
         }
     }
+
+    private static bool IsMissingHubMethod(HubException exception) =>
+        exception.Message.Contains("Unknown hub method", StringComparison.OrdinalIgnoreCase) ||
+        exception.Message.Contains("does not exist", StringComparison.OrdinalIgnoreCase);
 
     private static string ConnectionStatus(string prefix, Exception? exception) => exception is null
         ? prefix
@@ -616,7 +677,26 @@ public sealed class AnimationSyncService : IAsyncDisposable
 }
 
 public sealed record RoomStateDto(string RoomCode, IReadOnlyList<RoomMemberDto> Members);
-public sealed record RoomMemberDto(string ConnectionId, string DisplayName, bool IsLeader, bool Ready, string ModKey);
+public sealed record RoomMemberDto(
+    string ConnectionId,
+    string DisplayName,
+    bool IsLeader,
+    bool Ready,
+    string ModKey,
+    bool FreeUse = false);
+public sealed record FreeUseDirectionRequest(
+    string Fingerprint,
+    string ModKey,
+    string ModName,
+    string Trigger,
+    Dictionary<string, List<string>> Options);
+public sealed record FreeUseDirectiveDto(
+    string DirectedBy,
+    string Fingerprint,
+    string ModKey,
+    string ModName,
+    string Trigger,
+    Dictionary<string, List<string>> Options);
 public sealed record TransferUploadDto(
     string TransferId,
     string UploadToken,
