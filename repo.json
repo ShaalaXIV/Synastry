@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.74.0",
+    "AssemblyVersion": "1.0.75.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -13,9 +13,9 @@
     "Tags": [ "penumbra", "animation", "emote", "sync" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.74/Synastry-1.0.74.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.74/Synastry-1.0.74.zip",
-    "Changelog": "Fixes animations that Penumbra rejected because of outdated or space-padded option names, explains any remaining Penumbra refusal, gives uncategorized locked emotes a replacement carrier, protects your animation from nearby players and chair walk-ins, and starts unset mod options from the mod's defaults.",
-    "LastUpdate": "1790413081"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.75/Synastry-1.0.75.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.75/Synastry-1.0.75.zip",
+    "Changelog": "Adds FREE USE mode: room members can let others choose their role and mod options, which are applied temporarily with automatic readiness. Also fixes emote buttons in single-pose mods and skips repeat animation popups once you are readied.",
+    "LastUpdate": "1790553821"
   }
 ]
