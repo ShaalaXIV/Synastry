@@ -1,6 +1,7 @@
 using System.Collections.Concurrent;
 using System.Security.Cryptography;
 using System.Text.Json;
+using System.Text.RegularExpressions;
 using Microsoft.AspNetCore.SignalR;
 
 namespace EmoteLink.Relay;
@@ -583,6 +584,51 @@ public sealed class AnimationHub : Hub
         return state;
     }
 
+    public async Task<RoomStateDto> SetFreeUse(bool enabled)
+    {
+        var room = GetCurrentRoom();
+        lock (room.Gate) room.Members[Context.ConnectionId].FreeUse = enabled;
+        var state = Snapshot(room);
+        await Clients.Group(room.Code).SendAsync("RoomStateChanged", state);
+        return state;
+    }
+
+    /// <summary>
+    /// Sends one member's role choice to a room member who has opted into FREE USE. The relay
+    /// stamps the sender's name and only delivers animations the target already advertises.
+    /// </summary>
+    public async Task DirectFreeUse(string targetConnectionId, FreeUseDirectionRequest request)
+    {
+        var room = GetCurrentRoom();
+        FreeUseDirectiveDto directive;
+        lock (room.Gate)
+        {
+            var sender = room.Members[Context.ConnectionId];
+            if (targetConnectionId == Context.ConnectionId)
+                throw new HubException("Choose another room member.");
+            if (!room.Members.TryGetValue(targetConnectionId, out var target))
+                throw new HubException("That member is no longer in the room.");
+            if (!target.FreeUse)
+                throw new HubException($"{target.DisplayName} is no longer in FREE USE mode.");
+            var fingerprint = CleanFingerprint(request.Fingerprint);
+            if (fingerprint.Length != 64)
+                throw new HubException("A valid animation fingerprint is required.");
+            if (!target.Catalog.Contains(fingerprint))
+                throw new HubException($"{target.DisplayName} does not have this animation.");
+            var trigger = request.Trigger.Trim();
+            if (!FreeUseTrigger.IsMatch(trigger))
+                throw new HubException("Choose a pose or emote role.");
+            directive = new FreeUseDirectiveDto(
+                sender.DisplayName,
+                fingerprint,
+                CleanModKey(request.ModKey),
+                CleanDisplayMetadata(request.ModName, 160),
+                trigger,
+                CleanFreeUseOptions(request.Options));
+        }
+        await Clients.Client(targetConnectionId).SendAsync("FreeUseDirected", directive);
+    }
+
     public async Task<RoomStateDto> RemoveMember(string connectionId)
     {
         var room = GetCurrentRoom();
@@ -631,7 +677,37 @@ public sealed class AnimationHub : Hub
         lock (room.Gate)
             return new RoomStateDto(room.Code, room.Members.Values
                 .Select(member => new RoomMemberDto(member.ConnectionId, member.DisplayName, member.IsLeader,
-                    member.Ready, member.ModKey)).ToList());
+                    member.Ready, member.ModKey, member.FreeUse)).ToList());
+    }
+
+    private static readonly Regex FreeUseTrigger = new(
+        @"^(?:pose:(?:Idle|Sit|GroundSit|Doze):\d{1,3}|emote:\d{1,6})$",
+        RegexOptions.CultureInvariant);
+
+    private static Dictionary<string, List<string>> CleanFreeUseOptions(
+        IReadOnlyDictionary<string, List<string>>? options)
+    {
+        var clean = new Dictionary<string, List<string>>(StringComparer.Ordinal);
+        if (options is null) return clean;
+        foreach (var (group, selections) in options.Take(64))
+        {
+            var groupName = CleanOptionName(group);
+            if (groupName.Length == 0) continue;
+            clean[groupName] = (selections ?? [])
+                .Select(CleanOptionName)
+                .Where(option => option.Length > 0)
+                .Distinct(StringComparer.Ordinal)
+                .Take(64)
+                .ToList();
+        }
+        return clean;
+    }
+
+    // Option names are matched exactly by Penumbra, so they are bounded but never trimmed.
+    private static string CleanOptionName(string? value)
+    {
+        var clean = new string((value ?? "").Where(character => !char.IsControl(character)).ToArray());
+        return clean[..Math.Min(160, clean.Length)];
     }
 
     private static void ResetReady(Room room)
@@ -688,6 +764,7 @@ public sealed class AnimationHub : Hub
         public string DisplayName { get; } = displayName;
         public bool IsLeader { get; set; } = leader;
         public bool Ready { get; set; }
+        public bool FreeUse { get; set; }
         public string ModKey { get; set; } = "";
         public HashSet<string> Catalog { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, OptionSelectionDto> OptionSelections { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -705,7 +782,26 @@ public sealed class AnimationHub : Hub
 }
 
 public sealed record RoomStateDto(string RoomCode, IReadOnlyList<RoomMemberDto> Members);
-public sealed record RoomMemberDto(string ConnectionId, string DisplayName, bool IsLeader, bool Ready, string ModKey);
+public sealed record RoomMemberDto(
+    string ConnectionId,
+    string DisplayName,
+    bool IsLeader,
+    bool Ready,
+    string ModKey,
+    bool FreeUse = false);
+public sealed record FreeUseDirectionRequest(
+    string Fingerprint,
+    string ModKey,
+    string ModName,
+    string Trigger,
+    Dictionary<string, List<string>>? Options);
+public sealed record FreeUseDirectiveDto(
+    string DirectedBy,
+    string Fingerprint,
+    string ModKey,
+    string ModName,
+    string Trigger,
+    Dictionary<string, List<string>> Options);
 public sealed record PlaySignalDto(
     string ModKey,
     long StartUnixMilliseconds,

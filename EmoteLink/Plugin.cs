@@ -197,6 +197,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly ConcurrentDictionary<string, AnimationSuggestion> activeAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentDictionary<string, byte> ignoredAnimationSuggestions = new(StringComparer.OrdinalIgnoreCase);
     private readonly ConcurrentQueue<AnimationSuggestion> incomingAnimationSuggestions = new();
+    private readonly ConcurrentQueue<FreeUseDirectiveDto> freeUseDirectives = new();
     private readonly ConcurrentDictionary<string, string> remoteReadyModKeys = new(StringComparer.OrdinalIgnoreCase);
     private string? remoteSelectionRoom;
     private bool roleSyncPending;
@@ -307,6 +308,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         sync.RoleLabelChanged += label => receivedRoleLabels.Enqueue(label);
         sync.CommunityRoleLabelChanged += label => receivedCommunityRoleLabels.Enqueue(label);
         sync.AnimationSuggestionDeclined += OnAnimationSuggestionDeclined;
+        sync.FreeUseDirected += directive => freeUseDirectives.Enqueue(directive);
         sync.StateChanged += OnSyncStateChanged;
         sync.Diagnostic += (message, exception) =>
         {
@@ -1614,8 +1616,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void ActivateDetectedPose(string directory, string name, PoseTarget pose)
     {
-        PublishDetectedTriggerSelection(directory, $"pose:{pose.Kind}:{pose.Index}");
-        ActivateInternal(directory, name, pose);
+        var trigger = $"pose:{pose.Kind}:{pose.Index}";
+        PublishDetectedTriggerSelection(directory, trigger);
+        if (ActivateInternal(directory, name, pose)) OfferFreeUsePrompts(directory, name, trigger);
     }
 
     public void ActivateDetectedPoseSolo(string directory, string name, PoseTarget pose)
@@ -1626,8 +1629,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void ActivateDetectedEmote(string directory, string name, EmoteTarget emote)
     {
-        PublishDetectedTriggerSelection(directory, $"emote:{emote.Id}");
-        ActivateInternal(directory, name, null, requestedCommand: emote.Command);
+        var trigger = $"emote:{emote.Id}";
+        PublishDetectedTriggerSelection(directory, trigger);
+        if (ActivateInternal(directory, name, null, requestedCommand: emote.Command))
+            OfferFreeUsePrompts(directory, name, trigger);
     }
 
     public void ActivateDetectedEmoteSolo(string directory, string name, EmoteTarget emote)
@@ -1853,6 +1858,136 @@ public sealed unsafe class Plugin : IDalamudPlugin
         PoseKind.Doze => $"Doze {pose.Index}",
         _ => $"Idle {pose.Index}"
     };
+
+    public bool IsFreeUseEnabled => sync.IsFreeUse;
+
+    public void SetFreeUse(bool enabled)
+    {
+        if (!sync.IsInRoom)
+        {
+            Status = "Join a room before turning on FREE USE.";
+            return;
+        }
+        Status = enabled ? "Turning on FREE USE..." : "Turning off FREE USE...";
+        RunSync(sync.SetFreeUseAsync(enabled), enabled
+            ? "FREE USE is on. Room members choose your role and mod options, and you are readied automatically."
+            : "FREE USE is off. You choose your own roles again.");
+    }
+
+    public bool IsFreeUseMemberAvailable(string connectionId) =>
+        sync.Room?.Members.Any(member => member.ConnectionId == connectionId && member.FreeUse) == true;
+
+    /// <summary>A copy of the chooser's own options, edited in the prompt before it is sent.</summary>
+    public Dictionary<string, List<string>> GetFreeUseOptionTemplate(string directory) =>
+        GetActivationSelections(directory).ToDictionary(
+            pair => pair.Key, pair => pair.Value.ToList(), StringComparer.OrdinalIgnoreCase);
+
+    public void DirectFreeUse(FreeUsePrompt prompt, string trigger, IReadOnlyDictionary<string, List<string>> options)
+    {
+        if (IsModPrivate(prompt.Directory) ||
+            !modCatalogKeys.TryGetValue(prompt.Directory, out var fingerprint) ||
+            !modSyncKeys.TryGetValue(prompt.Directory, out var modKey))
+        {
+            Status = $"{prompt.ModName} cannot be shared with {prompt.MemberName}.";
+            return;
+        }
+        var request = new FreeUseDirectionRequest(
+            fingerprint,
+            modKey,
+            prompt.ModName,
+            trigger,
+            options.ToDictionary(pair => pair.Key, pair => pair.Value.ToList()));
+        Status = $"Sending your choice to {prompt.MemberName}...";
+        _ = sync.DirectFreeUseAsync(prompt.MemberConnectionId, request).ContinueWith(task =>
+        {
+            if (task.IsCompletedSuccessfully)
+            {
+                Status = $"{prompt.MemberName} is preparing the role you chose.";
+                return;
+            }
+            // The prompt has already closed, so a refusal is repeated in chat where it will be seen.
+            var error = task.Exception?.GetBaseException();
+            Status = $"Could not choose for {prompt.MemberName}: {error?.Message ?? "the relay did not respond."}";
+            if (error is not null) Log.Warning(error, "FREE USE choice for {Member} failed.", prompt.MemberName);
+            var message = Status;
+            _ = Framework.RunOnFrameworkThread(() => Chat.PrintError($"[Synastry] {message}"));
+        }, TaskScheduler.Default);
+    }
+
+    private void OfferFreeUsePrompts(string directory, string name, string ownTrigger)
+    {
+        if (sync.Room is not { } room || IsModPrivate(directory) || !modCatalogKeys.ContainsKey(directory)) return;
+        foreach (var member in room.Members.Where(member =>
+                     member.FreeUse && !sync.IsCurrentMember(member.ConnectionId)))
+            mainWindow.ShowFreeUsePrompt(new FreeUsePrompt(
+                directory, name, ownTrigger, member.ConnectionId, member.DisplayName));
+    }
+
+    private void ProcessFreeUseDirectives()
+    {
+        while (freeUseDirectives.TryDequeue(out var directive))
+        {
+            // The relay checks the flag too; this guards a choice that crossed a FREE USE toggle-off.
+            if (!sync.IsFreeUse)
+            {
+                Log.Information("Ignored a FREE USE choice from {Sender} because FREE USE is off.", directive.DirectedBy);
+                continue;
+            }
+
+            var directory = modCatalogKeys.FirstOrDefault(pair =>
+                pair.Value.Equals(directive.Fingerprint, StringComparison.OrdinalIgnoreCase)).Key;
+            if (string.IsNullOrWhiteSpace(directory) || IsModPrivate(directory) ||
+                !modsByDirectory.TryGetValue(directory, out var mod))
+            {
+                ReportPlaybackFailure(directive.ModName,
+                    $"{directive.DirectedBy} chose it for you, but it is not in your shared animation library.");
+                continue;
+            }
+            if (!TryResolveFreeUseTrigger(directory, directive.Trigger, out var pose, out var command, out var animationName))
+            {
+                ReportPlaybackFailure(mod.Name, $"{directive.DirectedBy} chose a role this mod does not have.");
+                continue;
+            }
+
+            // The chooser's options win for this activation only; nothing is saved to this configuration.
+            var selections = GetActivationSelections(directory).ToDictionary(
+                pair => pair.Key, pair => pair.Value.ToList(), StringComparer.OrdinalIgnoreCase);
+            foreach (var (group, options) in directive.Options) selections[group] = options.ToList();
+
+            Chat.Print($"[Synastry] FREE USE: {directive.DirectedBy} chose {animationName} in {mod.Name} for you.");
+            Log.Information("FREE USE: {Sender} chose {Trigger} in {ModName}.", directive.DirectedBy, directive.Trigger, mod.Name);
+            PublishDetectedTriggerSelection(directory, directive.Trigger);
+            ActivateInternal(directory, mod.Name, pose, requestedCommand: command, selectionOverride: selections);
+        }
+    }
+
+    private bool TryResolveFreeUseTrigger(
+        string directory,
+        string trigger,
+        out PoseTarget? pose,
+        out string? command,
+        out string animationName)
+    {
+        pose = null;
+        command = null;
+        animationName = "";
+        if (trigger.StartsWith("pose:", StringComparison.OrdinalIgnoreCase))
+        {
+            var parts = trigger["pose:".Length..].Split(':', 2);
+            if (parts.Length != 2 || !Enum.TryParse<PoseKind>(parts[0], true, out var kind) ||
+                !byte.TryParse(parts[1], out var index) || index > PoseService.MaxPoseIndex) return false;
+            pose = new PoseTarget(kind, index);
+            animationName = PoseDisplayName(pose);
+            return true;
+        }
+        if (!trigger.StartsWith("emote:", StringComparison.OrdinalIgnoreCase) ||
+            !uint.TryParse(trigger["emote:".Length..], out var emoteId) ||
+            !emotePlaybackById.TryGetValue(emoteId, out var info)) return false;
+        command = info.Command;
+        EnsureDetectedEmotes(directory, modsByDirectory[directory].Name);
+        animationName = GetDetectedEmotes(directory).FirstOrDefault(emote => emote.Id == emoteId)?.Name ?? info.Command;
+        return true;
+    }
 
     private void PublishDetectedTriggerSelection(string directory, string trigger)
     {
@@ -2184,29 +2319,32 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ActivateInternal(directory, name, null, false);
     }
 
-    private void ActivateInternal(
+    /// <returns>True when the animation was scheduled or prepared for the room.</returns>
+    private bool ActivateInternal(
         string directory,
         string name,
         PoseTarget? requestedPose,
         bool allowGroupPlay = true,
-        string? requestedCommand = null)
+        string? requestedCommand = null,
+        IReadOnlyDictionary<string, List<string>>? selectionOverride = null)
     {
-        if (requestedPose is null && modPoses.TryGetValue(directory, out var detected) && detected.Count == 1)
+        if (requestedPose is null && requestedCommand is null &&
+            modPoses.TryGetValue(directory, out var detected) && detected.Count == 1)
             requestedPose = detected[0];
         ClearTemporaryAssignmentsInternal(false, false);
         var collection = penumbra.GetPlayerCollection();
         if (collection is null)
         {
             ReportPlaybackFailure(name, "Penumbra has no collection assigned to your character.");
-            return;
+            return false;
         }
         ClearRemotePlaybacksInCollection(collection.Value.Id);
-        var selections = GetActivationSelections(directory);
+        var selections = selectionOverride ?? GetActivationSelections(directory);
         var activation = penumbra.Activate(collection.Value.Id, directory, name, selections);
         if (!activation.Success)
         {
             ReportPlaybackFailure(name, activation.Error);
-            return;
+            return false;
         }
 
         configuration.ActiveAssignments.Add(new TemporaryAssignment(collection.Value.Id, directory, name));
@@ -2219,9 +2357,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         if (requestedPose is not null)
         {
-            if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, requestedPose, null)) return;
+            if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, requestedPose, null)) return true;
             SchedulePose(name, requestedPose, 300);
-            return;
+            return true;
         }
 
         var command = requestedCommand ?? DetectEmoteCommand(directory, name);
@@ -2230,7 +2368,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             ReportPlaybackFailure(
                 name,
                 "No emote command could be detected. Select the option containing the animation, refresh the library, and try again.");
-            return;
+            return false;
         }
 
         if (!TryCreatePlayback(command, out var playback))
@@ -2238,7 +2376,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             ReportPlaybackFailure(
                 name,
                 $"{command} has no PAP-backed action timeline in the current game data.");
-            return;
+            return false;
         }
         RememberTypedEmoteDefault(playback.EmoteId, directory);
 
@@ -2246,9 +2384,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         // Direct timeline playback is only the fallback that bypasses a locked emote.
         if (IsEmoteUnlocked(playback.EmoteId))
         {
-            if (allowGroupPlay && PrepareForGroupPlay(directory, name, command, null, null)) return;
+            if (allowGroupPlay && PrepareForGroupPlay(directory, name, command, null, null)) return true;
             ScheduleCommand(name, command, 300);
-            return;
+            return true;
         }
 
         var conversion = TryConvertLockedEmote(directory, name, command);
@@ -2264,7 +2402,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
                         name,
                         $"The files were converted, but Penumbra could not reload them: {reload.Error}. " +
                         "Use Rediscover Mods in Penumbra, then try again.");
-                    return;
+                    return false;
                 }
                 var reactivation = penumbra.Activate(collection.Value.Id, directory, name, selections);
                 if (!reactivation.Success)
@@ -2272,7 +2410,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     ReportPlaybackFailure(
                         name,
                         $"Penumbra reloaded the conversion but would not reactivate it: {reactivation.Error}");
-                    return;
+                    return false;
                 }
             }
             var carrier = new CarrierPlayback(
@@ -2281,12 +2419,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 name);
             if (allowGroupPlay &&
                 PrepareForGroupPlay(directory, name, null, null, playback, carrier))
-                return;
+                return true;
             ScheduleCarrierPlayback(carrier, conversion.ChangedFiles ? 650 : 300);
             if (sync.IsConnected && modCatalogKeys.TryGetValue(directory, out var convertedFingerprint) &&
                 convertedFingerprint.Length == 64)
                 _ = BroadcastLocalPlaybackAsync(convertedFingerprint, playback, pendingCommandTime);
-            return;
+            return true;
         }
 
         if (conversion.ChangedFiles)
@@ -2299,7 +2437,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     name,
                     $"The obsolete carrier was restored, but Penumbra could not reload the mod: {reload.Error}. " +
                     "Use Rediscover Mods in Penumbra, then try again.");
-                return;
+                return false;
             }
             var reactivation = penumbra.Activate(collection.Value.Id, directory, name, selections);
             if (!reactivation.Success)
@@ -2307,7 +2445,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 ReportPlaybackFailure(
                     name,
                     $"Penumbra reloaded the restored mod but would not reactivate it: {reactivation.Error}");
-                return;
+                return false;
             }
         }
 
@@ -2315,10 +2453,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
             name,
             $"Permanent carrier conversion was unavailable: {conversion.Message} " +
             "Synastry is using the legacy direct-play fallback for this attempt.");
-        if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, null, playback)) return;
+        if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, null, playback)) return true;
         ScheduleDirectPlayback(name, Objects.LocalPlayer?.Address ?? 0, playback, 300);
         if (sync.IsConnected && modCatalogKeys.TryGetValue(directory, out var fingerprint) && fingerprint.Length == 64)
             _ = BroadcastLocalPlaybackAsync(fingerprint, playback, pendingCommandTime);
+        return true;
     }
 
     private bool PrepareForGroupPlay(
@@ -3457,6 +3596,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         UpdateAnimationSpeed();
         ProcessCompletedDownloads();
         ProcessAddedMod();
+        ProcessFreeUseDirectives();
         ProcessSyncPlaySignals();
         ProcessLocalAnimationSignals();
         UpdateRemotePlaybacks();
@@ -3737,7 +3877,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             activatedTrigger = existing.ActivatedTrigger;
         var suggestion = new AnimationSuggestion(memberName, modKey, mod.Directory, mod.Name, activatedTrigger);
         activeAnimationSuggestions[suggestionKey] = suggestion;
-        if (notify) incomingAnimationSuggestions.Enqueue(suggestion);
+        if (notify && !sync.IsFreeUse && !modKey.Equals(preparedModKey, StringComparison.OrdinalIgnoreCase))
+            incomingAnimationSuggestions.Enqueue(suggestion);
         Log.Information("Marked animation suggestion from {MemberName}: {ModName}.", memberName, mod.Name);
     }
 
@@ -3792,6 +3933,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             remoteReadyModKeys.Clear();
             roleSyncPending = false;
             while (receivedRoleLabels.TryDequeue(out _)) { }
+            while (freeUseDirectives.TryDequeue(out _)) { }
             return;
         }
         var roomChanged = !roomCode.Equals(remoteSelectionRoom, StringComparison.OrdinalIgnoreCase);
@@ -4444,3 +4586,9 @@ public sealed record AnimationCommandTarget(
     string TriggerValue,
     string AnimationName);
 public sealed record RoomInvite(string SenderName, string RoomCode);
+public sealed record FreeUsePrompt(
+    string Directory,
+    string ModName,
+    string OwnTrigger,
+    string MemberConnectionId,
+    string MemberName);

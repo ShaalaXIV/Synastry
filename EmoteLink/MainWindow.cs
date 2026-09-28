@@ -34,6 +34,10 @@ public sealed class MainWindow : Window
     private readonly Queue<AnimationSuggestion> queuedAnimationSuggestions = [];
     private AnimationSuggestion? activeAnimationSuggestion;
     private bool openAnimationSuggestionPopup;
+    private readonly List<FreeUsePrompt> queuedFreeUsePrompts = [];
+    private FreeUsePrompt? activeFreeUsePrompt;
+    private bool openFreeUsePopup;
+    private Dictionary<string, List<string>> freeUseOptions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> correctionBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> folderRenameBuffers = new(StringComparer.OrdinalIgnoreCase);
@@ -111,6 +115,7 @@ public sealed class MainWindow : Window
             }
             DrawDeckBody();
             DrawAnimationSuggestionPopup();
+            DrawFreeUsePopup();
             DrawRoomInvitePopup();
             DrawTransferInboxWindow();
         }
@@ -166,6 +171,24 @@ public sealed class MainWindow : Window
             queuedAnimationSuggestions.Enqueue(suggestion);
         }
         IsOpen = true;
+    }
+
+    public void ShowFreeUsePrompt(FreeUsePrompt prompt)
+    {
+        // A newer choice for the same member replaces the older one.
+        queuedFreeUsePrompts.RemoveAll(queued => queued.MemberConnectionId == prompt.MemberConnectionId);
+        if (activeFreeUsePrompt is null || activeFreeUsePrompt.MemberConnectionId == prompt.MemberConnectionId)
+            BeginFreeUsePrompt(prompt);
+        else
+            queuedFreeUsePrompts.Add(prompt);
+        IsOpen = true;
+    }
+
+    private void BeginFreeUsePrompt(FreeUsePrompt prompt)
+    {
+        activeFreeUsePrompt = prompt;
+        freeUseOptions = plugin.GetFreeUseOptionTemplate(prompt.Directory);
+        openFreeUsePopup = true;
     }
 
     private void ObserveTutorialState()
@@ -790,6 +813,15 @@ public sealed class MainWindow : Window
                 ImGui.PopID();
             }
         }
+        var wasFreeUse = plugin.IsFreeUseEnabled;
+        var freeUse = wasFreeUse;
+        if (wasFreeUse) ImGui.PushStyleColor(ImGuiCol.Text, ClaimedColor);
+        if (ImGui.Checkbox("FREE USE mode", ref freeUse)) plugin.SetFreeUse(freeUse);
+        if (wasFreeUse) ImGui.PopStyleColor();
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("Let room members choose your role and mod options.\n" +
+                             "Their choice is applied temporarily and you are readied automatically.\n" +
+                             "Private mods are never used. Turn it off at any time.");
         ImGui.Separator();
         var readyMembers = room.Members.Count(member => member.Ready);
         var allReady = room.Members.Count > 0 && readyMembers == room.Members.Count;
@@ -834,7 +866,7 @@ public sealed class MainWindow : Window
             drawList.AddLine(new Vector2(center.X - 7f, center.Y), new Vector2(center.X + 7f, center.Y), packed, 1f);
             drawList.AddLine(new Vector2(center.X, center.Y - 7f), new Vector2(center.X, center.Y + 7f), packed, 1f);
             var suffix = member.IsLeader ? "  HOST" : member.Ready ? "  READY" : isCurrentMember ? "  YOU" : "  WAITING";
-            var label = member.DisplayName + suffix;
+            var label = member.DisplayName + suffix + (member.FreeUse ? "  FREE USE" : "");
             var labelSize = ImGui.CalcTextSize(label);
             drawList.AddText(new Vector2(x - labelSize.X * 0.5f, center.Y + 17f),
                 ImGui.GetColorU32(member.Ready ? TextColor : MutedColor), label);
@@ -1297,6 +1329,154 @@ public sealed class MainWindow : Window
         {
             plugin.IgnoreAnimationSuggestion(dismissed);
             activeAnimationSuggestion = null;
+        }
+    }
+
+    private void DrawFreeUsePopup()
+    {
+        if (activeFreeUsePrompt is not null && !plugin.IsFreeUseMemberAvailable(activeFreeUsePrompt.MemberConnectionId))
+            activeFreeUsePrompt = null;
+        while (activeFreeUsePrompt is null && queuedFreeUsePrompts.Count > 0)
+        {
+            var next = queuedFreeUsePrompts[0];
+            queuedFreeUsePrompts.RemoveAt(0);
+            if (plugin.IsFreeUseMemberAvailable(next.MemberConnectionId)) BeginFreeUsePrompt(next);
+        }
+
+        const string popupTitle = "FREE USE###SynastryFreeUse";
+        if (activeFreeUsePrompt is not { } prompt)
+        {
+            // The member left or turned FREE USE off while the prompt was showing; a modal that is
+            // never submitted again would keep blocking the window, so close it explicitly.
+            if (ImGui.IsPopupOpen(popupTitle) && ImGui.BeginPopupModal(popupTitle))
+            {
+                ImGui.CloseCurrentPopup();
+                ImGui.EndPopup();
+            }
+            return;
+        }
+
+        // Keep asking until the modal is showing; a role picked inside another modal opens this one next frame.
+        if (openFreeUsePopup && !ImGui.IsPopupOpen(popupTitle)) ImGui.OpenPopup(popupTitle);
+
+        ImGui.SetNextWindowSize(new Vector2(640f, 540f), ImGuiCond.Appearing);
+        var popupOpen = true;
+        if (ImGui.BeginPopupModal(popupTitle, ref popupOpen, ImGuiWindowFlags.NoCollapse))
+        {
+            openFreeUsePopup = false;
+            ImGui.TextColored(ClaimedColor, $"{prompt.MemberName} is in FREE USE mode");
+            ImGui.TextWrapped("Choose the role they will play. Their Synastry applies the options below temporarily and readies them automatically.");
+            ImGui.Spacing();
+            ImGui.Separator();
+            ImGui.Spacing();
+            ImGui.TextColored(AccentColor, prompt.ModName);
+            var poses = plugin.GetDetectedPoses(prompt.Directory);
+            var emotes = plugin.GetDetectedEmotes(prompt.Directory);
+            var ownRole = SuggestionAnimationName(prompt.OwnTrigger, poses, emotes);
+            if (ownRole.Length > 0) ImGui.TextColored(ClaimedColor, $"Your role: {ownRole}");
+
+            string? chosenTrigger = null;
+            ImGui.BeginChild("free-use-choice", new Vector2(0, -42f), true);
+            ImGui.TextColored(AccentColor, $"ROLE FOR {prompt.MemberName.ToUpperInvariant()}");
+            foreach (var pose in poses)
+                if (DrawFreeUseRoleButton(prompt, "$detected-pose", $"{pose.Kind}:{pose.Index}",
+                        PoseDisplayName(pose), $"pose:{pose.Kind}:{pose.Index}"))
+                    chosenTrigger = $"pose:{pose.Kind}:{pose.Index}";
+            foreach (var emote in emotes)
+                if (DrawFreeUseRoleButton(prompt, "$detected-emote", emote.Id.ToString(),
+                        $"{emote.Name} (ID {emote.Id})", $"emote:{emote.Id}"))
+                    chosenTrigger = $"emote:{emote.Id}";
+            if (poses.Count == 0 && emotes.Count == 0)
+                ImGui.TextDisabled("This mod has no detected roles to choose.");
+            DrawFreeUseOptions(prompt.Directory);
+            ImGui.EndChild();
+
+            if (chosenTrigger is not null)
+            {
+                plugin.DirectFreeUse(prompt, chosenTrigger, freeUseOptions);
+                activeFreeUsePrompt = null;
+                ImGui.CloseCurrentPopup();
+            }
+            else
+            {
+                if (ImGui.Button("Skip", new Vector2(120f, 0)))
+                {
+                    activeFreeUsePrompt = null;
+                    ImGui.CloseCurrentPopup();
+                }
+                if (ImGui.IsItemHovered())
+                    ImGui.SetTooltip($"Do not choose a role for {prompt.MemberName} this time.");
+            }
+            ImGui.EndPopup();
+        }
+
+        if (!popupOpen) activeFreeUsePrompt = null;
+    }
+
+    private bool DrawFreeUseRoleButton(
+        FreeUsePrompt prompt,
+        string group,
+        string option,
+        string animationName,
+        string trigger)
+    {
+        var note = plugin.GetOptionNote(prompt.Directory, group, option);
+        var label = string.IsNullOrWhiteSpace(note) ? animationName : $"{note}  ({animationName})";
+        var isOwnRole = trigger.Equals(prompt.OwnTrigger, StringComparison.OrdinalIgnoreCase);
+        if (isOwnRole)
+        {
+            ImGui.PushStyleColor(ImGuiCol.Button, ClaimedColor);
+            ImGui.PushStyleColor(ImGuiCol.ButtonHovered, new Vector4(0.82f, 0.58f, 1f, 1f));
+            ImGui.PushStyleColor(ImGuiCol.ButtonActive, new Vector4(0.6f, 0.3f, 0.88f, 1f));
+        }
+        var clicked = ImGui.Button($"{label}##{trigger}", new Vector2(-1, 0));
+        if (isOwnRole) ImGui.PopStyleColor(3);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip(isOwnRole
+                ? $"Your role. {prompt.MemberName} can play it too."
+                : $"{prompt.MemberName} plays {animationName}.");
+        return clicked;
+    }
+
+    private void DrawFreeUseOptions(string directory)
+    {
+        var groups = plugin.GetOptionGroups(directory);
+        if (groups.Count == 0) return;
+        ImGui.Spacing();
+        ImGui.TextColored(AccentColor, "THEIR MOD OPTIONS");
+        ImGui.TextDisabled("Copied from your setup. Changes here apply to them only.");
+        foreach (var group in groups)
+        {
+            ImGui.PushID("free-use-" + group.Name);
+            var selected = freeUseOptions.GetValueOrDefault(group.Name) ?? [];
+            if (!group.IsMultiSelect)
+            {
+                var current = group.Options.FirstOrDefault(option =>
+                    selected.Contains(option, StringComparer.OrdinalIgnoreCase));
+                ImGui.SetNextItemWidth(MathF.Min(260f, MathF.Max(120f, ImGui.GetContentRegionAvail().X * 0.52f)));
+                if (ImGui.BeginCombo(group.Name, current ?? "Mod default"))
+                {
+                    foreach (var option in group.Options)
+                        if (ImGui.Selectable(option, option.Equals(current, StringComparison.OrdinalIgnoreCase)))
+                            freeUseOptions[group.Name] = [option];
+                    ImGui.EndCombo();
+                }
+            }
+            else
+            {
+                ImGui.TextUnformatted(group.Name);
+                ImGui.Indent();
+                foreach (var option in group.Options)
+                {
+                    var enabled = selected.Contains(option, StringComparer.OrdinalIgnoreCase);
+                    if (!ImGui.Checkbox(option, ref enabled)) continue;
+                    selected = selected.Where(item => !item.Equals(option, StringComparison.OrdinalIgnoreCase)).ToList();
+                    if (enabled) selected.Add(option);
+                    freeUseOptions[group.Name] = selected;
+                }
+                ImGui.Unindent();
+            }
+            ImGui.PopID();
         }
     }
 
