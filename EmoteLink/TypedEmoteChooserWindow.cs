@@ -6,13 +6,12 @@ namespace EmoteLink;
 
 public sealed class TypedEmoteChooserWindow : Window
 {
-    private static readonly Vector4 AccentColor = new(0.72f, 0.46f, 0.88f, 1f);
     private readonly Plugin plugin;
     private string command = "";
     private IReadOnlyList<TypedEmoteCandidate> candidates = [];
 
     public TypedEmoteChooserWindow(Plugin plugin)
-        : base("Choose a Synastry Animation###SynastryTypedEmoteChooser")
+        : base("Which animation?###SynastryTypedEmoteChooser")
     {
         this.plugin = plugin;
         Size = new Vector2(520, 360);
@@ -31,28 +30,40 @@ public sealed class TypedEmoteChooserWindow : Window
         IsOpen = true;
     }
 
+    public override void PreDraw()
+    {
+        Theme.Push();
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(22f, 18f) * Theme.Scale);
+    }
+
+    public override void PostDraw()
+    {
+        ImGui.PopStyleVar();
+        Theme.Pop();
+    }
+
     public override void Draw()
     {
-        ImGui.TextColored(AccentColor, command);
-        ImGui.TextWrapped(
-            "This emote is locked, and more than one installed Synastry animation uses it. " +
-            "Choose the animation to activate. Your choice becomes the default the next time you use this emote.");
+        Theme.Heading(command);
+        Theme.Wrapped(
+            "You don't have this emote, and more than one of your animations uses it. " +
+            "Pick one. Next time this emote plays that one.", Theme.Soft);
         ImGui.Spacing();
         ImGui.Separator();
         ImGui.Spacing();
 
         var listHeight = MathF.Max(90f, ImGui.GetContentRegionAvail().Y - 42f);
-        if (ImGui.BeginChild("typed-emote-candidates", new Vector2(0, listHeight), true))
+        if (ImGui.BeginChild("typed-emote-candidates", new Vector2(0, listHeight), false))
         {
             foreach (var candidate in candidates)
             {
                 ImGui.PushID(candidate.Directory);
                 ImGui.TextUnformatted(candidate.ModName);
-                ImGui.TextDisabled(candidate.Emote.Name);
+                Theme.Label(candidate.Emote.Name);
                 ImGui.SameLine();
                 var buttonWidth = 92f;
                 ImGui.SetCursorPosX(MathF.Max(ImGui.GetCursorPosX(), ImGui.GetWindowWidth() - buttonWidth - 18f));
-                if (ImGui.Button("Use this", new Vector2(buttonWidth, 0)))
+                if (Theme.Outline("Use this", buttonWidth))
                 {
                     plugin.ActivateTypedEmote(candidate);
                     candidates = [];
@@ -66,7 +77,7 @@ public sealed class TypedEmoteChooserWindow : Window
         }
         ImGui.EndChild();
 
-        if (ImGui.Button("Ignore", new Vector2(110f, 0)))
+        if (Theme.Text("Not now"))
         {
             plugin.IgnoreTypedEmote(command);
             candidates = [];

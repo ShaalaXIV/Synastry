@@ -310,6 +310,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (exception is null) Log.Information("{Message}", message);
             else Log.Warning(exception, "{Message}", message);
         };
+        Theme.Initialize(PluginInterface.UiBuilder);
         mainWindow = new MainWindow(this);
         settingsWindow = new SettingsWindow(this);
         customCommandsWindow = new CustomCommandsWindow(this);
@@ -4449,6 +4450,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public void Dispose()
     {
         agentExecuteEmoteHook?.Dispose();
+        Theme.Dispose();
         var refreshCancellation = modRefreshCancellation;
         modRefreshCancellation = null;
         refreshCancellation?.Cancel();

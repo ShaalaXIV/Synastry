@@ -6,20 +6,19 @@ namespace EmoteLink;
 
 public sealed class SettingsWindow : Window
 {
-    private static readonly Vector4 AccentColor = new(0.88f, 0.62f, 0.18f, 1f);
     private readonly Plugin plugin;
     private string newReceiveFolder = "";
     private string receiveFolderStatus = "";
     private List<string> receiveFolders = [];
 
-    public SettingsWindow(Plugin plugin) : base("Synastry Settings###SynastrySettings")
+    public SettingsWindow(Plugin plugin) : base("Settings###SynastrySettings")
     {
         this.plugin = plugin;
-        Size = new Vector2(560, 380);
+        Size = new Vector2(560, 520);
         SizeCondition = ImGuiCond.FirstUseEver;
         SizeConstraints = new WindowSizeConstraints
         {
-            MinimumSize = new Vector2(490, 300),
+            MinimumSize = new Vector2(480, 380),
             MaximumSize = new Vector2(float.MaxValue, float.MaxValue)
         };
     }
@@ -30,64 +29,92 @@ public sealed class SettingsWindow : Window
         IsOpen = true;
     }
 
+    public override void PreDraw()
+    {
+        Theme.Push();
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(24f, 18f) * Theme.Scale);
+    }
+
+    public override void PostDraw()
+    {
+        ImGui.PopStyleVar();
+        Theme.Pop();
+    }
+
     public override void Draw()
     {
-        DrawSectionHeading("PLAYBACK");
+        var s = Theme.Scale;
+        Theme.Heading("Playing");
+        ImGui.Dummy(new Vector2(0, 2f * s));
+
         var automaticSync = plugin.AutomaticEmoteSyncEnabled;
-        if (ImGui.Checkbox("Auto EmoteSync", ref automaticSync)) plugin.SetAutomaticEmoteSync(automaticSync);
+        if (Theme.Toggle("##auto-sync", "Sync emotes six seconds after a room starts", ref automaticSync))
+            plugin.SetAutomaticEmoteSync(automaticSync);
+
+        var lineUp = plugin.AutomaticLineUpEnabled;
+        if (Theme.Toggle("##auto-line-up", "Line up couple animations automatically", ref lineUp))
+            plugin.SetAutomaticLineUp(lineUp);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Automatically run lobby-only EmoteSync six seconds after synchronized room playback starts.");
+            ImGui.SetTooltip("When a couple animation starts, Synastry lines up penis with mouth, vagina or anus\n" +
+                             "through Simple Heels. Only the receiving partner moves.");
+        if (!plugin.SimpleHeelsAvailable)
+        {
+            ImGui.SameLine();
+            Theme.Quiet("needs Simple Heels");
+        }
 
         var anywhere = plugin.SitDozeAnywhereEnabled;
         if (!plugin.SitDozeAnywhereAvailable) ImGui.BeginDisabled();
-        if (ImGui.Checkbox("Sit/doze anywhere", ref anywhere)) plugin.SetSitDozeAnywhere(anywhere);
+        if (Theme.Toggle("##anywhere", "Sit and doze anywhere, without furniture", ref anywhere))
+            plugin.SetSitDozeAnywhere(anywhere);
         if (!plugin.SitDozeAnywhereAvailable) ImGui.EndDisabled();
-        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip(plugin.SitDozeAnywhereAvailable
-                ? "Allow chair-sit and doze animations to start without nearby furniture."
-                : "Unavailable because the required game hooks could not be initialized.");
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && !plugin.SitDozeAnywhereAvailable)
+            ImGui.SetTooltip("Unavailable: its game hooks couldn't be set up.");
 
+        ImGui.Dummy(new Vector2(0, 6f * s));
         var convertedCount = plugin.ConvertedAnimationCount;
         if (convertedCount == 0) ImGui.BeginDisabled();
-        if (ImGui.Button($"Restore All Converted Animations ({convertedCount:N0})"))
-            ImGui.OpenPopup("Restore Original Animation Files?###RestoreAllConvertedAnimations");
+        if (Theme.Outline($"Restore converted animations ({convertedCount:N0})"))
+            ImGui.OpenPopup("Restore originals###RestoreAllConvertedAnimations");
         if (convertedCount == 0) ImGui.EndDisabled();
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             ImGui.SetTooltip(convertedCount == 0
-                ? "No Synastry-converted animations need to be restored."
-                : "Restore every animation Synastry converted in place to its original creator files.");
+                ? "Nothing has been converted to a carrier emote."
+                : "Put back the creator's original files for every animation Synastry moved onto a carrier emote.");
 
-        if (ImGui.BeginPopupModal(
-                "Restore Original Animation Files?###RestoreAllConvertedAnimations",
-                ImGuiWindowFlags.AlwaysAutoResize))
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(22f, 20f) * s);
+        if (ImGui.BeginPopupModal("Restore originals###RestoreAllConvertedAnimations",
+                ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoTitleBar))
         {
-            ImGui.TextWrapped(
-                $"Restore all {plugin.ConvertedAnimationCount:N0} Synastry-converted animation(s)? " +
-                "Folders, option selections, labels, and custom commands will not be changed.");
-            ImGui.Spacing();
-            if (ImGui.Button("Restore All", new Vector2(120, 0)))
+            Theme.Heading("Restore the originals?");
+            ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + 360f * s);
+            Theme.Wrapped(
+                $"{plugin.ConvertedAnimationCount:N0} animation(s) go back to their creator's files. " +
+                "Folders, options, role names and commands stay as they are.", Theme.Soft);
+            ImGui.PopTextWrapPos();
+            ImGui.Dummy(new Vector2(0, 4f * s));
+            if (Theme.Primary("Restore all"))
             {
                 plugin.RestoreAllConvertedAnimations();
                 ImGui.CloseCurrentPopup();
             }
             ImGui.SameLine();
-            if (ImGui.Button("Cancel", new Vector2(120, 0)))
-                ImGui.CloseCurrentPopup();
+            if (Theme.Text("Cancel")) ImGui.CloseCurrentPopup();
             ImGui.EndPopup();
         }
+        ImGui.PopStyleVar();
 
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        DrawSectionHeading("RECEIVED ANIMATIONS");
-        ImGui.TextWrapped("Choose the Penumbra mod-list folder used to organize accepted Synastry animation transfers.");
+        Divider();
+        Theme.Heading("Animations people send you");
+        Theme.Wrapped("The Penumbra folder they're filed under when you install them.", Theme.Soft);
+        ImGui.Dummy(new Vector2(0, 2f * s));
 
         var selectedFolder = plugin.ReceivedModFolder;
-        var preview = selectedFolder.Length == 0 ? "Top level (default)" : selectedFolder;
-        ImGui.SetNextItemWidth(360f);
-        if (ImGui.BeginCombo("Mod-list folder", preview))
+        var preview = selectedFolder.Length == 0 ? "Top level" : selectedFolder;
+        ImGui.SetNextItemWidth(320f * s);
+        if (ImGui.BeginCombo("##receive-folder", preview))
         {
-            if (ImGui.Selectable("Top level (default)", selectedFolder.Length == 0))
+            if (ImGui.Selectable("Top level", selectedFolder.Length == 0))
                 SelectReceiveFolder("");
             foreach (var folder in receiveFolders)
             {
@@ -98,31 +125,35 @@ public sealed class SettingsWindow : Window
             ImGui.EndCombo();
         }
         ImGui.SameLine();
-        if (ImGui.Button("Refresh folders")) RefreshReceiveFolders(true);
+        if (Theme.Text("Reload list")) RefreshReceiveFolders(true);
+        if (Theme.Text("Use a “Synastry” folder")) SelectReceiveFolder("Synastry");
 
-        if (ImGui.Button("Use dedicated Synastry folder")) SelectReceiveFolder("Synastry");
-
-        ImGui.SetNextItemWidth(360f);
-        ImGui.InputTextWithHint("##newReceiveFolder", "New Penumbra mod-list folder", ref newReceiveFolder, 160);
+        ImGui.SetNextItemWidth(320f * s);
+        ImGui.InputTextWithHint("##newReceiveFolder", "Or type a new folder name", ref newReceiveFolder, 160);
         ImGui.SameLine();
-        if (ImGui.Button("Use new folder") && SelectReceiveFolder(newReceiveFolder))
+        if (Theme.Outline("Use it") && SelectReceiveFolder(newReceiveFolder))
         {
             newReceiveFolder = "";
             RefreshReceiveFolders();
         }
-        ImGui.TextDisabled("A new folder appears in Penumbra after its first received mod is placed there.");
-        if (receiveFolderStatus.Length > 0)
-            ImGui.TextWrapped(receiveFolderStatus);
+        Theme.Quiet("A new folder shows in Penumbra once something is filed in it.");
+        if (receiveFolderStatus.Length > 0) Theme.Wrapped(receiveFolderStatus, Theme.Ash);
 
-        ImGui.Spacing();
-        ImGui.Separator();
-        ImGui.Spacing();
-        DrawSectionHeading("TOOLS");
-        if (ImGui.Button("Community labels")) plugin.DownloadCommunityTags();
+        Divider();
+        Theme.Heading("Community");
+        if (Theme.Outline("Download shared role names")) plugin.DownloadCommunityTags();
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("Download accepted community role labels. Your manually entered labels are preserved.");
+            ImGui.SetTooltip("Fetch role names other players agreed on. Names you typed yourself are kept.");
         ImGui.SameLine();
-        if (ImGui.Button("How To")) plugin.OpenHowTo();
+        if (Theme.Text("How it works")) plugin.OpenHowTo();
+    }
+
+    private static void Divider()
+    {
+        var s = Theme.Scale;
+        ImGui.Dummy(new Vector2(0, 10f * s));
+        Theme.HorizontalLine(ImGui.GetWindowDrawList(), ImGui.GetCursorScreenPos(), ImGui.GetContentRegionAvail().X);
+        ImGui.Dummy(new Vector2(0, 10f * s));
     }
 
     private bool SelectReceiveFolder(string folder)
@@ -136,7 +167,7 @@ public sealed class SettingsWindow : Window
         var selected = plugin.ReceivedModFolder.Length == 0
             ? "the top level"
             : $"“{plugin.ReceivedModFolder}”";
-        receiveFolderStatus = $"Selected {selected}. The next accepted Synastry transfer will be organized there.";
+        receiveFolderStatus = $"Filing new animations under {selected}.";
         RefreshReceiveFolders();
         return true;
     }
@@ -151,8 +182,6 @@ public sealed class SettingsWindow : Window
             .OrderBy(folder => folder, StringComparer.OrdinalIgnoreCase)
             .ToList();
         if (announce)
-            receiveFolderStatus = $"Loaded {penumbraFolders.Count:N0} mod-list folder(s) from Penumbra.";
+            receiveFolderStatus = $"Found {penumbraFolders.Count:N0} folder(s) in Penumbra.";
     }
-
-    private static void DrawSectionHeading(string label) => ImGui.TextColored(AccentColor, label);
 }

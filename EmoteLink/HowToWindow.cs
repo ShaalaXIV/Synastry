@@ -10,7 +10,7 @@ public sealed class HowToWindow : Window
 {
     private readonly ISharedImmediateTexture guide;
 
-    public HowToWindow(ITextureProvider textures) : base("Synastry How To###EmoteLinkHowTo")
+    public HowToWindow(ITextureProvider textures) : base("How Synastry works###EmoteLinkHowTo")
     {
         Size = new Vector2(1000, 680);
         SizeCondition = ImGuiCond.FirstUseEver;
@@ -23,6 +23,10 @@ public sealed class HowToWindow : Window
             typeof(HowToWindow).Assembly,
             "EmoteLink.Assets.HowTo.synastry-start-to-finish.png");
     }
+
+    public override void PreDraw() => Theme.Push();
+
+    public override void PostDraw() => Theme.Pop();
 
     public override void Draw()
     {
