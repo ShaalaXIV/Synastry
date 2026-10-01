@@ -49,15 +49,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         CarrierPlayback Playback,
         long NextAttempt,
         long Deadline);
-    private enum CarrierFamily
-    {
-        None,
-        LoopingDance,
-        StandingLoop,
-        PropLoop,
-        Dote,
-        OneShot,
-    }
     private static readonly HashSet<string> GroundLoopCommands = new(StringComparer.OrdinalIgnoreCase)
     {
         "/playdead",
@@ -2654,7 +2645,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         if (candidates.Count == 0)
         {
-            var reason = MissingCarrierMessage(family, sourceLoop);
+            var reason = CarrierCatalog.MissingMessage(family, sourceLoop);
             if (!inPlaceEmoteConverter.IsConverted(penumbra.GetModRoot(), directory))
                 return new InPlaceConversionResult(false, reason);
         }
@@ -2683,20 +2674,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
         // Emotes outside the curated families would otherwise have no carrier at all and fall
         // back to local-only direct play. They use the same generic carriers as a locked vanilla emote.
         var useGenericCarriers = standaloneVanillaRedirect || family == CarrierFamily.None;
+        var familyCount = CarrierCatalog.For(family, sourceLoop, false).Count;
+        var rankByCommand = CarrierCatalog.For(family, sourceLoop, useGenericCarriers)
+            .Select((carrier, rank) => (carrier.Command, rank))
+            .ToDictionary(item => item.Command, item => item.rank, StringComparer.OrdinalIgnoreCase);
         var sourceSlots = source.Timelines.Select(timeline => timeline.Slot).ToHashSet();
+        var sourceHasIntro = HasIntroAnimation(source);
         return emotePlaybackById.Values
             .Where(candidate =>
                 candidate.EmoteId != source.EmoteId &&
+                rankByCommand.ContainsKey(candidate.Command) &&
                 IsEmoteUnlocked(candidate.EmoteId) &&
                 IsSafeCarrierEmote(candidate.EmoteId) &&
                 candidate.Timelines.Any(timeline => timeline.IsPersistentLoop) == sourceLoop &&
                 candidate.Timelines.Any(timeline => sourceSlots.Contains(timeline.Slot)))
-            .Where(candidate => useGenericCarriers
-                ? IsAllowedStandaloneCarrier(family, sourceLoop, candidate.Command)
-                : IsAllowedCarrier(family, candidate.Command))
-            .OrderBy(candidate => useGenericCarriers
-                ? StandaloneCarrierPriority(family, sourceLoop, candidate.Command)
-                : CarrierPriority(family, candidate.Command))
+            // The source's own family first, then carriers without an intro of their own (it would
+            // play before a mod that has none), then the most commonly owned.
+            .OrderBy(candidate => rankByCommand[candidate.Command] >= familyCount)
+            .ThenBy(candidate => !sourceHasIntro && HasIntroAnimation(candidate))
+            .ThenBy(candidate => rankByCommand[candidate.Command])
             .ThenByDescending(candidate =>
                 sourceSlots.SetEquals(candidate.Timelines.Select(timeline => timeline.Slot)))
             .ThenBy(candidate => Math.Abs(candidate.Timelines.Count - source.Timelines.Count))
@@ -2709,6 +2705,22 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     timeline.Key,
                     timeline.IsPersistentLoop)).ToList()))
             .ToList();
+    }
+
+    private readonly Dictionary<string, bool> introAnimationByKey = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Whether the emote's intro timeline (slot 1) has a vanilla body animation.</summary>
+    private bool HasIntroAnimation(EmotePlaybackInfo info)
+    {
+        var intro = info.Timelines.FirstOrDefault(timeline => timeline.Slot == 1);
+        if (intro is null) return false;
+        if (!introAnimationByKey.TryGetValue(intro.Key, out var exists))
+        {
+            try { exists = DataManager.FileExists($"chara/human/c0101/animation/a0001/bt_common/{intro.Key}.pap"); }
+            catch { exists = false; }
+            introAnimationByKey[intro.Key] = exists;
+        }
+        return exists;
     }
 
     private static CarrierFamily ClassifyCarrierFamily(
@@ -2732,135 +2744,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return CarrierFamily.StandingLoop;
         return CarrierFamily.None;
     }
-
-    private static bool IsAllowedCarrier(CarrierFamily family, string candidateCommand)
-    {
-        return family switch
-        {
-            CarrierFamily.LoopingDance =>
-                candidateCommand.Equals("/stepdance", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/harvestdance", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/balldance", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/beesknees", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/golddance", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/thavdance", StringComparison.OrdinalIgnoreCase),
-            CarrierFamily.StandingLoop =>
-                candidateCommand.Equals("/wringhands", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase),
-            CarrierFamily.PropLoop =>
-                candidateCommand.Equals("/water", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase),
-            CarrierFamily.Dote =>
-                candidateCommand.Equals("/blowkiss", StringComparison.OrdinalIgnoreCase),
-            CarrierFamily.OneShot =>
-                candidateCommand.Equals("/wave", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/clap", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/cheer", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/bow", StringComparison.OrdinalIgnoreCase),
-            _ => false,
-        };
-    }
-
-    private static int CarrierPriority(CarrierFamily family, string candidateCommand)
-    {
-        if (family == CarrierFamily.LoopingDance)
-        {
-            if (candidateCommand.Equals("/beesknees", StringComparison.OrdinalIgnoreCase)) return 0;
-            if (candidateCommand.Equals("/golddance", StringComparison.OrdinalIgnoreCase)) return 1;
-            if (candidateCommand.Equals("/thavdance", StringComparison.OrdinalIgnoreCase)) return 2;
-            if (candidateCommand.Equals("/balldance", StringComparison.OrdinalIgnoreCase)) return 3;
-            if (candidateCommand.Equals("/harvestdance", StringComparison.OrdinalIgnoreCase)) return 4;
-            if (candidateCommand.Equals("/stepdance", StringComparison.OrdinalIgnoreCase)) return 5;
-        }
-        if (family == CarrierFamily.StandingLoop)
-        {
-            if (candidateCommand.Equals("/wringhands", StringComparison.OrdinalIgnoreCase)) return 0;
-            if (candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase)) return 1;
-        }
-        if (family == CarrierFamily.PropLoop)
-        {
-            if (candidateCommand.Equals("/water", StringComparison.OrdinalIgnoreCase)) return 0;
-            if (candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase)) return 1;
-        }
-        if (family == CarrierFamily.Dote &&
-            candidateCommand.Equals("/blowkiss", StringComparison.OrdinalIgnoreCase)) return 0;
-        if (family == CarrierFamily.OneShot)
-        {
-            if (candidateCommand.Equals("/wave", StringComparison.OrdinalIgnoreCase)) return 0;
-            if (candidateCommand.Equals("/clap", StringComparison.OrdinalIgnoreCase)) return 1;
-            if (candidateCommand.Equals("/cheer", StringComparison.OrdinalIgnoreCase)) return 2;
-            if (candidateCommand.Equals("/bow", StringComparison.OrdinalIgnoreCase)) return 3;
-        }
-        return int.MaxValue;
-    }
-
-    private static bool IsAllowedStandaloneCarrier(
-        CarrierFamily family,
-        bool sourceLoop,
-        string candidateCommand)
-    {
-        if (IsAllowedCarrier(family, candidateCommand)) return true;
-        if (sourceLoop)
-            return candidateCommand.Equals("/wringhands", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/stepdance", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/harvestdance", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/balldance", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/beesknees", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/golddance", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/thavdance", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/water", StringComparison.OrdinalIgnoreCase);
-        return candidateCommand.Equals("/wave", StringComparison.OrdinalIgnoreCase) ||
-               candidateCommand.Equals("/clap", StringComparison.OrdinalIgnoreCase) ||
-               candidateCommand.Equals("/cheer", StringComparison.OrdinalIgnoreCase) ||
-               candidateCommand.Equals("/bow", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static int StandaloneCarrierPriority(
-        CarrierFamily family,
-        bool sourceLoop,
-        string candidateCommand)
-    {
-        var preferred = CarrierPriority(family, candidateCommand);
-        if (preferred != int.MaxValue) return preferred;
-        if (sourceLoop)
-        {
-            if (candidateCommand.Equals("/wringhands", StringComparison.OrdinalIgnoreCase)) return 20;
-            if (candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase)) return 21;
-            if (candidateCommand.Equals("/stepdance", StringComparison.OrdinalIgnoreCase)) return 22;
-            if (candidateCommand.Equals("/harvestdance", StringComparison.OrdinalIgnoreCase)) return 23;
-            if (candidateCommand.Equals("/balldance", StringComparison.OrdinalIgnoreCase)) return 24;
-            if (candidateCommand.Equals("/beesknees", StringComparison.OrdinalIgnoreCase)) return 25;
-            if (candidateCommand.Equals("/golddance", StringComparison.OrdinalIgnoreCase)) return 26;
-            if (candidateCommand.Equals("/thavdance", StringComparison.OrdinalIgnoreCase)) return 27;
-            if (candidateCommand.Equals("/water", StringComparison.OrdinalIgnoreCase)) return 28;
-        }
-        if (candidateCommand.Equals("/wave", StringComparison.OrdinalIgnoreCase)) return 20;
-        if (candidateCommand.Equals("/clap", StringComparison.OrdinalIgnoreCase)) return 21;
-        if (candidateCommand.Equals("/cheer", StringComparison.OrdinalIgnoreCase)) return 22;
-        if (candidateCommand.Equals("/bow", StringComparison.OrdinalIgnoreCase)) return 23;
-        return int.MaxValue;
-    }
-
-    private static string MissingCarrierMessage(CarrierFamily family, bool sourceLoop) => family switch
-    {
-        CarrierFamily.LoopingDance =>
-            "This animation uses the Looping Dance Rework. Unlock Bee's Knees, Gold Dance, Thavnairian Dance, " +
-            "Ball Dance, Harvest Dance, or Step Dance, then try again.",
-        CarrierFamily.StandingLoop =>
-            "This standing loop needs Wring Hands or Sweep as an inexpensive carrier.",
-        CarrierFamily.PropLoop =>
-            "This prop loop needs Water or Sweep as an inexpensive carrier.",
-        CarrierFamily.Dote =>
-            "Synastry routes /dote through /blowkiss. Unlock Blow Kiss, then try again.",
-        CarrierFamily.OneShot =>
-            "This one-shot animation needs Wave, Clap, Cheer, or Bow as a starter carrier.",
-        _ when sourceLoop =>
-            "This looping animation needs Wring Hands, Sweep, Water, or one of the looping dances as a carrier. " +
-            "Unlock one of them, then try again.",
-        _ =>
-            "This animation needs Wave, Clap, Cheer, or Bow as a carrier. Unlock one of them, then try again.",
-    };
 
     private static bool IsSafeCarrierEmote(uint emoteId)
     {
