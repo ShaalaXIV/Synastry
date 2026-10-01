@@ -510,7 +510,7 @@ public sealed class AnimationHub : Hub
     public async Task<RoomStateDto> SetReady(string modKey)
     {
         var room = GetCurrentRoom();
-        List<(string ConnectionId, PlaySignalDto Signal)> plays = [];
+        List<(string ConnectionId, PlaySignalDto Signal)> plays;
         RoomStateDto readyState;
         lock (room.Gate)
         {
@@ -518,27 +518,76 @@ public sealed class AnimationHub : Hub
             member.Ready = true;
             member.ModKey = CleanModKey(modKey);
             readyState = Snapshot(room);
-
-            if (room.Members.Count >= 2 && room.Members.Values.All(value => value.Ready) &&
-                room.Members.Values.All(value => !string.IsNullOrWhiteSpace(value.ModKey)))
-            {
-                var start = DateTimeOffset.UtcNow.AddMilliseconds(PlayDelayMilliseconds).ToUnixTimeMilliseconds();
-                var sequence = Guid.NewGuid().ToString("N");
-                plays = room.Members.Values.Select(value => (
-                    value.ConnectionId,
-                    new PlaySignalDto(value.ModKey, start, sequence, PlayDelayMilliseconds))).ToList();
-                ResetReady(room);
-            }
+            plays = TakePlaysIfEveryoneIsSet(room);
         }
         await Clients.Group(room.Code).SendAsync("RoomStateChanged", readyState);
-        if (plays.Count > 0)
-        {
-            await Task.WhenAll(plays.Select(play =>
-                Clients.Client(play.ConnectionId).SendAsync("AnimationPlay", play.Signal)));
-            statistics.IncrementAnimationsPerformed(plays.Count);
-            await Clients.Group(room.Code).SendAsync("RoomStateChanged", Snapshot(room));
-        }
+        await SendPlays(room, plays);
         return readyState;
+    }
+
+    /// <summary>
+    /// The game path of the animation this member is about to play, announced before SetReady by
+    /// clients that preload. Everyone else has to confirm they have it again.
+    /// </summary>
+    public async Task<RoomStateDto> SetAnimationAsset(string gamePath)
+    {
+        var room = GetCurrentRoom();
+        RoomStateDto state;
+        lock (room.Gate)
+        {
+            var member = room.Members[Context.ConnectionId];
+            member.WaitsForAssets = true;
+            member.AssetPath = CleanAssetPath(gamePath);
+            member.AssetsReady = false;
+            foreach (var other in room.Members.Values.Where(value => value != member)) other.AssetsReady = false;
+            state = Snapshot(room);
+        }
+        await Clients.Group(room.Code).SendAsync("RoomStateChanged", state);
+        return state;
+    }
+
+    /// <summary>This member has every other ready member's animation files (or gave up waiting).</summary>
+    public async Task<RoomStateDto> SetAssetsReady(bool ready)
+    {
+        var room = GetCurrentRoom();
+        List<(string ConnectionId, PlaySignalDto Signal)> plays;
+        RoomStateDto state;
+        lock (room.Gate)
+        {
+            var member = room.Members[Context.ConnectionId];
+            member.WaitsForAssets = true;
+            member.AssetsReady = ready;
+            state = Snapshot(room);
+            plays = TakePlaysIfEveryoneIsSet(room);
+        }
+        await Clients.Group(room.Code).SendAsync("RoomStateChanged", state);
+        await SendPlays(room, plays);
+        return state;
+    }
+
+    /// <summary>Everyone is ready and every preloading member has the others' files: start. Caller holds the gate.</summary>
+    private static List<(string ConnectionId, PlaySignalDto Signal)> TakePlaysIfEveryoneIsSet(Room room)
+    {
+        if (room.Members.Count < 2 ||
+            !room.Members.Values.All(value => value.Ready && !string.IsNullOrWhiteSpace(value.ModKey)) ||
+            !room.Members.Values.All(value => !value.WaitsForAssets || value.AssetsReady))
+            return [];
+        var start = DateTimeOffset.UtcNow.AddMilliseconds(PlayDelayMilliseconds).ToUnixTimeMilliseconds();
+        var sequence = Guid.NewGuid().ToString("N");
+        var plays = room.Members.Values.Select(value => (
+            value.ConnectionId,
+            new PlaySignalDto(value.ModKey, start, sequence, PlayDelayMilliseconds))).ToList();
+        ResetReady(room);
+        return plays;
+    }
+
+    private async Task SendPlays(Room room, List<(string ConnectionId, PlaySignalDto Signal)> plays)
+    {
+        if (plays.Count == 0) return;
+        await Task.WhenAll(plays.Select(play =>
+            Clients.Client(play.ConnectionId).SendAsync("AnimationPlay", play.Signal)));
+        statistics.IncrementAnimationsPerformed(plays.Count);
+        await Clients.Group(room.Code).SendAsync("RoomStateChanged", Snapshot(room));
     }
 
     public async Task<RoomStateDto> CancelReady()
@@ -549,6 +598,8 @@ public sealed class AnimationHub : Hub
             var member = room.Members[Context.ConnectionId];
             member.Ready = false;
             member.ModKey = "";
+            member.AssetPath = "";
+            member.AssetsReady = false;
         }
         var state = Snapshot(room);
         await Clients.Group(room.Code).SendAsync("RoomStateChanged", state);
@@ -677,7 +728,8 @@ public sealed class AnimationHub : Hub
         lock (room.Gate)
             return new RoomStateDto(room.Code, room.Members.Values
                 .Select(member => new RoomMemberDto(member.ConnectionId, member.DisplayName, member.IsLeader,
-                    member.Ready, member.ModKey, member.FreeUse)).ToList());
+                    member.Ready, member.ModKey, member.FreeUse,
+                    member.AssetPath, member.AssetsReady, member.WaitsForAssets)).ToList());
     }
 
     private static readonly Regex FreeUseTrigger = new(
@@ -712,7 +764,13 @@ public sealed class AnimationHub : Hub
 
     private static void ResetReady(Room room)
     {
-        foreach (var member in room.Members.Values) { member.Ready = false; member.ModKey = ""; }
+        foreach (var member in room.Members.Values)
+        {
+            member.Ready = false;
+            member.ModKey = "";
+            member.AssetPath = "";
+            member.AssetsReady = false;
+        }
     }
 
     private static string CreateCode()
@@ -728,6 +786,15 @@ public sealed class AnimationHub : Hub
 
     private static string CleanCode(string value) => new string(value.Where(char.IsLetterOrDigit).Take(8).ToArray()).ToUpperInvariant();
     private static string CleanName(string value) => string.IsNullOrWhiteSpace(value) ? "Player" : value.Trim()[..Math.Min(40, value.Trim().Length)];
+    // Only a character animation path is ever announced: chara/... .pap, bounded.
+    private static string CleanAssetPath(string? value)
+    {
+        var clean = (value ?? "").Trim().Replace('\\', '/').ToLowerInvariant();
+        return clean.Length <= 200 && clean.StartsWith("chara/", StringComparison.Ordinal) &&
+               clean.EndsWith(".pap", StringComparison.Ordinal) && !clean.Contains("..", StringComparison.Ordinal)
+            ? clean
+            : "";
+    }
     private static string CleanModKey(string value) => value.Trim()[..Math.Min(160, value.Trim().Length)];
     private static string CleanLabel(string value)
     {
@@ -766,6 +833,10 @@ public sealed class AnimationHub : Hub
         public bool Ready { get; set; }
         public bool FreeUse { get; set; }
         public string ModKey { get; set; } = "";
+        public string AssetPath { get; set; } = "";
+        public bool AssetsReady { get; set; }
+        // Set once the member's client takes part in preloading; older clients are never waited on.
+        public bool WaitsForAssets { get; set; }
         public HashSet<string> Catalog { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, OptionSelectionDto> OptionSelections { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, RoleLabelDto> RoleLabels { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -788,7 +859,10 @@ public sealed record RoomMemberDto(
     bool IsLeader,
     bool Ready,
     string ModKey,
-    bool FreeUse = false);
+    bool FreeUse = false,
+    string AssetPath = "",
+    bool AssetsReady = false,
+    bool WaitsForAssets = false);
 public sealed record FreeUseDirectionRequest(
     string Fingerprint,
     string ModKey,

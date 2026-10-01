@@ -27,6 +27,8 @@ public sealed class Configuration : IPluginConfiguration
     public string ReceivedModFolder { get; set; } = "";
     public bool AutomaticEmoteSync { get; set; } = true;
     public bool SitDozeAnywhere { get; set; }
+    // Line up a couple animation's contact (penis with mouth, vagina or anus) through Simple Heels.
+    public bool AutomaticLineUp { get; set; } = true;
     public List<CustomAnimationCommand> CustomAnimationCommands { get; set; } = [];
     public Dictionary<uint, string> TypedEmoteDefaults { get; set; } = [];
 

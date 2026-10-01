@@ -49,15 +49,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         CarrierPlayback Playback,
         long NextAttempt,
         long Deadline);
-    private enum CarrierFamily
-    {
-        None,
-        LoopingDance,
-        StandingLoop,
-        PropLoop,
-        Dote,
-        OneShot,
-    }
     private static readonly HashSet<string> GroundLoopCommands = new(StringComparer.OrdinalIgnoreCase)
     {
         "/playdead",
@@ -115,6 +106,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly InPlaceEmoteConverter inPlaceEmoteConverter;
     private readonly VanillaEmoteRedirectService vanillaEmoteRedirect;
     private readonly MovementService movement;
+    private readonly ContactAlignService contactAlign;
+    private readonly AnimationPreloader preloader;
+    private bool simpleHeelsLoaded;
+    private long simpleHeelsCheckedAt;
     private readonly PoseService poses;
     private readonly AnywherePoseService? anywherePoses;
     private readonly AnimationSpeedService? animationSpeedController;
@@ -301,6 +296,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Log.Warning(exception, "Animation-speed hook could not be initialized.");
         }
         sync = new AnimationSyncService();
+        contactAlign = new ContactAlignService(Objects, Targets, Log, IsRoomMemberNamed, ExecuteCommand);
+        preloader = new AnimationPreloader(PluginInterface, Objects, penumbra, sync, Log);
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
         sync.LocalAnimationReceived += signal => localAnimationSignals.Enqueue(signal);
         sync.ModTransferOffered += offer => incomingTransferOffers.Enqueue(offer);
@@ -315,6 +312,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (exception is null) Log.Information("{Message}", message);
             else Log.Warning(exception, "{Message}", message);
         };
+        Theme.Initialize(PluginInterface.UiBuilder);
         mainWindow = new MainWindow(this);
         settingsWindow = new SettingsWindow(this);
         customCommandsWindow = new CustomCommandsWindow(this);
@@ -1216,6 +1214,37 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = enabled
             ? "Sit/doze anywhere enabled. Chair-sit and doze animations will play in place."
             : "Sit/doze anywhere disabled. Chair-sit and doze will use normal game placement.";
+    }
+
+    public bool AutomaticLineUpEnabled => configuration.AutomaticLineUp;
+    public string LineUpStatus => contactAlign.Status;
+    public bool IsLiningUp => contactAlign.IsMeasuring;
+
+    public void SetAutomaticLineUp(bool enabled)
+    {
+        configuration.AutomaticLineUp = enabled;
+        configuration.Save(PluginInterface);
+        Status = enabled
+            ? "Automatic line-up enabled. Couple animations line up through Simple Heels when they start."
+            : "Automatic line-up disabled. The Line up button still works.";
+    }
+
+    public void LineUpNow() => contactAlign.LineUpNow(IsSimpleHeelsLoadedCached());
+
+    /// <summary>Whether this character name is someone else in the current room, and so runs Synastry.</summary>
+    private bool IsRoomMemberNamed(string name) =>
+        sync.IsInRoom && sync.Room is { } room && room.Members.Any(member =>
+            !sync.IsCurrentMember(member.ConnectionId) &&
+            member.DisplayName.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    // Checking the plugin list every frame is wasteful; once a second is plenty.
+    private bool IsSimpleHeelsLoadedCached()
+    {
+        var now = Environment.TickCount64;
+        if (now - simpleHeelsCheckedAt < 1000) return simpleHeelsLoaded;
+        simpleHeelsCheckedAt = now;
+        simpleHeelsLoaded = SimpleHeelsAvailable;
+        return simpleHeelsLoaded;
     }
 
     public void SetAutomaticEmoteSync(bool enabled)
@@ -2476,9 +2505,29 @@ public sealed unsafe class Plugin : IDalamudPlugin
         preparedDirectPlayback = directPlayback;
         preparedCarrierPlayback = carrierPlayback;
         Status = $"Prepared {modName}; waiting for everyone in room {sync.Room!.RoomCode}.";
-        RunSync(sync.SetReadyAsync(preparedModKey), $"Ready with {modName}; waiting for the group.");
+        var assetPath = WarmUpPreparedAnimation(command, directPlayback, carrierPlayback);
+        RunSync(sync.ReadyWithAssetAsync(preparedModKey, assetPath), $"Ready with {modName}; waiting for the group.");
         return true;
     }
+
+    /// <summary>
+    /// Loads the prepared emote's animation now, so a sync plugin sends it to the room before the
+    /// start. Returns its game path when a mod replaces it. Poses and local-only direct playback
+    /// aren't preloaded.
+    /// </summary>
+    private string WarmUpPreparedAnimation(string? command, EmotePlayback? directPlayback, CarrierPlayback? carrierPlayback)
+    {
+        if (directPlayback is not null && carrierPlayback is null) return "";
+        EmotePlaybackInfo? info = null;
+        if (carrierPlayback is not null) emotePlaybackById.TryGetValue(carrierPlayback.EmoteId, out info);
+        else if (command is not null) emotePlaybackByCommand.TryGetValue(command, out info);
+        if (info is null || !TryCreatePlayback(info, out var playback)) return "";
+        var main = info.Timelines.FirstOrDefault(timeline => timeline.RowId == playback.MainTimeline);
+        return main is null ? "" : preloader.WarmUp(playback.MainTimeline, main.Key);
+    }
+
+    /// <summary>Room members whose animation files are still on their way to this client.</summary>
+    public IReadOnlyList<string> WaitingForAnimationFiles => preloader.WaitingFor;
 
     private void SchedulePose(string modName, PoseTarget pose, int delayMs)
     {
@@ -2654,7 +2703,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         if (candidates.Count == 0)
         {
-            var reason = MissingCarrierMessage(family, sourceLoop);
+            var reason = CarrierCatalog.MissingMessage(family, sourceLoop);
             if (!inPlaceEmoteConverter.IsConverted(penumbra.GetModRoot(), directory))
                 return new InPlaceConversionResult(false, reason);
         }
@@ -2683,20 +2732,25 @@ public sealed unsafe class Plugin : IDalamudPlugin
         // Emotes outside the curated families would otherwise have no carrier at all and fall
         // back to local-only direct play. They use the same generic carriers as a locked vanilla emote.
         var useGenericCarriers = standaloneVanillaRedirect || family == CarrierFamily.None;
+        var familyCount = CarrierCatalog.For(family, sourceLoop, false).Count;
+        var rankByCommand = CarrierCatalog.For(family, sourceLoop, useGenericCarriers)
+            .Select((carrier, rank) => (carrier.Command, rank))
+            .ToDictionary(item => item.Command, item => item.rank, StringComparer.OrdinalIgnoreCase);
         var sourceSlots = source.Timelines.Select(timeline => timeline.Slot).ToHashSet();
+        var sourceHasIntro = HasIntroAnimation(source);
         return emotePlaybackById.Values
             .Where(candidate =>
                 candidate.EmoteId != source.EmoteId &&
+                rankByCommand.ContainsKey(candidate.Command) &&
                 IsEmoteUnlocked(candidate.EmoteId) &&
                 IsSafeCarrierEmote(candidate.EmoteId) &&
                 candidate.Timelines.Any(timeline => timeline.IsPersistentLoop) == sourceLoop &&
                 candidate.Timelines.Any(timeline => sourceSlots.Contains(timeline.Slot)))
-            .Where(candidate => useGenericCarriers
-                ? IsAllowedStandaloneCarrier(family, sourceLoop, candidate.Command)
-                : IsAllowedCarrier(family, candidate.Command))
-            .OrderBy(candidate => useGenericCarriers
-                ? StandaloneCarrierPriority(family, sourceLoop, candidate.Command)
-                : CarrierPriority(family, candidate.Command))
+            // The source's own family first, then carriers without an intro of their own (it would
+            // play before a mod that has none), then the most commonly owned.
+            .OrderBy(candidate => rankByCommand[candidate.Command] >= familyCount)
+            .ThenBy(candidate => !sourceHasIntro && HasIntroAnimation(candidate))
+            .ThenBy(candidate => rankByCommand[candidate.Command])
             .ThenByDescending(candidate =>
                 sourceSlots.SetEquals(candidate.Timelines.Select(timeline => timeline.Slot)))
             .ThenBy(candidate => Math.Abs(candidate.Timelines.Count - source.Timelines.Count))
@@ -2709,6 +2763,22 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     timeline.Key,
                     timeline.IsPersistentLoop)).ToList()))
             .ToList();
+    }
+
+    private readonly Dictionary<string, bool> introAnimationByKey = new(StringComparer.OrdinalIgnoreCase);
+
+    /// <summary>Whether the emote's intro timeline (slot 1) has a vanilla body animation.</summary>
+    private bool HasIntroAnimation(EmotePlaybackInfo info)
+    {
+        var intro = info.Timelines.FirstOrDefault(timeline => timeline.Slot == 1);
+        if (intro is null) return false;
+        if (!introAnimationByKey.TryGetValue(intro.Key, out var exists))
+        {
+            try { exists = DataManager.FileExists($"chara/human/c0101/animation/a0001/bt_common/{intro.Key}.pap"); }
+            catch { exists = false; }
+            introAnimationByKey[intro.Key] = exists;
+        }
+        return exists;
     }
 
     private static CarrierFamily ClassifyCarrierFamily(
@@ -2732,135 +2802,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return CarrierFamily.StandingLoop;
         return CarrierFamily.None;
     }
-
-    private static bool IsAllowedCarrier(CarrierFamily family, string candidateCommand)
-    {
-        return family switch
-        {
-            CarrierFamily.LoopingDance =>
-                candidateCommand.Equals("/stepdance", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/harvestdance", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/balldance", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/beesknees", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/golddance", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/thavdance", StringComparison.OrdinalIgnoreCase),
-            CarrierFamily.StandingLoop =>
-                candidateCommand.Equals("/wringhands", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase),
-            CarrierFamily.PropLoop =>
-                candidateCommand.Equals("/water", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase),
-            CarrierFamily.Dote =>
-                candidateCommand.Equals("/blowkiss", StringComparison.OrdinalIgnoreCase),
-            CarrierFamily.OneShot =>
-                candidateCommand.Equals("/wave", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/clap", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/cheer", StringComparison.OrdinalIgnoreCase) ||
-                candidateCommand.Equals("/bow", StringComparison.OrdinalIgnoreCase),
-            _ => false,
-        };
-    }
-
-    private static int CarrierPriority(CarrierFamily family, string candidateCommand)
-    {
-        if (family == CarrierFamily.LoopingDance)
-        {
-            if (candidateCommand.Equals("/beesknees", StringComparison.OrdinalIgnoreCase)) return 0;
-            if (candidateCommand.Equals("/golddance", StringComparison.OrdinalIgnoreCase)) return 1;
-            if (candidateCommand.Equals("/thavdance", StringComparison.OrdinalIgnoreCase)) return 2;
-            if (candidateCommand.Equals("/balldance", StringComparison.OrdinalIgnoreCase)) return 3;
-            if (candidateCommand.Equals("/harvestdance", StringComparison.OrdinalIgnoreCase)) return 4;
-            if (candidateCommand.Equals("/stepdance", StringComparison.OrdinalIgnoreCase)) return 5;
-        }
-        if (family == CarrierFamily.StandingLoop)
-        {
-            if (candidateCommand.Equals("/wringhands", StringComparison.OrdinalIgnoreCase)) return 0;
-            if (candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase)) return 1;
-        }
-        if (family == CarrierFamily.PropLoop)
-        {
-            if (candidateCommand.Equals("/water", StringComparison.OrdinalIgnoreCase)) return 0;
-            if (candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase)) return 1;
-        }
-        if (family == CarrierFamily.Dote &&
-            candidateCommand.Equals("/blowkiss", StringComparison.OrdinalIgnoreCase)) return 0;
-        if (family == CarrierFamily.OneShot)
-        {
-            if (candidateCommand.Equals("/wave", StringComparison.OrdinalIgnoreCase)) return 0;
-            if (candidateCommand.Equals("/clap", StringComparison.OrdinalIgnoreCase)) return 1;
-            if (candidateCommand.Equals("/cheer", StringComparison.OrdinalIgnoreCase)) return 2;
-            if (candidateCommand.Equals("/bow", StringComparison.OrdinalIgnoreCase)) return 3;
-        }
-        return int.MaxValue;
-    }
-
-    private static bool IsAllowedStandaloneCarrier(
-        CarrierFamily family,
-        bool sourceLoop,
-        string candidateCommand)
-    {
-        if (IsAllowedCarrier(family, candidateCommand)) return true;
-        if (sourceLoop)
-            return candidateCommand.Equals("/wringhands", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/stepdance", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/harvestdance", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/balldance", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/beesknees", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/golddance", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/thavdance", StringComparison.OrdinalIgnoreCase) ||
-                   candidateCommand.Equals("/water", StringComparison.OrdinalIgnoreCase);
-        return candidateCommand.Equals("/wave", StringComparison.OrdinalIgnoreCase) ||
-               candidateCommand.Equals("/clap", StringComparison.OrdinalIgnoreCase) ||
-               candidateCommand.Equals("/cheer", StringComparison.OrdinalIgnoreCase) ||
-               candidateCommand.Equals("/bow", StringComparison.OrdinalIgnoreCase);
-    }
-
-    private static int StandaloneCarrierPriority(
-        CarrierFamily family,
-        bool sourceLoop,
-        string candidateCommand)
-    {
-        var preferred = CarrierPriority(family, candidateCommand);
-        if (preferred != int.MaxValue) return preferred;
-        if (sourceLoop)
-        {
-            if (candidateCommand.Equals("/wringhands", StringComparison.OrdinalIgnoreCase)) return 20;
-            if (candidateCommand.Equals("/sweep", StringComparison.OrdinalIgnoreCase)) return 21;
-            if (candidateCommand.Equals("/stepdance", StringComparison.OrdinalIgnoreCase)) return 22;
-            if (candidateCommand.Equals("/harvestdance", StringComparison.OrdinalIgnoreCase)) return 23;
-            if (candidateCommand.Equals("/balldance", StringComparison.OrdinalIgnoreCase)) return 24;
-            if (candidateCommand.Equals("/beesknees", StringComparison.OrdinalIgnoreCase)) return 25;
-            if (candidateCommand.Equals("/golddance", StringComparison.OrdinalIgnoreCase)) return 26;
-            if (candidateCommand.Equals("/thavdance", StringComparison.OrdinalIgnoreCase)) return 27;
-            if (candidateCommand.Equals("/water", StringComparison.OrdinalIgnoreCase)) return 28;
-        }
-        if (candidateCommand.Equals("/wave", StringComparison.OrdinalIgnoreCase)) return 20;
-        if (candidateCommand.Equals("/clap", StringComparison.OrdinalIgnoreCase)) return 21;
-        if (candidateCommand.Equals("/cheer", StringComparison.OrdinalIgnoreCase)) return 22;
-        if (candidateCommand.Equals("/bow", StringComparison.OrdinalIgnoreCase)) return 23;
-        return int.MaxValue;
-    }
-
-    private static string MissingCarrierMessage(CarrierFamily family, bool sourceLoop) => family switch
-    {
-        CarrierFamily.LoopingDance =>
-            "This animation uses the Looping Dance Rework. Unlock Bee's Knees, Gold Dance, Thavnairian Dance, " +
-            "Ball Dance, Harvest Dance, or Step Dance, then try again.",
-        CarrierFamily.StandingLoop =>
-            "This standing loop needs Wring Hands or Sweep as an inexpensive carrier.",
-        CarrierFamily.PropLoop =>
-            "This prop loop needs Water or Sweep as an inexpensive carrier.",
-        CarrierFamily.Dote =>
-            "Synastry routes /dote through /blowkiss. Unlock Blow Kiss, then try again.",
-        CarrierFamily.OneShot =>
-            "This one-shot animation needs Wave, Clap, Cheer, or Bow as a starter carrier.",
-        _ when sourceLoop =>
-            "This looping animation needs Wring Hands, Sweep, Water, or one of the looping dances as a carrier. " +
-            "Unlock one of them, then try again.",
-        _ =>
-            "This animation needs Wave, Clap, Cheer, or Bow as a carrier. Unlock one of them, then try again.",
-    };
 
     private static bool IsSafeCarrierEmote(uint emoteId)
     {
@@ -3593,6 +3534,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (roleSyncPending) StartRoleLabelSync();
         if (communityRoleSyncPending) StartCommunityRoleLabelSync();
         UpdateAlignment();
+        contactAlign.Tick(configuration.AutomaticLineUp, IsSimpleHeelsLoadedCached());
+        preloader.Tick();
         UpdateAnimationSpeed();
         ProcessCompletedDownloads();
         ProcessAddedMod();
@@ -4530,6 +4473,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public void Dispose()
     {
         agentExecuteEmoteHook?.Dispose();
+        Theme.Dispose();
         var refreshCancellation = modRefreshCancellation;
         modRefreshCancellation = null;
         refreshCancellation?.Cancel();
