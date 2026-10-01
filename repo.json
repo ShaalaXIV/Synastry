@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.76.0",
+    "AssemblyVersion": "1.0.78.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -13,9 +13,9 @@
     "Tags": [ "penumbra", "animation", "emote", "sync" ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.76/Synastry-1.0.76.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.76/Synastry-1.0.76.zip",
-    "Changelog": "A redesigned interface built on the game's own fonts. Paired animations now line up automatically through Simple Heels, locked emotes use the replacements most players already own, and rooms wait until everyone's animation files have arrived before starting. \"Let the room pick my role\" is now Free Use Mode.",
-    "LastUpdate": "1790871722"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.78/Synastry-1.0.78.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.78/Synastry-1.0.78.zip",
+    "Changelog": "Colour-coded animations are back: green when everyone in the room has it, amber when some do, blue when someone picked it, grey when private. Moderator fixes to community tags now reach everyone once, and you can still change them afterward. Synastry no longer reports your installed mods to the relay; library scans stay on your PC.",
+    "LastUpdate": "1790878564"
   }
 ]
