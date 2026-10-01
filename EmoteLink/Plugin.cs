@@ -106,6 +106,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly InPlaceEmoteConverter inPlaceEmoteConverter;
     private readonly VanillaEmoteRedirectService vanillaEmoteRedirect;
     private readonly MovementService movement;
+    private readonly ContactAlignService contactAlign;
+    private bool simpleHeelsLoaded;
+    private long simpleHeelsCheckedAt;
     private readonly PoseService poses;
     private readonly AnywherePoseService? anywherePoses;
     private readonly AnimationSpeedService? animationSpeedController;
@@ -292,6 +295,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Log.Warning(exception, "Animation-speed hook could not be initialized.");
         }
         sync = new AnimationSyncService();
+        contactAlign = new ContactAlignService(Objects, Targets, Log, IsRoomMemberNamed, ExecuteCommand);
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
         sync.LocalAnimationReceived += signal => localAnimationSignals.Enqueue(signal);
         sync.ModTransferOffered += offer => incomingTransferOffers.Enqueue(offer);
@@ -1207,6 +1211,37 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = enabled
             ? "Sit/doze anywhere enabled. Chair-sit and doze animations will play in place."
             : "Sit/doze anywhere disabled. Chair-sit and doze will use normal game placement.";
+    }
+
+    public bool AutomaticLineUpEnabled => configuration.AutomaticLineUp;
+    public string LineUpStatus => contactAlign.Status;
+    public bool IsLiningUp => contactAlign.IsMeasuring;
+
+    public void SetAutomaticLineUp(bool enabled)
+    {
+        configuration.AutomaticLineUp = enabled;
+        configuration.Save(PluginInterface);
+        Status = enabled
+            ? "Automatic line-up enabled. Couple animations line up through Simple Heels when they start."
+            : "Automatic line-up disabled. The Line up button still works.";
+    }
+
+    public void LineUpNow() => contactAlign.LineUpNow(IsSimpleHeelsLoadedCached());
+
+    /// <summary>Whether this character name is someone else in the current room, and so runs Synastry.</summary>
+    private bool IsRoomMemberNamed(string name) =>
+        sync.IsInRoom && sync.Room is { } room && room.Members.Any(member =>
+            !sync.IsCurrentMember(member.ConnectionId) &&
+            member.DisplayName.Equals(name, StringComparison.OrdinalIgnoreCase));
+
+    // Checking the plugin list every frame is wasteful; once a second is plenty.
+    private bool IsSimpleHeelsLoadedCached()
+    {
+        var now = Environment.TickCount64;
+        if (now - simpleHeelsCheckedAt < 1000) return simpleHeelsLoaded;
+        simpleHeelsCheckedAt = now;
+        simpleHeelsLoaded = SimpleHeelsAvailable;
+        return simpleHeelsLoaded;
     }
 
     public void SetAutomaticEmoteSync(bool enabled)
@@ -3476,6 +3511,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (roleSyncPending) StartRoleLabelSync();
         if (communityRoleSyncPending) StartCommunityRoleLabelSync();
         UpdateAlignment();
+        contactAlign.Tick(configuration.AutomaticLineUp, IsSimpleHeelsLoadedCached());
         UpdateAnimationSpeed();
         ProcessCompletedDownloads();
         ProcessAddedMod();
