@@ -453,6 +453,45 @@ public sealed class AnimationSyncService : IAsyncDisposable
         UpdateRoom(state);
     }
 
+    /// <summary>False once the relay turns out to predate preloading; the room then starts as soon
+    /// as everyone is ready, as before.</summary>
+    public bool RelaySupportsPreload { get; private set; } = true;
+
+    /// <summary>Tell the room which animation file this player will play, then ready up.</summary>
+    public async Task ReadyWithAssetAsync(string modKey, string assetPath)
+    {
+        await SetAnimationAssetAsync(assetPath);
+        await SetReadyAsync(modKey);
+    }
+
+    /// <summary>Announce the animation file this player is about to play, before SetReady.</summary>
+    public async Task SetAnimationAssetAsync(string gamePath)
+    {
+        if (!RelaySupportsPreload) return;
+        try
+        {
+            UpdateRoom(await RequireConnection().InvokeAsync<RoomStateDto>("SetAnimationAsset", gamePath));
+        }
+        catch (HubException exception) when (exception.Message.Contains("does not exist", StringComparison.OrdinalIgnoreCase))
+        {
+            RelaySupportsPreload = false;
+        }
+    }
+
+    /// <summary>Tell the room this player has everyone else's animation files.</summary>
+    public async Task SetAssetsReadyAsync(bool ready)
+    {
+        if (!RelaySupportsPreload) return;
+        try
+        {
+            UpdateRoom(await RequireConnection().InvokeAsync<RoomStateDto>("SetAssetsReady", ready));
+        }
+        catch (HubException exception) when (exception.Message.Contains("does not exist", StringComparison.OrdinalIgnoreCase))
+        {
+            RelaySupportsPreload = false;
+        }
+    }
+
     public async Task SetLocalPresenceAsync(string scope, string displayName, uint homeWorldId)
     {
         var cleanScope = CleanLocalScope(scope);
@@ -683,7 +722,10 @@ public sealed record RoomMemberDto(
     bool IsLeader,
     bool Ready,
     string ModKey,
-    bool FreeUse = false);
+    bool FreeUse = false,
+    string AssetPath = "",
+    bool AssetsReady = false,
+    bool WaitsForAssets = false);
 public sealed record FreeUseDirectionRequest(
     string Fingerprint,
     string ModKey,

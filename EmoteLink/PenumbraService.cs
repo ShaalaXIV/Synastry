@@ -33,6 +33,8 @@ public sealed class PenumbraService : IDisposable
     private readonly ICallGateSubscriber<string, int> installMod;
     private readonly ICallGateSubscriber<string, string, string, int> setModPath;
     private readonly ICallGateSubscriber<string, object?> modAdded;
+    private readonly ICallGateSubscriber<string, string> resolvePlayerPath;
+    private readonly ICallGateSubscriber<string, int, string> resolveGameObjectPath;
 
     public event Action<string>? ModAdded;
 
@@ -60,6 +62,8 @@ public sealed class PenumbraService : IDisposable
         installMod = pi.GetIpcSubscriber<string, int>("Penumbra.InstallMod.V5");
         setModPath = pi.GetIpcSubscriber<string, string, string, int>("Penumbra.SetModPath.V5");
         modAdded = pi.GetIpcSubscriber<string, object?>("Penumbra.ModAdded");
+        resolvePlayerPath = pi.GetIpcSubscriber<string, string>("Penumbra.ResolvePlayerPath.V5");
+        resolveGameObjectPath = pi.GetIpcSubscriber<string, int, string>("Penumbra.ResolveGameObjectPath.V5");
         modAdded.Subscribe(OnModAdded);
     }
 
@@ -212,6 +216,21 @@ public sealed class PenumbraService : IDisposable
         22 => "Your character's collection is not active in Penumbra (CollectionInactive).",
         _ => $"Penumbra rejected the temporary activation (error code {code})."
     };
+
+    /// <summary>The file a game path loads from for this player, or null if Penumbra can't say.</summary>
+    public string? ResolvePlayerPath(string gamePath)
+    {
+        try { return resolvePlayerPath.InvokeFunc(gamePath); }
+        catch { return null; }
+    }
+
+    /// <summary>The file a game path loads from for another character, including a sync plugin's
+    /// temporary collection for them, or null if Penumbra can't say.</summary>
+    public string? ResolveGameObjectPath(string gamePath, int objectIndex)
+    {
+        try { return resolveGameObjectPath.InvokeFunc(gamePath, objectIndex); }
+        catch { return null; }
+    }
 
     public string? GetModRoot()
     {

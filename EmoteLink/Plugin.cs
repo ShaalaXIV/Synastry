@@ -107,6 +107,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly VanillaEmoteRedirectService vanillaEmoteRedirect;
     private readonly MovementService movement;
     private readonly ContactAlignService contactAlign;
+    private readonly AnimationPreloader preloader;
     private bool simpleHeelsLoaded;
     private long simpleHeelsCheckedAt;
     private readonly PoseService poses;
@@ -296,6 +297,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
         sync = new AnimationSyncService();
         contactAlign = new ContactAlignService(Objects, Targets, Log, IsRoomMemberNamed, ExecuteCommand);
+        preloader = new AnimationPreloader(PluginInterface, Objects, penumbra, sync, Log);
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
         sync.LocalAnimationReceived += signal => localAnimationSignals.Enqueue(signal);
         sync.ModTransferOffered += offer => incomingTransferOffers.Enqueue(offer);
@@ -2503,9 +2505,29 @@ public sealed unsafe class Plugin : IDalamudPlugin
         preparedDirectPlayback = directPlayback;
         preparedCarrierPlayback = carrierPlayback;
         Status = $"Prepared {modName}; waiting for everyone in room {sync.Room!.RoomCode}.";
-        RunSync(sync.SetReadyAsync(preparedModKey), $"Ready with {modName}; waiting for the group.");
+        var assetPath = WarmUpPreparedAnimation(command, directPlayback, carrierPlayback);
+        RunSync(sync.ReadyWithAssetAsync(preparedModKey, assetPath), $"Ready with {modName}; waiting for the group.");
         return true;
     }
+
+    /// <summary>
+    /// Loads the prepared emote's animation now, so a sync plugin sends it to the room before the
+    /// start. Returns its game path when a mod replaces it. Poses and local-only direct playback
+    /// aren't preloaded.
+    /// </summary>
+    private string WarmUpPreparedAnimation(string? command, EmotePlayback? directPlayback, CarrierPlayback? carrierPlayback)
+    {
+        if (directPlayback is not null && carrierPlayback is null) return "";
+        EmotePlaybackInfo? info = null;
+        if (carrierPlayback is not null) emotePlaybackById.TryGetValue(carrierPlayback.EmoteId, out info);
+        else if (command is not null) emotePlaybackByCommand.TryGetValue(command, out info);
+        if (info is null || !TryCreatePlayback(info, out var playback)) return "";
+        var main = info.Timelines.FirstOrDefault(timeline => timeline.RowId == playback.MainTimeline);
+        return main is null ? "" : preloader.WarmUp(playback.MainTimeline, main.Key);
+    }
+
+    /// <summary>Room members whose animation files are still on their way to this client.</summary>
+    public IReadOnlyList<string> WaitingForAnimationFiles => preloader.WaitingFor;
 
     private void SchedulePose(string modName, PoseTarget pose, int delayMs)
     {
@@ -3513,6 +3535,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (communityRoleSyncPending) StartCommunityRoleLabelSync();
         UpdateAlignment();
         contactAlign.Tick(configuration.AutomaticLineUp, IsSimpleHeelsLoadedCached());
+        preloader.Tick();
         UpdateAnimationSpeed();
         ProcessCompletedDownloads();
         ProcessAddedMod();

@@ -1212,8 +1212,11 @@ public sealed class MainWindow : Window
             Theme.Dot(draw, new Vector2(start.X + 4f * s, midY), color, member.Ready || isMe);
             var nameX = start.X + 16f * s;
             var textY = midY - ImGui.GetTextLineHeight() * 0.5f;
-            var stateText = member.Ready ? "ready" : "waiting";
-            var stateWidth = ImGui.CalcTextSize(stateText).X + (member.Ready ? 16f * s : 0f);
+            // Ready, but this member's client is still receiving the others' animation files.
+            var gettingFiles = member.Ready && member.WaitsForAssets && !member.AssetsReady;
+            var stateText = gettingFiles ? "getting files" : member.Ready ? "ready" : "waiting";
+            var showCheck = member.Ready && !gettingFiles;
+            var stateWidth = ImGui.CalcTextSize(stateText).X + (showCheck ? 16f * s : 0f);
             var name = Theme.Truncate(member.DisplayName, width - 16f * s - stateWidth - 60f * s);
             draw.AddText(new Vector2(nameX, textY), ImGui.GetColorU32(Theme.Bone), name);
             var tagX = nameX + ImGui.CalcTextSize(name).X + 6f * s;
@@ -1224,14 +1227,14 @@ public sealed class MainWindow : Window
             }
             if (member.FreeUse) draw.AddText(new Vector2(tagX, textY), ImGui.GetColorU32(Theme.AzureText), "Free Use");
             var stateX = start.X + width - stateWidth;
-            if (member.Ready)
+            if (showCheck)
             {
                 Theme.Check(draw, new Vector2(stateX, midY - 4.5f * s), color);
                 draw.AddText(new Vector2(stateX + 16f * s, textY), ImGui.GetColorU32(Theme.Bone), stateText);
             }
             else
             {
-                draw.AddText(new Vector2(stateX, textY), ImGui.GetColorU32(Theme.Faint), stateText);
+                draw.AddText(new Vector2(stateX, textY), ImGui.GetColorU32(gettingFiles ? Theme.AzureText : Theme.Faint), stateText);
             }
             if (member != room.Members[^1])
                 draw.AddLine(new Vector2(start.X, start.Y + rowHeight), new Vector2(start.X + width, start.Y + rowHeight),
@@ -1250,18 +1253,23 @@ public sealed class MainWindow : Window
             var ready = room.Members.Count(member => member.Ready);
             Theme.Number($"{ready} of {room.Members.Count}", Theme.Bone);
             ImGui.SameLine(0, 8f * s);
-            Theme.Label(ready == room.Members.Count ? "ready. Starting together." : "ready. Plays when everyone is.");
+            var waitingFor = plugin.WaitingForAnimationFiles;
+            Theme.Label(waitingFor.Count > 0
+                ? "ready. Getting files first."
+                : ready == room.Members.Count ? "ready. Starting together." : "ready. Plays when everyone is.");
+            if (waitingFor.Count > 0)
+                Theme.Quiet(Theme.Truncate($"Getting {string.Join(", ", waitingFor)}'s animation…", width));
             if (plugin.Sync.IsRoomLeader)
             {
                 if (Theme.Primary("Start now", width, 36f * s)) plugin.ForceSyncStart();
-                Tooltip("Start everyone who has picked a role, without waiting for the rest.");
+                Tooltip("Start everyone who has picked a role now, without waiting for the rest or for their files.");
             }
             if (Theme.Text("Unready", Theme.Soft)) plugin.CancelSyncReady();
             ImGui.SameLine();
             var leave = "Leave room";
             ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0, width - ImGui.CalcTextSize("Unready").X - ImGui.CalcTextSize(leave).X - 36f * s));
             if (Theme.Text(leave, Theme.Ash)) plugin.LeaveSyncRoom();
-        }, plugin.Sync.IsRoomLeader ? 3 : 2);
+        }, (plugin.Sync.IsRoomLeader ? 3 : 2) + (plugin.WaitingForAnimationFiles.Count > 0 ? 1 : 0));
     }
 
     private void CopyRoomCode(RoomStateDto room)
