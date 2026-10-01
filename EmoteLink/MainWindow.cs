@@ -1222,7 +1222,7 @@ public sealed class MainWindow : Window
                 draw.AddText(new Vector2(tagX, textY), ImGui.GetColorU32(Theme.Faint), "host");
                 tagX += ImGui.CalcTextSize("host").X + 6f * s;
             }
-            if (member.FreeUse) draw.AddText(new Vector2(tagX, textY), ImGui.GetColorU32(Theme.AzureText), "free use");
+            if (member.FreeUse) draw.AddText(new Vector2(tagX, textY), ImGui.GetColorU32(Theme.AzureText), "Free Use");
             var stateX = start.X + width - stateWidth;
             if (member.Ready)
             {
@@ -1241,8 +1241,8 @@ public sealed class MainWindow : Window
 
         ImGui.Dummy(new Vector2(0, 8f * s));
         var freeUse = plugin.IsFreeUseEnabled;
-        if (Theme.Toggle("##free-use", "Let the room pick my role", ref freeUse)) plugin.SetFreeUse(freeUse);
-        Tooltip("Free use: others choose your role and options. They're applied for this animation only and you're readied automatically. Private animations are never used.");
+        if (Theme.Toggle("##free-use", "Free Use Mode", ref freeUse)) plugin.SetFreeUse(freeUse);
+        Tooltip("Others in the room choose your role and options. They apply to that animation only and you're readied automatically. Private animations are never used.");
 
         DrawOffersLine(width);
         BottomAligned(() =>
@@ -1465,7 +1465,7 @@ public sealed class MainWindow : Window
             if (plugin.IsFreeUseMemberAvailable(next.MemberConnectionId)) BeginFreeUsePrompt(next);
         }
 
-        const string popupTitle = "Free use###SynastryFreeUse";
+        const string popupTitle = "Free Use Mode###SynastryFreeUse";
         if (activeFreeUsePrompt is not { } prompt)
         {
             // The member left or switched free use off while the prompt was showing; a modal that is
@@ -1486,7 +1486,7 @@ public sealed class MainWindow : Window
         if (ImGui.BeginPopupModal(popupTitle, ref popupOpen, ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoTitleBar))
         {
             openFreeUsePopup = false;
-            ImGui.TextColored(Theme.AzureText, $"{prompt.MemberName} lets the room pick their role");
+            ImGui.TextColored(Theme.AzureText, $"{prompt.MemberName} is in Free Use Mode");
             Theme.Title(prompt.ModName);
             var poses = plugin.GetDetectedPoses(prompt.Directory);
             var emotes = plugin.GetDetectedEmotes(prompt.Directory);
