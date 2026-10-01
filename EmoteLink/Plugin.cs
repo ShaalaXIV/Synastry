@@ -215,7 +215,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private int refreshProcessedMods;
     private int refreshCachedMods;
     private int refreshScannedMods;
-    private int refreshRelayMods;
     private HashSet<string>? refreshCurrentDirectories;
 
     public IReadOnlyList<(string Directory, string Name)> Mods { get; private set; } = [];
@@ -261,11 +260,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (!IsReporterId(configuration.CommunityReporterId))
         {
             configuration.CommunityReporterId = Guid.NewGuid().ToString("N");
-            generatedReporterIdentity = true;
-        }
-        if (!IsReporterId(configuration.CatalogReporterId))
-        {
-            configuration.CatalogReporterId = Guid.NewGuid().ToString("N");
             generatedReporterIdentity = true;
         }
         if (generatedReporterIdentity || upgradedConfiguration) configuration.Save(PluginInterface);
@@ -518,7 +512,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         refreshProcessedMods = 0;
         refreshCachedMods = 0;
         refreshScannedMods = 0;
-        refreshRelayMods = 0;
         refreshCurrentDirectories = currentDirectories;
         refreshWorkerCompleted = false;
         while (modRefreshResults.TryDequeue(out _)) { }
@@ -540,8 +533,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
         refreshFastMode = mainWindow.IsOpen;
         Status = $"Refreshing animation library: 0 of {allMods.Count} mods checked...";
         var worker = new AnimationCatalogRefreshWorker(
-            sync,
-            configuration.CatalogReporterId,
             WaitForModScanSlotAsync,
             modRefreshResults.Enqueue);
         modRefreshWorker = Task.Run(
@@ -592,19 +583,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     Log.Warning("Animation refresh worker stopped early: {Error}", result.Error);
                 continue;
             }
-            if (result.Kind == ModRefreshResultKind.CatalogReported)
-            {
-                animationIndexCache.MarkCatalogReported(
-                    result.Mod.Directory, result.Signature, result.Mod.Name, DateTimeOffset.UtcNow);
-                if (Stopwatch.GetElapsedTime(frameStart).TotalMilliseconds >= RefreshFrameBudgetMilliseconds)
-                    break;
-                continue;
-            }
-
             ApplyModRefreshResult(result);
             refreshProcessedMods++;
             if (result.CacheHit) refreshCachedMods++;
-            else if (result.RelayHit) refreshRelayMods++;
             else refreshScannedMods++;
             Status = $"Refreshing animation library: {refreshProcessedMods} of {refreshTotalMods} mods checked...";
 
@@ -647,10 +628,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         refreshTotalMods = 0;
         refreshProcessedMods = 0;
         Status = $"Loaded {Mods.Count} animation mod(s): {refreshCachedMods} cached, " +
-                 $"{refreshRelayMods} relay-assisted, {refreshScannedMods} validated in the background.";
+                 $"{refreshScannedMods} validated in the background.";
         refreshCachedMods = 0;
         refreshScannedMods = 0;
-        refreshRelayMods = 0;
         NormalizeOrganization();
         if (sync.IsInRoom) _ = sync.SetCatalogAsync(GetCatalogFingerprints());
     }
@@ -886,7 +866,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
             refreshProcessedMods = 0;
             refreshCachedMods = 0;
             refreshScannedMods = 0;
-            refreshRelayMods = 0;
             refreshCurrentDirectories = currentDirectories;
             refreshWorkerCompleted = false;
             while (modRefreshResults.TryDequeue(out _)) { }
@@ -907,8 +886,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 ? $"Validating newly installed mod {targets[0].Name}..."
                 : $"Validating {targets.Count} newly installed mods...";
             var worker = new AnimationCatalogRefreshWorker(
-                sync,
-                configuration.CatalogReporterId,
                 WaitForModScanSlotAsync,
                 modRefreshResults.Enqueue);
             modRefreshWorker = Task.Run(
@@ -3965,6 +3942,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (configuration.OptionNotes.TryGetValue(key, out var existing) && !string.IsNullOrWhiteSpace(existing))
                 continue;
             configuration.OptionNotes[key] = shared.Label.Trim()[..Math.Min(20, shared.Label.Trim().Length)];
+            // Someone else's tag: community tags may replace it, and it is never sent to the
+            // relay as this player's vote. Editing it makes it theirs.
+            configuration.CommunityRoleKeys.Add(key);
             changed = true;
             Log.Information("Received role label for {ModName} from {MemberName}.", mod.Name, shared.MemberName);
         }
@@ -4006,16 +3986,40 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var changed = false;
         while (receivedCommunityRoleLabels.TryDequeue(out var shared))
         {
-            if (!sync.IsConnected || string.IsNullOrWhiteSpace(shared.Label) ||
-                !IsSynchronizedRoleGroup(shared.Group)) continue;
+            if (!sync.IsConnected || !IsSynchronizedRoleGroup(shared.Group)) continue;
             var mod = Mods.FirstOrDefault(candidate => modCatalogKeys.TryGetValue(candidate.Directory, out var fingerprint) &&
                 fingerprint.Equals(shared.Fingerprint, StringComparison.OrdinalIgnoreCase));
             if (string.IsNullOrWhiteSpace(mod.Directory) || IsModPrivate(mod.Directory)) continue;
             var key = OptionNoteKey(mod.Directory, shared.Group, shared.Option);
+            var label = shared.Label.Trim()[..Math.Min(20, shared.Label.Trim().Length)];
+
+            // A moderator's decision overrides everyone once, the player's own tag included.
+            // Afterwards the player may change it again; only a newer moderation re-applies.
+            var newModeration = shared.Revision > 0 &&
+                shared.Revision > configuration.AppliedTagModerations.GetValueOrDefault(key);
+            if (newModeration)
+            {
+                configuration.AppliedTagModerations[key] = shared.Revision;
+                if (label.Length == 0)
+                {
+                    configuration.OptionNotes.Remove(key);
+                    configuration.CommunityRoleKeys.Remove(key);
+                }
+                else
+                {
+                    configuration.OptionNotes[key] = label;
+                    configuration.CommunityRoleKeys.Add(key);
+                }
+                changed = true;
+                Log.Information("Applied a moderated tag for {ModName}.", mod.Name);
+                continue;
+            }
+
+            if (label.Length == 0) continue;
             var isCommunityManaged = configuration.CommunityRoleKeys.Contains(key);
             if (!isCommunityManaged && configuration.OptionNotes.TryGetValue(key, out var existing) &&
                 !string.IsNullOrWhiteSpace(existing)) continue;
-            configuration.OptionNotes[key] = shared.Label.Trim()[..Math.Min(20, shared.Label.Trim().Length)];
+            configuration.OptionNotes[key] = label;
             configuration.CommunityRoleKeys.Add(key);
             var metadata = GetCommunityRoleMetadata(mod.Directory, shared.Group, shared.Option);
             _ = sync.RegisterCommunityRoleMetadataAsync(

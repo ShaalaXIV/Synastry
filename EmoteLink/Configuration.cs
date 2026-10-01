@@ -17,10 +17,15 @@ public sealed class Configuration : IPluginConfiguration
     public Dictionary<string, string> OptionNotes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> PrivateMods { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> CommunityRoleKeys { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    // The last moderator revision applied to each tag. A moderator's tag replaces the player's
+    // own once; after that it's theirs to change, until a moderator acts on it again.
+    public Dictionary<string, int> AppliedTagModerations { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public string CommunityReporterId { get; set; } = Guid.NewGuid().ToString("N");
     // Catalog evidence deliberately uses a separate pseudonymous identifier. The relay
     // derives a per-signature hash from it, so reports cannot be joined into a mod inventory.
-    public string CatalogReporterId { get; set; } = Guid.NewGuid().ToString("N");
+    // Was the identity used to report every installed mod to the relay (before 1.0.78). Nothing
+    // reads it any more; it stays so older settings files still load and can be cleared.
+    public string CatalogReporterId { get; set; } = "";
     // Localhost-only override for testing a relay build before public deployment.
     public string LocalRelayUrl { get; set; } = "";
     // Penumbra mod-list organization path. Empty keeps received mods at the top level.

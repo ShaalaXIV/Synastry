@@ -93,11 +93,11 @@ Room matching uses animation fingerprints instead of local file paths. Community
 
 Private mods are excluded from room catalogs, transfers, and community-label submissions.
 
-To accelerate library refreshes, connected clients may contribute a versioned fingerprint of a mod's top-level Penumbra manifests, its display name, whether those manifests contain animation mappings, and a portable extraction result. The catalog does not store a character, room, local directory, private/public flag, or reusable cross-mod reporter identity. Private mods can contribute the same content-only index record, but they remain excluded from room advertising, transfers, and community-label submissions.
+Your library is scanned on your own computer. Since 1.0.78 the plugin no longer reports installed mods to the relay; the relay only sees a room's animation fingerprints while you are in it, plus the community tags you submit.
 
-Completed transfer packages may also be inspected in place by the relay to create an exact catalog candidate; the package is never extracted into a mod directory. Candidate evidence is not automatically trusted. A moderator must approve the classification and pin the exact payload SHA-256 before another client can use that payload to accelerate its local index.
+Moderators can correct a community tag. A correction replaces that tag for every player once, including a tag you typed yourself; after that you can change it again, and player votes can't overturn a moderated tag.
 
-Transfer moderation is separate from the catalog. While a package is retained for up to 10 minutes, authorized moderators can see its transient sender/room metadata and obtain a review copy. Persistent sharing bans retain content hashes, a searchable display name, and the moderation reason; they do not retain the package. A catalog-only blocked marker is a moderation label and does not itself prevent transfers; enforced blocks are separate transfer-ban records keyed by an exact package SHA-256, animation fingerprint, or normalized mod-family-name SHA-256.
+Transfer moderation: while a package is retained for up to 10 minutes, authorized moderators can see its transient sender/room metadata and obtain a review copy. Persistent sharing bans retain content hashes, a searchable display name, and the moderation reason; they do not retain the package. Blocks are transfer-ban records keyed by an exact package SHA-256, animation fingerprint, or normalized mod-family-name SHA-256.
 
 The moderation audit is bounded to the newest 100,000 events by count, not by age. An event may retain its transfer ID, event name and timestamp, exact package SHA-256, animation catalog fingerprint, normalized mod-name SHA-256, and a bounded moderation note. It excludes package bytes, transfer capability tokens, sender identity/display name, and room code. Administrator labels are hashed before storage. Audit metadata may therefore outlive the ten-minute review package.
 

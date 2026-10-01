@@ -75,6 +75,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         hub.On<OptionSelectionDto>("OptionSelectionChanged", selection => OptionSelectionChanged?.Invoke(selection));
         hub.On<RoleLabelDto>("RoleLabelChanged", label => RoleLabelChanged?.Invoke(label));
         hub.On<CommunityRoleLabelDto>("CommunityRoleLabelChanged", label => CommunityRoleLabelChanged?.Invoke(label));
+        hub.On<CommunityRoleLabelDto>("CommunityRoleLabelModerated", label => CommunityRoleLabelChanged?.Invoke(label));
         hub.On<int>("OnlineUserCountChanged", UpdateOnlineUserCount);
         hub.On<AnimationSuggestionDeclinedDto>("AnimationSuggestionDeclined",
             decline => AnimationSuggestionDeclined?.Invoke(decline));
@@ -295,6 +296,15 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public async Task<IReadOnlyList<CommunityRoleLabelDto>> GetCommunityRoleLabelsAsync(
         IReadOnlyList<string> fingerprints)
     {
+        // V2 also returns tags a moderator removed, as empty labels. Relays before 1.0.78 only
+        // know the original call.
+        try
+        {
+            return await RequireConnection().InvokeAsync<IReadOnlyList<CommunityRoleLabelDto>>(
+                "GetCommunityRoleLabelsV2", fingerprints);
+        }
+        catch (HubException) { }
+        catch { return []; }
         try
         {
             return await RequireConnection().InvokeAsync<IReadOnlyList<CommunityRoleLabelDto>>(
@@ -333,53 +343,6 @@ public sealed class AnimationSyncService : IAsyncDisposable
                 "RegisterCommunityRoleMetadata", fingerprint, group, option, modName, animationName);
         }
         catch { /* Display metadata is optional when connected to an older relay. */ }
-    }
-
-    public async Task<IReadOnlyList<AnimationArtifactCatalogEntryDto>?> LookupAnimationArtifactsAsync(
-        IReadOnlyList<AnimationArtifactLookupKeyDto> artifacts,
-        CancellationToken cancellationToken = default)
-    {
-        if (artifacts.Count == 0) return [];
-        var hub = connection;
-        if (hub?.State != HubConnectionState.Connected) return null;
-        try
-        {
-            return await hub.InvokeCoreAsync<IReadOnlyList<AnimationArtifactCatalogEntryDto>>(
-                "LookupAnimationArtifacts", [artifacts], cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch
-        {
-            // Catalog acceleration is additive. An offline or older relay follows the exact
-            // same local extraction path as releases that predate the shared catalog.
-            return null;
-        }
-    }
-
-    public async Task<IReadOnlyList<AnimationArtifactCatalogEntryDto>?> SubmitAnimationArtifactReportsAsync(
-        string reporterId,
-        IReadOnlyList<AnimationArtifactReportSubmissionDto> reports,
-        CancellationToken cancellationToken = default)
-    {
-        if (reports.Count == 0) return [];
-        var hub = connection;
-        if (hub?.State != HubConnectionState.Connected) return null;
-        try
-        {
-            return await hub.InvokeCoreAsync<IReadOnlyList<AnimationArtifactCatalogEntryDto>>(
-                "SubmitAnimationArtifactReports", [reporterId, reports], cancellationToken);
-        }
-        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-        {
-            throw;
-        }
-        catch
-        {
-            return null;
-        }
     }
 
     public Task DeclineAnimationSuggestionAsync(string modKey, string suggestedBy) =>
@@ -749,55 +712,8 @@ public sealed record ModTransferOfferDto(string TransferId, string ModName, stri
 public sealed record ModTransferSendResult(int PendingRecipients, int AlreadyReceived);
 public sealed record OptionSelectionDto(string MemberName, string ModKey, string Group, string Option);
 public sealed record RoleLabelDto(string MemberName, string ModKey, string Group, string Option, string Label);
-public sealed record CommunityRoleLabelDto(string Fingerprint, string Group, string Option, string Label);
-public enum AnimationArtifactClassificationDto
-{
-    Unknown = 0,
-    Animation = 1,
-    NonAnimation = 2
-}
-public enum AnimationSharingPolicyDto
-{
-    Default = 0,
-    Allowed = 1,
-    CatalogOnlyBlocked = 2
-}
-public sealed record AnimationArtifactLookupKeyDto(string SignatureAlgorithm, string Signature);
-public sealed record PortableAnimationPayloadSubmissionDto(int SchemaVersion, string ExtractorVersion, string Json);
-public sealed record AnimationArtifactReportSubmissionDto(
-    string Signature,
-    string SignatureAlgorithm,
-    string DisplayName,
-    AnimationArtifactClassificationDto Classification,
-    int ManifestFileCount,
-    long ManifestBytes,
-    PortableAnimationPayloadSubmissionDto? Payload = null);
-public sealed record PortableAnimationPayloadDto(
-    int SchemaVersion,
-    string ExtractorVersion,
-    string Sha256,
-    string Json,
-    int VerificationReports);
-public sealed record AnimationArtifactCatalogEntryDto(
-    string ArtifactKey,
-    string Signature,
-    string SignatureAlgorithm,
-    IReadOnlyList<string> Names,
-    int ManifestFileCount,
-    long ManifestBytes,
-    DateTimeOffset FirstSeenUtc,
-    DateTimeOffset LastSeenUtc,
-    AnimationArtifactClassificationDto ConsensusClassification,
-    AnimationArtifactClassificationDto EffectiveClassification,
-    double Confidence,
-    int AnimationReports,
-    int NonAnimationReports,
-    AnimationSharingPolicyDto SharingPolicy,
-    string OverrideReasonCode,
-    string OverrideNote,
-    PortableAnimationPayloadDto? Payload,
-    bool IsModeratorVerified = false,
-    bool IsPayloadModeratorVerified = false);
+/// <summary>A community tag. Revision counts moderator actions on it; 0 means players chose it.</summary>
+public sealed record CommunityRoleLabelDto(string Fingerprint, string Group, string Option, string Label, int Revision = 0);
 public sealed record AnimationSuggestionDeclinedDto(string DeclinedBy, string SuggestedBy, string ModKey);
 public sealed record PlaySignalDto(
     string ModKey,

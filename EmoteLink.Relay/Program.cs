@@ -21,7 +21,6 @@ builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 
 builder.Services.AddSingleton<RelayDatabase>();
 builder.Services.AddSingleton<RelayStatisticsStore>();
 builder.Services.AddSingleton<ITransferModerationRepository, SqliteTransferModerationRepository>();
-builder.Services.AddSingleton<AnimationCatalogStore>();
 builder.Services.AddSingleton<CatalogSearchService>();
 builder.Services.AddSingleton<AdminTransferEventBroker>();
 builder.Services.AddSingleton<TransferStore>();
@@ -43,7 +42,9 @@ builder.Services.AddSignalR(options =>
     // A full 1,000-entry fingerprint catalog is roughly 70 KB as JSON. The old
     // 16 KB ceiling disconnected players with larger Penumbra libraries while
     // SetCatalog was being sent, which appeared in the UI as a reconnect loop.
-    options.MaximumReceiveMessageSize = AnimationCatalogStore.MaximumSignalRMessageBytes;
+    // Plugins before 1.0.78 still send mod reports of up to about 220 KB, which the relay now
+    // discards; keep the ceiling so those players aren't disconnected mid-batch.
+    options.MaximumReceiveMessageSize = 256 * 1024;
     options.EnableDetailedErrors = false;
     // Idle rooms only need a lightweight liveness frame every 30 seconds. Any room
     // action already produces traffic and resets SignalR's idle keepalive timer.
@@ -106,59 +107,24 @@ adminRoot.MapGet("/statistics", (HttpResponse response, RelayStatisticsStore sta
 });
 var admin = adminRoot.MapGroup("/community-labels");
 admin.MapGet("/", (CommunityRoleLabelStore store) => store.GetAll());
-admin.MapPost("/approve", (string key, CommunityRoleLabelStore store) =>
-    store.ApproveLeadingVote(key) is { } record ? Results.Ok(record) : Results.NotFound());
-admin.MapPut("/accepted", (string key, AdminLabelUpdate update, CommunityRoleLabelStore store) =>
+// Every moderator action locks the tag and bumps its revision. Plugins apply a new revision once,
+// over whatever the player had, and online players get it straight away.
+admin.MapPost("/approve", async (string key, CommunityRoleLabelStore store, IHubContext<AnimationHub> hub) =>
+    await Moderated(store.ApproveLeadingVote(key), hub));
+admin.MapPut("/accepted", async (string key, AdminLabelUpdate update, CommunityRoleLabelStore store,
+    IHubContext<AnimationHub> hub) =>
 {
     var label = update.Label.Trim();
-    if (label.Length is < 1 or > 80) return Results.BadRequest("Label must be 1-80 characters.");
-    return store.SetAcceptedLabel(key, label) is { } record ? Results.Ok(record) : Results.NotFound();
+    if (label.Length is < 1 or > AdminLabelUpdate.MaximumLength)
+        return Results.BadRequest($"Label must be 1-{AdminLabelUpdate.MaximumLength} characters.");
+    return await Moderated(store.SetAcceptedLabel(key, label), hub);
 });
 admin.MapDelete("/votes", (string key, CommunityRoleLabelStore store) =>
     store.ClearVotes(key) ? Results.NoContent() : Results.NotFound());
-admin.MapDelete("/record", (string key, CommunityRoleLabelStore store) =>
-    store.Delete(key) ? Results.NoContent() : Results.NotFound());
-
-var animationAdmin = adminRoot.MapGroup("/animation-index");
-animationAdmin.MapGet("/", (string? query, int? limit, AnimationCatalogStore store) =>
-    string.IsNullOrWhiteSpace(query)
-        ? store.GetAll(Math.Clamp(limit ?? 1_000, 1, 10_000))
-        : store.Search(query, Math.Clamp(limit ?? 100, 1, 500)));
-animationAdmin.MapGet("/page", (string? view, int? page, int? pageSize, string? query,
-    AnimationCatalogStore store) =>
-{
-    var requestedView = view?.Trim().ToLowerInvariant() switch
-    {
-        "animation" => AdminAnimationArtifactView.Animation,
-        "animation-overrides" => AdminAnimationArtifactView.AnimationOverrides,
-        "other" => AdminAnimationArtifactView.Other,
-        "non-animation" => AdminAnimationArtifactView.NonAnimation,
-        "unknown" => AdminAnimationArtifactView.Unknown,
-        "conflict" => AdminAnimationArtifactView.Conflict,
-        "other-overrides" => AdminAnimationArtifactView.OtherOverrides,
-        _ => (AdminAnimationArtifactView?)null
-    };
-    return requestedView is { } validView
-        ? Results.Ok(store.GetAdminPage(validView, page ?? 1, pageSize ?? 500, query))
-        : Results.BadRequest("Choose an artifact view: animation, animation-overrides, other, " +
-                             "non-animation, unknown, conflict, or other-overrides.");
-});
-animationAdmin.MapPut("/override", (string signature, AdminArtifactOverrideUpdate update,
-    AnimationCatalogStore store) =>
-{
-    try
-    {
-        return Results.Ok(store.SetAdminOverride(signature, update.Classification,
-            update.SharingPolicy, update.ReasonCode ?? "", update.Note ?? "", "local-admin",
-            update.ApprovedPayloadSha256));
-    }
-    catch (ArgumentException exception)
-    {
-        return Results.BadRequest(exception.Message);
-    }
-});
-animationAdmin.MapDelete("/override", (string signature, AnimationCatalogStore store) =>
-    store.RevokeAdminOverride(signature) ? Results.NoContent() : Results.NotFound());
+admin.MapDelete("/record", async (string key, CommunityRoleLabelStore store, IHubContext<AnimationHub> hub) =>
+    await Moderated(store.Remove(key), hub));
+admin.MapPost("/unlock", (string key, CommunityRoleLabelStore store) =>
+    store.Unlock(key) is { } record ? Results.Ok(record) : Results.NotFound());
 
 var catalogAdmin = adminRoot.MapGroup("/catalog");
 catalogAdmin.MapGet("/search", (string query, int? limit, CatalogSearchService search) =>
@@ -268,7 +234,7 @@ transferAdmin.MapDelete("/{id}", (string id, HttpRequest request, TransferStore 
     });
 
 app.MapPut("/transfers/{id}", async (string id, HttpRequest request, HttpResponse response,
-    TransferStore store, AnimationCatalogStore animationCatalog,
+    TransferStore store,
     IHubContext<AnimationHub> hub, ILoggerFactory loggerFactory,
     CancellationToken cancellationToken) =>
 {
@@ -312,21 +278,6 @@ app.MapPut("/transfers/{id}", async (string id, HttpRequest request, HttpRespons
             throw new InvalidDataException("Transfer checksum did not match.");
 
         offers = store.FinishUpload(transfer);
-        _ = Task.Run(() =>
-        {
-            try
-            {
-                animationCatalog.IndexUploadedPackage(transfer.Path, transfer.ModName);
-            }
-            catch (Exception verificationError)
-            {
-                // Catalog enrichment is intentionally non-fatal: the transfer was checksum
-                // verified and may proceed even when its PMP is nonstandard or not an animation.
-                loggerFactory.CreateLogger("EmoteLink.Relay.PackageIndex")
-                    .LogWarning(verificationError,
-                        "Could not index completed transfer package {TransferId}", transfer.Id);
-            }
-        }, CancellationToken.None);
     }
     catch (Exception exception)
     {
@@ -350,6 +301,17 @@ app.MapGet("/transfers/{id}", (string id, HttpRequest request, HttpResponse resp
 });
 app.MapHub<AnimationHub>("/animation");
 app.Run();
+
+static async Task<IResult> Moderated(AdminRoleLabelDto? record, IHubContext<AnimationHub> hub)
+{
+    if (record is null) return Results.NotFound();
+    var label = new CommunityRoleLabelDto(record.Fingerprint, record.Group, record.Option,
+        record.AcceptedLabel, record.ModerationRevision);
+    await hub.Clients.All.SendAsync("CommunityRoleLabelModerated", label);
+    // Older plugins only listen for this one, and only for tags that aren't empty.
+    if (label.Label.Length > 0) await hub.Clients.All.SendAsync("CommunityRoleLabelChanged", label);
+    return Results.Ok(record);
+}
 
 static int ReadPort(string name, int fallback)
 {
@@ -386,13 +348,12 @@ static IReadOnlyList<IPAddress> ReadTrustedProxyAddresses()
     return addresses.ToList();
 }
 
-public sealed record AdminLabelUpdate(string Label);
-public sealed record AdminArtifactOverrideUpdate(
-    AnimationArtifactClassification? Classification,
-    AnimationSharingPolicy SharingPolicy,
-    string? ReasonCode,
-    string? Note,
-    string? ApprovedPayloadSha256);
+public sealed record AdminLabelUpdate(string Label)
+{
+    // Plugins show and vote on tags of at most 20 characters; a longer moderator tag would be
+    // cut on screen and come back as a different label.
+    public const int MaximumLength = 20;
+}
 public sealed record TransferBanUpdate(
     TransferBanScope Scope,
     string Value,

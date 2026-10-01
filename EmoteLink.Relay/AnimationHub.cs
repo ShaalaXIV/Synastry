@@ -15,25 +15,16 @@ public sealed class AnimationHub : Hub
     private static readonly ConcurrentDictionary<string, LocalPresence> ConnectionLocalPresence = new();
     private static readonly ConcurrentDictionary<string, long> LastLocalAnimationTicks = new();
     private static readonly ConcurrentDictionary<string, string> ConnectionCommunityReporterIds = new();
-    private static readonly ConcurrentDictionary<string, string> ConnectionCatalogReporterIds = new();
-    private static readonly ConcurrentDictionary<string, int> ConnectionCatalogReportCounts = new();
-    private static readonly ConcurrentDictionary<string, CatalogCreationBucket> CatalogCreationBuckets = new();
-    private const int MaximumCatalogReportsPerConnection = 10_000;
-    private const int MaximumNewArtifactsPerPeerBurst = 10_000;
-    private const int MaximumCatalogCreationPeerBuckets = 100_000;
-    private static readonly TimeSpan NewArtifactPeerRefillPeriod = TimeSpan.FromDays(1);
     private const int MaxMembers = 16;
     private readonly TransferStore transfers;
     private readonly CommunityRoleLabelStore communityRoles;
-    private readonly AnimationCatalogStore animationCatalog;
     private readonly RelayStatisticsStore statistics;
 
     public AnimationHub(TransferStore transfers, CommunityRoleLabelStore communityRoles,
-        AnimationCatalogStore animationCatalog, RelayStatisticsStore statistics)
+        RelayStatisticsStore statistics)
     {
         this.transfers = transfers;
         this.communityRoles = communityRoles;
-        this.animationCatalog = animationCatalog;
         this.statistics = statistics;
     }
 
@@ -258,11 +249,18 @@ public sealed class AnimationHub : Hub
     }
 
     public IReadOnlyList<CommunityRoleLabelDto> GetCommunityRoleLabels(IReadOnlyList<string> fingerprints) =>
-        communityRoles.Get(fingerprints.Select(CleanFingerprint)
+        communityRoles.Get(CleanFingerprints(fingerprints));
+
+    /// <summary>Like <see cref="GetCommunityRoleLabels"/>, plus moderator removals as empty labels.</summary>
+    public IReadOnlyList<CommunityRoleLabelDto> GetCommunityRoleLabelsV2(IReadOnlyList<string> fingerprints) =>
+        communityRoles.Get(CleanFingerprints(fingerprints), includeModerated: true);
+
+    private static List<string> CleanFingerprints(IReadOnlyList<string> fingerprints) =>
+        fingerprints.Select(CleanFingerprint)
             .Where(value => value.Length == 64)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .Take(1000)
-            .ToList());
+            .ToList();
 
     public async Task<CommunityRoleLabelDto?> SubmitCommunityRoleLabel(
         string fingerprint, string group, string option, string label, string reporterId)
@@ -287,95 +285,11 @@ public sealed class AnimationHub : Hub
             CleanDisplayMetadata(modName, 160), CleanDisplayMetadata(animationName, 120));
     }
 
-    public IReadOnlyList<AnimationArtifactCatalogEntry> LookupAnimationArtifacts(
-        IReadOnlyList<AnimationArtifactLookupKey> artifacts)
-    {
-        if (artifacts.Count > AnimationCatalogStore.MaximumBatchSize)
-            throw new HubException($"Look up at most {AnimationCatalogStore.MaximumBatchSize} artifacts at once.");
-        try
-        {
-            return animationCatalog.Lookup(artifacts);
-        }
-        catch (ArgumentException exception)
-        {
-            throw new HubException(exception.Message);
-        }
-    }
+    // Plugins before 1.0.78 still report every installed mod. The relay no longer keeps that
+    // catalog, so these accept the call and answer that nothing is known.
+    public IReadOnlyList<object> LookupAnimationArtifacts(JsonElement artifacts) => [];
 
-    public IReadOnlyList<AnimationArtifactCatalogEntry> SubmitAnimationArtifactReports(
-        string reporterId, IReadOnlyList<AnimationArtifactReportSubmission> reports)
-    {
-        if (reports.Count is < 1 or > AnimationCatalogStore.MaximumBatchSize)
-            throw new HubException($"Submit 1-{AnimationCatalogStore.MaximumBatchSize} reports per batch.");
-        var total = ConnectionCatalogReportCounts.AddOrUpdate(
-            Context.ConnectionId, reports.Count, (_, current) => checked(current + reports.Count));
-        if (total > MaximumCatalogReportsPerConnection)
-        {
-            ConnectionCatalogReportCounts.AddOrUpdate(
-                Context.ConnectionId, 0, (_, current) => Math.Max(0, current - reports.Count));
-            throw new HubException("This connection has reached its animation-report limit.");
-        }
-        var cleanReporter = BindReporterId(reporterId, ConnectionCatalogReporterIds);
-        try
-        {
-            var lookupKeys = reports.Select(report =>
-                    new AnimationArtifactLookupKey(report.SignatureAlgorithm, report.Signature))
-                .ToList();
-            var newArtifacts = animationCatalog.CountUnknownArtifacts(lookupKeys);
-            if (newArtifacts > 0 && !TryConsumeCatalogCreationBudget(CatalogPeerKey(), newArtifacts))
-                throw new HubException(
-                    "This network peer has reached its daily new animation-artifact safety budget. " +
-                    "Updates to existing artifacts remain available.");
-            return animationCatalog.SubmitReports(cleanReporter, reports);
-        }
-        catch (ArgumentException exception)
-        {
-            throw new HubException(exception.Message);
-        }
-        catch (JsonException exception)
-        {
-            throw new HubException("Animation extraction payload JSON is invalid: " + exception.Message);
-        }
-        catch (InvalidOperationException exception)
-        {
-            throw new HubException(exception.Message);
-        }
-    }
-
-    private string CatalogPeerKey() =>
-        Context.GetHttpContext()?.Connection.RemoteIpAddress?.ToString() ?? "unknown-peer";
-
-    private static bool TryConsumeCatalogCreationBudget(string peer, int count)
-    {
-        if (!CatalogCreationBuckets.TryGetValue(peer, out var bucket))
-        {
-            if (CatalogCreationBuckets.Count >= MaximumCatalogCreationPeerBuckets)
-            {
-                var staleBefore = DateTimeOffset.UtcNow - (NewArtifactPeerRefillPeriod * 2);
-                var removed = 0;
-                foreach (var candidate in CatalogCreationBuckets)
-                {
-                    var stale = false;
-                    lock (candidate.Value.Gate) stale = candidate.Value.UpdatedUtc < staleBefore;
-                    if (stale && CatalogCreationBuckets.TryRemove(candidate.Key, out _) && ++removed >= 2_000)
-                        break;
-                }
-                if (CatalogCreationBuckets.Count >= MaximumCatalogCreationPeerBuckets) return false;
-            }
-            bucket = CatalogCreationBuckets.GetOrAdd(peer, _ => new CatalogCreationBucket());
-        }
-        lock (bucket.Gate)
-        {
-            var now = DateTimeOffset.UtcNow;
-            var elapsed = Math.Max(0, (now - bucket.UpdatedUtc).TotalSeconds);
-            var refillPerSecond = MaximumNewArtifactsPerPeerBurst / NewArtifactPeerRefillPeriod.TotalSeconds;
-            bucket.Tokens = Math.Min(MaximumNewArtifactsPerPeerBurst, bucket.Tokens + elapsed * refillPerSecond);
-            bucket.UpdatedUtc = now;
-            if (bucket.Tokens + 0.0001 < count) return false;
-            bucket.Tokens -= count;
-            return true;
-        }
-    }
+    public IReadOnlyList<object> SubmitAnimationArtifactReports(string reporterId, JsonElement reports) => [];
 
     private async Task<CommunityRoleLabelDto?> SubmitCommunityRoleLabelCore(
         string fingerprint, string group, string option, string label, string reporterId,
@@ -706,8 +620,6 @@ public sealed class AnimationHub : Hub
         // Adjust the live gauge first so cleanup failures cannot leave a stale active-user count.
         var relayStatistics = statistics.ConnectionClosed();
         ConnectionCommunityReporterIds.TryRemove(Context.ConnectionId, out _);
-        ConnectionCatalogReporterIds.TryRemove(Context.ConnectionId, out _);
-        ConnectionCatalogReportCounts.TryRemove(Context.ConnectionId, out _);
         if (ConnectionLocalPresence.TryRemove(Context.ConnectionId, out var localPresence))
             await Groups.RemoveFromGroupAsync(Context.ConnectionId, LocalGroup(localPresence.Scope));
         LastLocalAnimationTicks.TryRemove(Context.ConnectionId, out _);
@@ -840,13 +752,6 @@ public sealed class AnimationHub : Hub
         public HashSet<string> Catalog { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, OptionSelectionDto> OptionSelections { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, RoleLabelDto> RoleLabels { get; } = new(StringComparer.OrdinalIgnoreCase);
-    }
-
-    private sealed class CatalogCreationBucket
-    {
-        public object Gate { get; } = new();
-        public double Tokens { get; set; } = MaximumNewArtifactsPerPeerBurst;
-        public DateTimeOffset UpdatedUtc { get; set; } = DateTimeOffset.UtcNow;
     }
 
     private sealed record LocalPresence(string Scope, string DisplayName, uint HomeWorldId);

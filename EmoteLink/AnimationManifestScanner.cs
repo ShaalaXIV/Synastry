@@ -212,16 +212,6 @@ internal static class AnimationManifestScanner
     public static string SerializePayload(PortableAnimationIndexPayload payload) =>
         JsonSerializer.Serialize(payload, PayloadSerializerOptions);
 
-    public static PortableAnimationPayloadSubmissionDto? CreateSubmission(
-        PortableAnimationIndexPayload payload,
-        out string json)
-    {
-        json = SerializePayload(payload);
-        if (payload.PapGamePaths.Count == 0 ||
-            Encoding.UTF8.GetByteCount(json) > MaximumPortablePayloadBytes) return null;
-        return new PortableAnimationPayloadSubmissionDto(PayloadSchemaVersion, ExtractorVersion, json);
-    }
-
     private static JsonDocument ParseManifest(byte[] bytes)
     {
         // StreamReader preserves the behavior of the pre-cache scanner: BOM-encoded UTF-8,
@@ -231,51 +221,6 @@ internal static class AnimationManifestScanner
         using var reader = new StreamReader(
             stream, Encoding.UTF8, detectEncodingFromByteOrderMarks: true, leaveOpen: false);
         return JsonDocument.Parse(reader.ReadToEnd(), ManifestDocumentOptions);
-    }
-
-    public static bool TryReadRelayPayload(
-        PortableAnimationPayloadDto payload,
-        out PortableAnimationIndexPayload value)
-    {
-        value = null!;
-        if (payload.SchemaVersion != PayloadSchemaVersion ||
-            !payload.ExtractorVersion.Equals(ExtractorVersion, StringComparison.Ordinal) ||
-            payload.VerificationReports < 1 ||
-            Encoding.UTF8.GetByteCount(payload.Json) > MaximumPortablePayloadBytes ||
-            !Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(payload.Json)))
-                .Equals(payload.Sha256, StringComparison.OrdinalIgnoreCase)) return false;
-        try
-        {
-            var parsed = JsonSerializer.Deserialize<PortableAnimationIndexPayload>(
-                payload.Json, PayloadSerializerOptions);
-            if (parsed is null || parsed.SchemaVersion != PayloadSchemaVersion ||
-                !parsed.ExtractorVersion.Equals(ExtractorVersion, StringComparison.Ordinal) ||
-                parsed.PapGamePaths.Count is 0 or > 50_000 ||
-                parsed.PapGamePaths.Any(path => path.Length is 0 or > 512 ||
-                    !path.EndsWith(".pap", StringComparison.OrdinalIgnoreCase)) ||
-                parsed.OptionGroups.Count > 2_000 ||
-                parsed.OptionGroups.Any(group => group.Name.Length is 0 or > 160 ||
-                    group.Options.Count > 10_000 ||
-                    group.Options.Any(option => option.Length is 0 or > 160)) ||
-                parsed.OptionPoses.Count > 10_000 ||
-                parsed.OptionPoses.Any(pose => pose.Group.Length is 0 or > 160 ||
-                    pose.Option.Length is 0 or > 160 || !Enum.IsDefined(pose.Kind)) ||
-                parsed.Poses.Count > 1_000 || parsed.Poses.Any(pose => !Enum.IsDefined(pose.Kind)) ||
-                parsed.MultiSelectGroups.Count > 2_000 ||
-                parsed.MultiSelectGroups.Keys.Any(group => group.Length is 0 or > 160))
-                return false;
-            parsed.PapGamePaths = parsed.PapGamePaths
-                .Select(NormalizeGamePath)
-                .Distinct(StringComparer.OrdinalIgnoreCase)
-                .Order(StringComparer.OrdinalIgnoreCase)
-                .ToList();
-            value = parsed;
-            return true;
-        }
-        catch (JsonException)
-        {
-            return false;
-        }
     }
 
     private static void AppendLengthPrefixed(IncrementalHash hash, ReadOnlySpan<byte> value)

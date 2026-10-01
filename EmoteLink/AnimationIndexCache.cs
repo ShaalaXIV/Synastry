@@ -102,28 +102,6 @@ internal sealed class AnimationIndexCache
         }
     }
 
-    public void MarkCatalogReported(
-        string directory,
-        string signature,
-        string displayName,
-        DateTimeOffset reportedUtc)
-    {
-        lock (gate)
-        {
-            if (!entries.TryGetValue(directory, out var cached) ||
-                !cached.ManifestSignature.Equals(signature, StringComparison.OrdinalIgnoreCase)) return;
-            var updated = Clone(cached);
-            updated.LastCatalogReportSignature = signature;
-            updated.LastCatalogReportSchemaVersion = AnimationManifestScanner.PayloadSchemaVersion;
-            updated.LastCatalogReportExtractorVersion = AnimationManifestScanner.ExtractorVersion;
-            updated.LastCatalogReportName = displayName;
-            updated.LastCatalogReportUtc = reportedUtc;
-            entries[directory] = updated;
-            dirty = true;
-            revision++;
-        }
-    }
-
     public void MarkEmotesIndexed(string directory, IReadOnlyList<EmoteTarget> emotes)
     {
         lock (gate)

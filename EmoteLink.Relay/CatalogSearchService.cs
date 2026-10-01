@@ -6,14 +6,11 @@ namespace EmoteLink.Relay;
 /// </summary>
 public sealed class CatalogSearchService
 {
-    private readonly AnimationCatalogStore animations;
     private readonly CommunityRoleLabelStore labels;
     private readonly ITransferModerationRepository moderation;
 
-    public CatalogSearchService(AnimationCatalogStore animations, CommunityRoleLabelStore labels,
-        ITransferModerationRepository moderation)
+    public CatalogSearchService(CommunityRoleLabelStore labels, ITransferModerationRepository moderation)
     {
-        this.animations = animations;
         this.labels = labels;
         this.moderation = moderation;
     }
@@ -21,17 +18,6 @@ public sealed class CatalogSearchService
     public IReadOnlyList<CatalogSearchResultDto> Search(string query, int limit = 100)
     {
         var cleanLimit = Math.Clamp(limit, 1, 500);
-        var animationResults = animations.Search(query, cleanLimit).Select(artifact =>
-            new CatalogSearchResultDto(
-                "animation-artifact",
-                artifact.ArtifactKey,
-                artifact.Names.FirstOrDefault() ?? artifact.Signature,
-                string.Join(" · ", artifact.Names.Skip(1).Take(3)),
-                artifact.EffectiveClassification.ToString(),
-                "",
-                artifact.Signature,
-                false,
-                artifact.SharingPolicy == AnimationSharingPolicy.CatalogOnlyBlocked));
         var labelResults = labels.Search(query, cleanLimit).Select(label =>
             new CatalogSearchResultDto(
                 "community-label",
@@ -55,7 +41,7 @@ public sealed class CatalogSearchService
                 true,
                 false));
 
-        return animationResults.Concat(labelResults).Concat(banResults).Take(cleanLimit).ToList();
+        return labelResults.Concat(banResults).Take(cleanLimit).ToList();
     }
 }
 

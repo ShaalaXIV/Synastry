@@ -27,7 +27,11 @@ public sealed class CommunityRoleLabelStore
         ImportLegacyJsonOnce();
     }
 
-    public IReadOnlyList<CommunityRoleLabelDto> Get(IReadOnlyCollection<string> fingerprints)
+    /// <summary>
+    /// Accepted tags for these animations. With <paramref name="includeModerated"/>, moderated
+    /// deletions come back too, as empty labels, so clients can remove the tag once.
+    /// </summary>
+    public IReadOnlyList<CommunityRoleLabelDto> Get(IReadOnlyCollection<string> fingerprints, bool includeModerated = false)
     {
         var requested = fingerprints
             .Where(value => !string.IsNullOrWhiteSpace(value))
@@ -50,14 +54,16 @@ public sealed class CommunityRoleLabelStore
                     command.Parameters.AddWithValue(parameterNames[index], batch[index]);
                 }
                 command.CommandText = $"""
-                    SELECT fingerprint, option_group, option_name, accepted_label
+                    SELECT fingerprint, option_group, option_name, accepted_label, moderation_revision
                     FROM community_role_labels
-                    WHERE accepted_label <> '' AND fingerprint IN ({string.Join(',', parameterNames)});
+                    WHERE (accepted_label <> '' OR ($includeModerated AND moderation_revision > 0))
+                      AND fingerprint IN ({string.Join(',', parameterNames)});
                     """;
+                command.Parameters.AddWithValue("$includeModerated", includeModerated);
                 using var reader = command.ExecuteReader();
                 while (reader.Read())
                     result.Add(new CommunityRoleLabelDto(reader.GetString(0), reader.GetString(1),
-                        reader.GetString(2), reader.GetString(3)));
+                        reader.GetString(2), reader.GetString(3), reader.GetInt32(4)));
             }
             return result;
         }
@@ -96,7 +102,8 @@ public sealed class CommunityRoleLabelStore
                 command.Transaction = transaction;
                 command.CommandText = """
                     UPDATE community_role_labels
-                    SET accepted_label = $label, updated_utc = $now
+                    SET accepted_label = $label, updated_utc = $now, moderated_utc = $now,
+                        moderation_revision = moderation_revision + 1
                     WHERE record_key = $key COLLATE NOCASE;
                     DELETE FROM community_role_label_votes WHERE record_key = $key COLLATE NOCASE;
                     """;
@@ -121,7 +128,8 @@ public sealed class CommunityRoleLabelStore
             command.Transaction = transaction;
             command.CommandText = """
                 UPDATE community_role_labels
-                SET accepted_label = $label, updated_utc = $now
+                SET accepted_label = $label, updated_utc = $now, moderated_utc = $now,
+                    moderation_revision = moderation_revision + 1
                 WHERE record_key = $key COLLATE NOCASE;
                 """;
             command.Parameters.AddWithValue("$label", label.Trim());
@@ -153,18 +161,51 @@ public sealed class CommunityRoleLabelStore
         }
     }
 
-    public bool Delete(string key)
+    /// <summary>
+    /// Removes the tag for everyone. The record stays as a moderated empty tag so a client
+    /// re-submitting the old tag can't bring it back, and every client clears it once.
+    /// </summary>
+    public AdminRoleLabelDto? Remove(string key)
+    {
+        lock (gate)
+        {
+            using var connection = database.OpenConnection();
+            using var transaction = connection.BeginTransaction();
+            using var command = connection.CreateCommand();
+            command.Transaction = transaction;
+            command.CommandText = """
+                UPDATE community_role_labels
+                SET accepted_label = '', updated_utc = $now, moderated_utc = $now,
+                    moderation_revision = moderation_revision + 1
+                WHERE record_key = $key COLLATE NOCASE;
+                """;
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
+            command.Parameters.AddWithValue("$key", key);
+            if (command.ExecuteNonQuery() == 0) return null;
+            command.CommandText =
+                "DELETE FROM community_role_label_votes WHERE record_key = $key COLLATE NOCASE;";
+            command.ExecuteNonQuery();
+            transaction.Commit();
+            WriteCompatibilitySnapshot();
+            return GetAdminRecord(connection, key);
+        }
+    }
+
+    /// <summary>Hands a moderated tag back to community votes. Players keep what they have.</summary>
+    public AdminRoleLabelDto? Unlock(string key)
     {
         lock (gate)
         {
             using var connection = database.OpenConnection();
             using var command = connection.CreateCommand();
-            command.CommandText =
-                "DELETE FROM community_role_labels WHERE record_key = $key COLLATE NOCASE;";
+            command.CommandText = """
+                UPDATE community_role_labels SET moderated_utc = '', updated_utc = $now
+                WHERE record_key = $key COLLATE NOCASE AND moderated_utc <> '';
+                """;
+            command.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
             command.Parameters.AddWithValue("$key", key);
-            if (command.ExecuteNonQuery() == 0) return false;
-            WriteCompatibilitySnapshot();
-            return true;
+            command.ExecuteNonQuery();
+            return GetAdminRecord(connection, key);
         }
     }
 
@@ -282,6 +323,15 @@ public sealed class CommunityRoleLabelStore
                 vote.Parameters.AddWithValue("$label", label);
                 vote.Parameters.AddWithValue("$now", DateTimeOffset.UtcNow.ToString("O"));
                 vote.ExecuteNonQuery();
+            }
+
+            if (record.Moderated)
+            {
+                // A moderator decided this tag. Votes are kept for the admin tool to show but
+                // can't replace it; only another moderator action or an unlock can.
+                transaction.Commit();
+                WriteCompatibilitySnapshot();
+                return (record.AcceptedLabel.Length == 0 ? null : ToDto(record), false);
             }
 
             var winner = GetLeadingVote(connection, transaction, key)!.Value;
@@ -631,7 +681,8 @@ public sealed class CommunityRoleLabelStore
         command.CommandText = term is null
             ? """
               SELECT r.record_key, r.fingerprint, r.mod_name, r.animation_name, r.option_group,
-                     r.option_name, r.accepted_label, v.label, COUNT(v.reporter_hash)
+                     r.option_name, r.accepted_label, r.moderation_revision, r.moderated_utc,
+                     v.label, COUNT(v.reporter_hash)
               FROM community_role_labels r
               LEFT JOIN community_role_label_votes v ON v.record_key = r.record_key
               GROUP BY r.record_key, v.label COLLATE NOCASE
@@ -651,7 +702,8 @@ public sealed class CommunityRoleLabelStore
                   LIMIT $limit
               )
               SELECT r.record_key, r.fingerprint, r.mod_name, r.animation_name, r.option_group,
-                     r.option_name, r.accepted_label, v.label, COUNT(v.reporter_hash)
+                     r.option_name, r.accepted_label, r.moderation_revision, r.moderated_utc,
+                     v.label, COUNT(v.reporter_hash)
               FROM matches m
               JOIN community_role_labels r ON r.record_key = m.record_key
               LEFT JOIN community_role_label_votes v ON v.record_key = r.record_key
@@ -673,9 +725,9 @@ public sealed class CommunityRoleLabelStore
             {
                 builders[key] = builder = new AdminRecordBuilder(
                     key, reader.GetString(1), reader.GetString(2), reader.GetString(3), reader.GetString(4),
-                    reader.GetString(5), reader.GetString(6));
+                    reader.GetString(5), reader.GetString(6), reader.GetInt32(7), reader.GetString(8));
             }
-            if (!reader.IsDBNull(7)) builder.Votes.Add(new AdminVoteDto(reader.GetString(7), reader.GetInt32(8)));
+            if (!reader.IsDBNull(9)) builder.Votes.Add(new AdminVoteDto(reader.GetString(9), reader.GetInt32(10)));
         }
         return builders.Values.Select(builder => builder.Build()).ToList();
     }
@@ -685,7 +737,8 @@ public sealed class CommunityRoleLabelStore
         using var command = connection.CreateCommand();
         command.CommandText = """
             SELECT r.record_key, r.fingerprint, r.mod_name, r.animation_name, r.option_group,
-                   r.option_name, r.accepted_label, v.label, COUNT(v.reporter_hash)
+                   r.option_name, r.accepted_label, r.moderation_revision, r.moderated_utc,
+                     v.label, COUNT(v.reporter_hash)
             FROM community_role_labels r
             LEFT JOIN community_role_label_votes v ON v.record_key = r.record_key
             WHERE r.record_key = $key COLLATE NOCASE
@@ -697,8 +750,9 @@ public sealed class CommunityRoleLabelStore
         while (reader.Read())
         {
             builder ??= new AdminRecordBuilder(reader.GetString(0), reader.GetString(1), reader.GetString(2),
-                reader.GetString(3), reader.GetString(4), reader.GetString(5), reader.GetString(6));
-            if (!reader.IsDBNull(7)) builder.Votes.Add(new AdminVoteDto(reader.GetString(7), reader.GetInt32(8)));
+                reader.GetString(3), reader.GetString(4), reader.GetString(5), reader.GetString(6),
+                reader.GetInt32(7), reader.GetString(8));
+            if (!reader.IsDBNull(9)) builder.Votes.Add(new AdminVoteDto(reader.GetString(9), reader.GetInt32(10)));
         }
         return builder?.Build();
     }
@@ -738,7 +792,8 @@ public sealed class CommunityRoleLabelStore
         using var command = connection.CreateCommand();
         command.Transaction = transaction;
         command.CommandText = """
-            SELECT fingerprint, mod_name, animation_name, option_group, option_name, accepted_label
+            SELECT fingerprint, mod_name, animation_name, option_group, option_name, accepted_label,
+                   moderation_revision, moderated_utc
             FROM community_role_labels WHERE record_key = $key COLLATE NOCASE;
             """;
         command.Parameters.AddWithValue("$key", key);
@@ -750,7 +805,9 @@ public sealed class CommunityRoleLabelStore
             AnimationName = reader.GetString(2),
             Group = reader.GetString(3),
             Option = reader.GetString(4),
-            AcceptedLabel = reader.GetString(5)
+            AcceptedLabel = reader.GetString(5),
+            ModerationRevision = reader.GetInt32(6),
+            Moderated = reader.GetString(7).Length > 0
         };
     }
 
@@ -866,17 +923,18 @@ public sealed class CommunityRoleLabelStore
     }
 
     private static CommunityRoleLabelDto ToDto(StoredRoleLabel record) =>
-        new(record.Fingerprint, record.Group, record.Option, record.AcceptedLabel);
+        new(record.Fingerprint, record.Group, record.Option, record.AcceptedLabel, record.ModerationRevision);
 
     private sealed class AdminRecordBuilder(
         string key, string fingerprint, string modName, string animationName,
-        string group, string option, string acceptedLabel)
+        string group, string option, string acceptedLabel, int moderationRevision, string moderatedUtc)
     {
         public List<AdminVoteDto> Votes { get; } = [];
 
         public AdminRoleLabelDto Build() => new(key, fingerprint, modName, animationName, group, option,
             acceptedLabel, Votes.OrderByDescending(vote => vote.Count)
-                .ThenBy(vote => vote.Label, StringComparer.OrdinalIgnoreCase).ToList());
+                .ThenBy(vote => vote.Label, StringComparer.OrdinalIgnoreCase).ToList(),
+            moderationRevision, moderatedUtc.Length > 0);
     }
 
     public sealed class StoredRoleLabel
@@ -887,11 +945,15 @@ public sealed class CommunityRoleLabelStore
         public string Group { get; set; } = "";
         public string Option { get; set; } = "";
         public string AcceptedLabel { get; set; } = "";
+        [System.Text.Json.Serialization.JsonIgnore] public int ModerationRevision { get; set; }
+        [System.Text.Json.Serialization.JsonIgnore] public bool Moderated { get; set; }
         public Dictionary<string, string> Votes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     }
 }
 
-public sealed record CommunityRoleLabelDto(string Fingerprint, string Group, string Option, string Label);
+/// <summary>An accepted tag. Revision counts moderator actions on it; 0 means the community chose it.</summary>
+public sealed record CommunityRoleLabelDto(string Fingerprint, string Group, string Option, string Label, int Revision = 0);
 public sealed record AdminVoteDto(string Label, int Count);
 public sealed record AdminRoleLabelDto(string Key, string Fingerprint, string ModName, string AnimationName,
-    string Group, string Option, string AcceptedLabel, IReadOnlyList<AdminVoteDto> Votes);
+    string Group, string Option, string AcceptedLabel, IReadOnlyList<AdminVoteDto> Votes,
+    int ModerationRevision = 0, bool Locked = false);

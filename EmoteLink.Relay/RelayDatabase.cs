@@ -9,7 +9,7 @@ namespace EmoteLink.Relay;
 /// </summary>
 public sealed class RelayDatabase
 {
-    public const int CurrentSchemaVersion = 7;
+    public const int CurrentSchemaVersion = 8;
     private const int BusyTimeoutMilliseconds = 5_000;
     private readonly string connectionString;
     private readonly ILogger<RelayDatabase> logger;
@@ -507,6 +507,27 @@ public sealed class RelayDatabase
             INSERT INTO relay_statistics(
                 singleton, rooms_generated, shared_animations, animations_performed)
             VALUES (1, 0, 0, 0);
+            """),
+        new(8, "moderated role labels; drop the animation artifact catalog", """
+            -- A moderator's tag is applied to every player once, revision by revision. Votes are
+            -- still recorded on a moderated tag but can no longer replace it, and a moderated
+            -- empty tag is a deletion that clients must honour.
+            ALTER TABLE community_role_labels
+                ADD COLUMN moderation_revision INTEGER NOT NULL DEFAULT 0 CHECK (moderation_revision >= 0);
+            ALTER TABLE community_role_labels
+                ADD COLUMN moderated_utc TEXT NOT NULL DEFAULT '';
+
+            -- The relay no longer keeps a record of every installed mod. Dropping a table drops
+            -- its indexes and triggers with it.
+            DROP TABLE IF EXISTS animation_artifact_search;
+            DROP TABLE IF EXISTS animation_catalog_storage_stats;
+            DROP TABLE IF EXISTS animation_artifact_payload_reports;
+            DROP TABLE IF EXISTS animation_artifact_payloads;
+            DROP TABLE IF EXISTS animation_artifact_overrides;
+            DROP TABLE IF EXISTS animation_artifact_consensus;
+            DROP TABLE IF EXISTS animation_artifact_reports;
+            DROP TABLE IF EXISTS animation_artifact_names;
+            DROP TABLE IF EXISTS animation_artifacts;
             """)
     ];
 
