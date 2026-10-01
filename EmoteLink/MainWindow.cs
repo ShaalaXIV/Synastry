@@ -553,6 +553,14 @@ public sealed class MainWindow : Window
 
     // ---- Animations -----------------------------------------------------------------------------
 
+    private static readonly (Vector4 Color, string Label)[] Legend =
+    [
+        (Theme.Everyone, "Everyone"),
+        (Theme.Some, "Some"),
+        (Theme.AzureText, "Picked"),
+        (Theme.Ash, "Private"),
+    ];
+
     private void DrawAnimations()
     {
         var s = Theme.Scale;
@@ -580,6 +588,12 @@ public sealed class MainWindow : Window
             ImGui.SameLine(0, 6f * s);
             ImGui.SetCursorScreenPos(new Vector2(ImGui.GetCursorScreenPos().X, headerStart.Y + 12f * s));
             if (Theme.Text(clear)) ClearModSelection();
+        }
+        else if (plugin.Sync.IsInRoom &&
+                 Theme.LegendWidth(Legend) < width - 22f * s - ImGui.CalcTextSize(CurrentLibraryTitle()).X - 80f * s)
+        {
+            Theme.Legend(ImGui.GetWindowDrawList(),
+                new Vector2(headerStart.X + width - 22f * s - Theme.LegendWidth(Legend), headerStart.Y + 18f * s), Legend);
         }
         else
         {
@@ -677,14 +691,27 @@ public sealed class MainWindow : Window
         }
         if (ImGui.IsItemClicked(ImGuiMouseButton.Right) && !selectedMods.Contains(mod.Directory))
             SelectOnly(mod.Directory, categoryId);
-        if (ImGui.IsItemHovered() && pickedBy is not null)
-            ImGui.SetTooltip($"{pickedBy} picked this animation.");
+        var availability = AvailabilityOf(mod.Directory, isPrivate);
+        if (ImGui.IsItemHovered())
+        {
+            var markHovered = ImGui.IsMouseHoveringRect(start, start + new Vector2(30f * s, height));
+            if (pickedBy is not null && !markHovered) ImGui.SetTooltip($"{pickedBy} picked this animation.");
+            else if (markHovered) ImGui.SetTooltip(Theme.AvailabilityText(availability));
+        }
         DrawModContextMenu(mod);
         DrawModDragAndDrop(mod, categoryId);
 
-        Theme.AvailabilityMark(draw, new Vector2(start.X + 16f * s, start.Y + height * 0.5f), AvailabilityOf(mod.Directory, isPrivate));
+        // Colour-coded like the old list: green everyone, amber some, azure picked, grey private.
+        var highlight = pickedBy is not null ? Theme.AzureText : Theme.AvailabilityColor(availability);
+        if (highlight is { } wash && !open)
+        {
+            draw.AddRectFilled(start, start + new Vector2(width, height),
+                ImGui.GetColorU32(new Vector4(wash.X, wash.Y, wash.Z, 0.07f)), 3f * s);
+            draw.AddRectFilled(start, start + new Vector2(2f * s, height), ImGui.GetColorU32(wash), 1f * s);
+        }
+        Theme.AvailabilityMark(draw, new Vector2(start.X + 16f * s, start.Y + height * 0.5f), availability);
         var textY = start.Y + (height - ImGui.GetTextLineHeight()) * 0.5f;
-        var nameColor = pickedBy is not null ? Theme.AzureText : isPrivate ? Theme.Ash : Theme.Bone;
+        var nameColor = highlight ?? (isPrivate ? Theme.Ash : Theme.Bone);
 
         // What sits at the right: Send to room on hover, otherwise who picked it or what it holds.
         var trailing = pickedBy is not null ? $"{pickedBy} picked this" : isPrivate ? "private" : Summary(mod.Directory);

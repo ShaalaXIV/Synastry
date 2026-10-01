@@ -51,6 +51,8 @@ internal static class Theme
     public static readonly Vector4 RoseInk = Hex(0x1A1214);
     public static readonly Vector4 Azure = Hex(0x6E9CF0);
     public static readonly Vector4 AzureText = Hex(0x8FB3F5);
+    public static readonly Vector4 Everyone = Hex(0x86C66E);
+    public static readonly Vector4 Some = Hex(0xF0A24E);
 
     private static IFontHandle? title;
     private static IFontHandle? heading;
@@ -294,7 +296,6 @@ internal static class Theme
         var you = center - new Vector2(3.5f * s, 0);
         var room = center + new Vector2(3.5f * s, 0);
         var rose = ImGui.GetColorU32(Rose);
-        var azure = ImGui.GetColorU32(Azure);
         switch (availability)
         {
             case Availability.Private:
@@ -308,16 +309,55 @@ internal static class Theme
         switch (availability)
         {
             case Availability.Everyone:
-                draw.AddCircleFilled(room, radius, azure, 20);
+                draw.AddCircleFilled(room, radius, ImGui.GetColorU32(Everyone), 20);
                 break;
             case Availability.Some:
-                draw.AddCircle(room, radius - 0.6f * s, azure, 20, 1.2f * s);
+                var some = ImGui.GetColorU32(Some);
+                draw.AddCircle(room, radius - 0.6f * s, some, 20, 1.2f * s);
                 draw.PathArcTo(room, radius - 0.6f * s, MathF.PI * 0.5f, MathF.PI * 1.5f, 12);
-                draw.PathFillConvex(azure);
+                draw.PathFillConvex(some);
                 break;
             default:
                 draw.AddCircle(room, radius - 0.6f * s, ImGui.GetColorU32(Dormant), 20, 1.2f * s);
                 break;
+        }
+    }
+
+    /// <summary>The colour an animation's name and row take for who has it; null keeps the plain look.</summary>
+    public static Vector4? AvailabilityColor(Availability availability) => availability switch
+    {
+        Availability.Everyone => Everyone,
+        Availability.Some => Some,
+        _ => null,
+    };
+
+    public static string AvailabilityText(Availability availability) => availability switch
+    {
+        Availability.Everyone => "Everyone in the room has this animation.",
+        Availability.Some => "Some people in the room have this animation.",
+        Availability.OnlyYou => "Only you have this animation. Send it to the room to share it.",
+        Availability.Private => "Private: never shared with the room.",
+        _ => "Join a room to see who else has this animation.",
+    };
+
+    /// <summary>A one-line key for the row colours: dot, label, dot, label.</summary>
+    public static float LegendWidth((Vector4 Color, string Label)[] items)
+    {
+        var width = 0f;
+        foreach (var (_, label) in items) width += 12f * Scale + ImGui.CalcTextSize(label).X + 12f * Scale;
+        return width - 12f * Scale;
+    }
+
+    public static void Legend(ImDrawListPtr draw, Vector2 start, (Vector4 Color, string Label)[] items)
+    {
+        var x = start.X;
+        var centerY = start.Y + ImGui.GetTextLineHeight() * 0.5f;
+        foreach (var (color, label) in items)
+        {
+            Dot(draw, new Vector2(x + 4f * Scale, centerY), color, true);
+            x += 12f * Scale;
+            draw.AddText(new Vector2(x, start.Y), ImGui.GetColorU32(Soft), label);
+            x += ImGui.CalcTextSize(label).X + 12f * Scale;
         }
     }
 
