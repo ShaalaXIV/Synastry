@@ -1294,6 +1294,20 @@ public sealed class MainWindow : Window
         if (Theme.Toggle("##free-use", "Free Use Mode", ref freeUse)) plugin.SetFreeUse(freeUse);
         Tooltip("Others in the room choose your role and options. They apply to that animation only and you're readied automatically. Private animations are never used.");
 
+        ImGui.Dummy(new Vector2(0, 4f * s));
+        Theme.Label("Line up with");
+        ImGui.SetNextItemWidth(MathF.Min(width, 200f * s));
+        var preference = plugin.LineUpPreference;
+        if (ImGui.BeginCombo("##line-up-with", LineUpPreferenceName(preference)))
+        {
+            foreach (var option in Enum.GetValues<ContactPreference>())
+                if (ImGui.Selectable(LineUpPreferenceName(option), option == preference))
+                    plugin.SetLineUpPreference(option);
+            ImGui.EndCombo();
+        }
+        Tooltip("Which part a couple animation lines up with. A mouth already in contact always wins;\n" +
+                "otherwise your choice is used when it's within reach, and the closest part when it isn't.");
+
         DrawOffersLine(width);
         BottomAligned(() =>
         {
@@ -1950,6 +1964,14 @@ public sealed class MainWindow : Window
         draw.AddText(start + new Vector2(28f * s, (size.Y - ImGui.GetTextLineHeight()) * 0.5f), color, label);
         return clicked;
     }
+
+    private static string LineUpPreferenceName(ContactPreference preference) => preference switch
+    {
+        ContactPreference.Mouth => "Mouth",
+        ContactPreference.Vagina => "Vagina",
+        ContactPreference.Anus => "Anus",
+        _ => "Closest part"
+    };
 
     private static void DrawMinimizeIcon(ImDrawListPtr draw, Vector2 center, uint color)
     {

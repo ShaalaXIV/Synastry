@@ -35,6 +35,7 @@ public sealed class PenumbraService : IDisposable
     private readonly ICallGateSubscriber<string, object?> modAdded;
     private readonly ICallGateSubscriber<string, string> resolvePlayerPath;
     private readonly ICallGateSubscriber<string, int, string> resolveGameObjectPath;
+    private readonly ICallGateSubscriber<ushort[], Dictionary<string, HashSet<string>>?[]> getGameObjectResourcePaths;
 
     public event Action<string>? ModAdded;
 
@@ -64,6 +65,8 @@ public sealed class PenumbraService : IDisposable
         modAdded = pi.GetIpcSubscriber<string, object?>("Penumbra.ModAdded");
         resolvePlayerPath = pi.GetIpcSubscriber<string, string>("Penumbra.ResolvePlayerPath.V5");
         resolveGameObjectPath = pi.GetIpcSubscriber<string, int, string>("Penumbra.ResolveGameObjectPath.V5");
+        getGameObjectResourcePaths = pi.GetIpcSubscriber<ushort[], Dictionary<string, HashSet<string>>?[]>(
+            "Penumbra.GetGameObjectResourcePaths.V5");
         modAdded.Subscribe(OnModAdded);
     }
 
@@ -230,6 +233,28 @@ public sealed class PenumbraService : IDisposable
     {
         try { return resolveGameObjectPath.InvokeFunc(gamePath, objectIndex); }
         catch { return null; }
+    }
+
+    /// <summary>The model files (.mdl) a character has loaded right now, modded ones included, as
+    /// the files on disk or in the game data. Call on the framework thread.</summary>
+    public IReadOnlyList<string> GetLoadedModels(ushort objectIndex)
+    {
+        try
+        {
+            var result = getGameObjectResourcePaths.InvokeFunc([objectIndex]);
+            if (result.Length == 0 || result[0] is not { } paths) return [];
+            return paths
+                .Where(pair => pair.Key.EndsWith(".mdl", StringComparison.OrdinalIgnoreCase) &&
+                               pair.Value.Any(gamePath => gamePath.StartsWith("chara/", StringComparison.OrdinalIgnoreCase) &&
+                                                          !gamePath.StartsWith("chara/weapon/", StringComparison.OrdinalIgnoreCase)))
+                .Select(pair => pair.Key)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToList();
+        }
+        catch
+        {
+            return [];
+        }
     }
 
     public string? GetModRoot()

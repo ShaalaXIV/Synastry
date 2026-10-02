@@ -33,6 +33,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public event Action<ModTransferOfferDto>? ModTransferOffered;
     public event Action<OptionSelectionDto>? OptionSelectionChanged;
     public event Action<RoleLabelDto>? RoleLabelChanged;
+    public event Action<BodyProfileDto>? BodyProfileChanged;
     public event Action<CommunityRoleLabelDto>? CommunityRoleLabelChanged;
     public event Action<AnimationSuggestionDeclinedDto>? AnimationSuggestionDeclined;
     public event Action<FreeUseDirectiveDto>? FreeUseDirected;
@@ -74,6 +75,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         hub.On<ModTransferOfferDto>("ModTransferOffered", offer => ModTransferOffered?.Invoke(offer));
         hub.On<OptionSelectionDto>("OptionSelectionChanged", selection => OptionSelectionChanged?.Invoke(selection));
         hub.On<RoleLabelDto>("RoleLabelChanged", label => RoleLabelChanged?.Invoke(label));
+        hub.On<BodyProfileDto>("BodyProfileChanged", profile => BodyProfileChanged?.Invoke(profile));
         hub.On<CommunityRoleLabelDto>("CommunityRoleLabelChanged", label => CommunityRoleLabelChanged?.Invoke(label));
         hub.On<CommunityRoleLabelDto>("CommunityRoleLabelModerated", label => CommunityRoleLabelChanged?.Invoke(label));
         hub.On<int>("OnlineUserCountChanged", UpdateOnlineUserCount);
@@ -285,6 +287,18 @@ public sealed class AnimationSyncService : IAsyncDisposable
     {
         try { await RequireConnection().InvokeAsync("SetRoleLabel", modKey, group, option, label); }
         catch { /* Role labels are optional when connected to an older relay. */ }
+    }
+
+    public async Task SetBodyProfileAsync(string profileJson)
+    {
+        try { await RequireConnection().InvokeAsync("SetBodyProfile", profileJson); }
+        catch { /* Body profiles are optional when connected to an older relay. */ }
+    }
+
+    public async Task<IReadOnlyList<BodyProfileDto>> GetBodyProfilesAsync()
+    {
+        try { return await RequireConnection().InvokeAsync<IReadOnlyList<BodyProfileDto>>("GetBodyProfiles"); }
+        catch { return []; }
     }
 
     public async Task<IReadOnlyList<RoleLabelDto>> GetRoleLabelsAsync()
@@ -711,6 +725,7 @@ public sealed record ModTransferOfferDto(string TransferId, string ModName, stri
     string Sha256, string DownloadToken, DateTimeOffset ExpiresAt, string CatalogFingerprint = "");
 public sealed record ModTransferSendResult(int PendingRecipients, int AlreadyReceived);
 public sealed record OptionSelectionDto(string MemberName, string ModKey, string Group, string Option);
+public sealed record BodyProfileDto(string ConnectionId, string DisplayName, string ProfileJson);
 public sealed record RoleLabelDto(string MemberName, string ModKey, string Group, string Option, string Label);
 /// <summary>A community tag. Revision counts moderator actions on it; 0 means players chose it.</summary>
 public sealed record CommunityRoleLabelDto(string Fingerprint, string Group, string Option, string Label, int Revision = 0);

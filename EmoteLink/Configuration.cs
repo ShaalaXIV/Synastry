@@ -38,6 +38,14 @@ public sealed class Configuration : IPluginConfiguration
     public bool UseMiniPlayer { get; set; }
     // Line up a couple animation's contact (penis with mouth, vagina or anus) through Simple Heels.
     public bool AutomaticLineUp { get; set; } = true;
+    // Which part line-up aims for when more than one is in reach.
+    public ContactPreference LineUpPreference { get; set; } = ContactPreference.Closest;
+    // Bending bones to make couple animations meet.
+    public bool BendShaft { get; set; } = true;
+    public bool BendOpenings { get; set; } = true;
+    public bool BendHands { get; set; } = true;
+    // Body setup results, as shared JSON, by character name.
+    public Dictionary<string, string> BodyProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<CustomAnimationCommand> CustomAnimationCommands { get; set; } = [];
     public Dictionary<uint, string> TypedEmoteDefaults { get; set; } = [];
 

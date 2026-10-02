@@ -95,6 +95,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     [PluginService] private static ITargetManager Targets { get; set; } = null!;
     [PluginService] private static IGameInteropProvider Interop { get; set; } = null!;
     [PluginService] private static IDataManager DataManager { get; set; } = null!;
+    [PluginService] private static ISigScanner SigScanner { get; set; } = null!;
     [PluginService] private static IChatGui Chat { get; set; } = null!;
     [PluginService] private static IContextMenu ContextMenu { get; set; } = null!;
     [PluginService] private static IClientState ClientState { get; set; } = null!;
@@ -117,6 +118,18 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly WindowSystem windows = new("Synastry");
     private readonly MainWindow mainWindow;
     private readonly MiniPlayerWindow miniPlayerWindow;
+    private readonly Ik.ContactIkService? contactIk;
+    // Body profiles shared by room partners, and ones measured here for partners who haven't run
+    // setup, by character name.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Ik.BodyProfile> sharedBodies =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Ik.BodyProfile> measuredBodies =
+        new(StringComparer.OrdinalIgnoreCase);
+    private readonly HashSet<string> measuringBodies = new(StringComparer.OrdinalIgnoreCase);
+    private Ik.BodyProfile? ownBody;
+    private string ownBodyName = "";
+    private bool bodySyncPending;
+    private bool bodySetupRunning;
 
     /// <summary>The animation this player last started, until it's cleared (moving or another start).</summary>
     public NowPlayingInfo? NowPlaying { get; private set; }
@@ -295,7 +308,21 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Log.Warning(exception, "Animation-speed hook could not be initialized.");
         }
         sync = new AnimationSyncService();
-        contactAlign = new ContactAlignService(Objects, Targets, Log, IsRoomMemberNamed, ExecuteCommand);
+        try
+        {
+            contactIk = new Ik.ContactIkService(SigScanner, Interop, Log, BodyProfileOf);
+        }
+        catch (Exception exception)
+        {
+            Log.Warning(exception, "Contact IK could not start; couple animations line up the old way.");
+        }
+        sync.BodyProfileChanged += shared =>
+        {
+            if (Ik.BodyProfile.FromJson(shared.ProfileJson) is { } profile) sharedBodies[shared.DisplayName] = profile;
+            else sharedBodies.TryRemove(shared.DisplayName, out _);
+        };
+        contactAlign = new ContactAlignService(Objects, Targets, Log, IsRoomMemberNamed, ExecuteCommand,
+            () => configuration.LineUpPreference);
         preloader = new AnimationPreloader(PluginInterface, Objects, penumbra, sync, Log);
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
         sync.LocalAnimationReceived += signal => localAnimationSignals.Enqueue(signal);
@@ -1210,6 +1237,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
     }
 
     public bool AutomaticLineUpEnabled => configuration.AutomaticLineUp;
+    public ContactPreference LineUpPreference => configuration.LineUpPreference;
+
+    public void SetLineUpPreference(ContactPreference preference)
+    {
+        configuration.LineUpPreference = preference;
+        configuration.Save(PluginInterface);
+    }
     public string LineUpStatus => contactAlign.Status;
     public bool IsLiningUp => contactAlign.IsMeasuring;
 
@@ -1225,6 +1259,175 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public void LineUpNow() => contactAlign.LineUpNow(IsSimpleHeelsLoadedCached());
 
     /// <summary>Whether this character name is someone else in the current room, and so runs Synastry.</summary>
+    // ---- Bending bones and body setup --------------------------------------------------------
+
+    public bool ContactIkAvailable => contactIk?.Available == true;
+    public string ContactIkStatus => contactIk?.Status ?? "Bending bones couldn't start on this game version.";
+    public bool BendShaftEnabled => configuration.BendShaft;
+    public bool BendOpeningsEnabled => configuration.BendOpenings;
+    public bool BendHandsEnabled => configuration.BendHands;
+    public bool BodySetupRunning => bodySetupRunning;
+    internal Ik.BodyProfile? OwnBodyProfile => OwnBody();
+
+    public void SetBendOptions(bool shaft, bool openings, bool hands)
+    {
+        configuration.BendShaft = shaft;
+        configuration.BendOpenings = openings;
+        configuration.BendHands = hands;
+        configuration.Save(PluginInterface);
+    }
+
+    /// <summary>Measures this character's body from its loaded models, saves it and shares it with the room.</summary>
+    public void SetUpBody()
+    {
+        if (bodySetupRunning) return;
+        if (Objects.LocalPlayer is not { } local || CurrentCharacterName() is not { } name)
+        {
+            Status = "Log in to a character before setting up your body.";
+            return;
+        }
+        var capture = ReadBody(local.Address, local.ObjectIndex);
+        if (capture is null)
+        {
+            Status = "Couldn't read your body. Make sure Penumbra is running and your character is drawn.";
+            return;
+        }
+        bodySetupRunning = true;
+        Status = "Measuring your body...";
+        var tuning = OwnBody()?.Tuning;
+        _ = Task.Run(() => Ik.BodyMeasurer.Measure(capture, DataManager, Log)).ContinueWith(task =>
+        {
+            bodySetupRunning = false;
+            if (!task.IsCompletedSuccessfully)
+            {
+                Status = "Body setup failed: " + task.Exception?.GetBaseException().Message;
+                return;
+            }
+            var profile = task.Result;
+            if (tuning is not null) profile.Tuning = tuning;
+            Framework.RunOnFrameworkThread(() =>
+            {
+                configuration.BodyProfiles[name] = profile.ToJson();
+                configuration.Save(PluginInterface);
+                ownBody = profile;
+                ownBodyName = name;
+                if (sync.IsInRoom) _ = sync.SetBodyProfileAsync(profile.ToJson());
+                Status = $"Body set up: {DescribeBody(profile)}.";
+            });
+        }, TaskScheduler.Default);
+    }
+
+    public void SetBodyTuning(float contactGap, float gripStrength, float openingAmount)
+    {
+        if (OwnBody() is not { } profile || CurrentCharacterName() is not { } name) return;
+        profile.Tuning.ContactGap = contactGap;
+        profile.Tuning.GripStrength = gripStrength;
+        profile.Tuning.OpeningAmount = openingAmount;
+        configuration.BodyProfiles[name] = profile.ToJson();
+        configuration.Save(PluginInterface);
+    }
+
+    /// <summary>Shares the finished tuning with the room; called when a slider is let go.</summary>
+    public void ShareBodyProfile()
+    {
+        if (sync.IsInRoom && OwnBody() is { } profile) _ = sync.SetBodyProfileAsync(profile.ToJson());
+    }
+
+    internal static string DescribeBody(Ik.BodyProfile profile)
+    {
+        var parts = new List<string>();
+        if (profile.Shaft is not null) parts.Add("shaft");
+        parts.AddRange(profile.Openings.Keys.OrderBy(key => key));
+        if (profile.Hands.Count > 0) parts.Add("hands");
+        return parts.Count == 0
+            ? $"{profile.SurfaceRadius.Count} body surfaces"
+            : $"{profile.SurfaceRadius.Count} body surfaces, {string.Join(", ", parts)}";
+    }
+
+    private Ik.BodyProfile? OwnBody()
+    {
+        var name = CurrentCharacterName();
+        if (name is null) return null;
+        if (ownBody is not null && ownBodyName.Equals(name, StringComparison.OrdinalIgnoreCase)) return ownBody;
+        ownBodyName = name;
+        ownBody = configuration.BodyProfiles.TryGetValue(name, out var json) ? Ik.BodyProfile.FromJson(json) : null;
+        return ownBody;
+    }
+
+    private Ik.BodyProfile? BodyProfileOf(string name)
+    {
+        if (name.Equals(ownBodyName, StringComparison.OrdinalIgnoreCase) && ownBody is not null) return ownBody;
+        if (sharedBodies.TryGetValue(name, out var shared)) return shared;
+        return measuredBodies.TryGetValue(name, out var measured) ? measured : null;
+    }
+
+    private unsafe Ik.BodyCapture? ReadBody(nint address, ushort objectIndex)
+    {
+        var gameObject = (FFXIVClientStructs.FFXIV.Client.Game.Object.GameObject*)address;
+        if (gameObject is null || gameObject->DrawObject is null) return null;
+        return Ik.BodyMeasurer.Capture((nint)gameObject->DrawObject, objectIndex, penumbra);
+    }
+
+    private void StartBodyProfileSync()
+    {
+        bodySyncPending = false;
+        if (!sync.IsInRoom) return;
+        if (OwnBody() is { } profile) _ = sync.SetBodyProfileAsync(profile.ToJson());
+        _ = sync.GetBodyProfilesAsync().ContinueWith(task =>
+        {
+            if (!task.IsCompletedSuccessfully) return;
+            foreach (var shared in task.Result)
+                if (Ik.BodyProfile.FromJson(shared.ProfileJson) is { } parsed) sharedBodies[shared.DisplayName] = parsed;
+        }, TaskScheduler.Default);
+    }
+
+    /// <summary>Hands the bone bender the characters to work on: you and the room partners near you
+    /// (or your target when you aren't in a room), and measures a partner who hasn't shared a body.</summary>
+    private unsafe void UpdateContactIk()
+    {
+        if (contactIk is null) return;
+        var settings = new Ik.IkSettings(configuration.BendShaft, configuration.BendOpenings, configuration.BendHands,
+            configuration.LineUpPreference);
+        if (Objects.LocalPlayer is not { } local || (!settings.Shaft && !settings.Openings && !settings.Hands))
+        {
+            contactIk.Update([], settings);
+            return;
+        }
+        OwnBody();
+        var nearby = new List<Ik.IkActor> { ToIkActor(local, true) };
+        foreach (var player in Objects.OfType<Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter>())
+        {
+            if (player.Address == local.Address || System.Numerics.Vector3.Distance(player.Position, local.Position) > 3f) continue;
+            var name = player.Name.TextValue;
+            var partner = sync.IsInRoom
+                ? IsRoomMemberNamed(name)
+                : Targets.Target?.Address == player.Address;
+            if (!partner) continue;
+            nearby.Add(ToIkActor(player, false));
+            if (!sharedBodies.ContainsKey(name) && !measuredBodies.ContainsKey(name) && measuringBodies.Add(name))
+                MeasurePartner(player, name);
+        }
+        contactIk.Update(nearby, settings);
+    }
+
+    private static unsafe Ik.IkActor ToIkActor(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter player, bool isLocal)
+    {
+        var character = (Character*)player.Address;
+        var looping = character is not null &&
+                      character->Mode is CharacterModes.EmoteLoop or CharacterModes.InPositionLoop;
+        return new Ik.IkActor(player.Address, player.GameObjectId, player.Name.TextValue, isLocal, looping);
+    }
+
+    private void MeasurePartner(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter player, string name)
+    {
+        var capture = ReadBody(player.Address, player.ObjectIndex);
+        if (capture is null) return;
+        _ = Task.Run(() => Ik.BodyMeasurer.Measure(capture, DataManager, Log)).ContinueWith(task =>
+        {
+            if (task.IsCompletedSuccessfully) measuredBodies[name] = task.Result;
+        }, TaskScheduler.Default);
+    }
+
     private bool IsRoomMemberNamed(string name) =>
         sync.IsInRoom && sync.Room is { } room && room.Members.Any(member =>
             !sync.IsCurrentMember(member.ConnectionId) &&
@@ -3543,6 +3746,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (communityRoleSyncPending) StartCommunityRoleLabelSync();
         UpdateAlignment();
         contactAlign.Tick(configuration.AutomaticLineUp, IsSimpleHeelsLoadedCached());
+        if (bodySyncPending) StartBodyProfileSync();
+        UpdateContactIk();
         preloader.Tick();
         UpdateAnimationSpeed();
         ProcessCompletedDownloads();
@@ -3900,6 +4105,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             while (incomingAnimationSuggestions.TryDequeue(out _)) { }
             remoteReadyModKeys.Clear();
             roleSyncPending = true;
+            bodySyncPending = true;
+            sharedBodies.Clear();
         }
         var room = sync.Room!;
         var currentMembers = room.Members.Select(member => member.DisplayName).ToHashSet(StringComparer.OrdinalIgnoreCase);
@@ -4554,6 +4761,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        contactIk?.Dispose();
         agentExecuteEmoteHook?.Dispose();
         Theme.Dispose();
         var refreshCancellation = modRefreshCancellation;

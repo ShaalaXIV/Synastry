@@ -15,6 +15,15 @@ internal enum ContactPart
     Anus,
 }
 
+/// <summary>Which part line-up aims for. A mouth already in contact always wins.</summary>
+public enum ContactPreference
+{
+    Closest,
+    Mouth,
+    Vagina,
+    Anus,
+}
+
 /// <summary>
 /// Lines up a penis with a partner's mouth, vagina or anus during a looping couple animation.
 ///
@@ -46,6 +55,9 @@ internal sealed unsafe class ContactAlignService
 
     private const float PartnerSearchRadius = 2.5f;
 
+    // A mouth this close to the shaft is in contact, and wins over any preference.
+    private const float MouthContactDistance = 0.08f;
+
     // YAS gives every body the full genital set; on a body that doesn't use it the shaft bones
     // collapse onto one point. A shaft shorter than this is one of those.
     private const float MinShaftLength = 0.05f;
@@ -70,6 +82,7 @@ internal sealed unsafe class ContactAlignService
     private readonly IPluginLog log;
     private readonly Func<string, bool> usesSynastry;
     private readonly Action<string> executeCommand;
+    private readonly Func<ContactPreference> preference;
 
     private string handledSignature = "";
     private string pendingSignature = "";
@@ -78,15 +91,17 @@ internal sealed unsafe class ContactAlignService
     private bool manual;
     private long measureStarted;
     private ulong partnerId;
-    private Contact? best;
+    private readonly Dictionary<ContactPart, Contact> bestByPart = [];
 
     public ContactAlignService(
         IObjectTable objects,
         ITargetManager targets,
         IPluginLog log,
         Func<string, bool> usesSynastry,
-        Action<string> executeCommand)
+        Action<string> executeCommand,
+        Func<ContactPreference> preference)
     {
+        this.preference = preference;
         this.objects = objects;
         this.targets = targets;
         this.log = log;
@@ -171,7 +186,7 @@ internal sealed unsafe class ContactAlignService
         manual = fromButton;
         measureStarted = Environment.TickCount64;
         partnerId = partner.GameObjectId;
-        best = null;
+        bestByPart.Clear();
         if (manual) Status = $"Measuring against {partner.Name.TextValue}...";
     }
 
@@ -188,40 +203,57 @@ internal sealed unsafe class ContactAlignService
         var theirs = ReadBones(partner);
         if (TryGetModelYaw(local, out var yaw))
         {
-            Consider(Measure(mine, theirs, true, yaw));
-            Consider(Measure(theirs, mine, false, yaw));
+            foreach (var contact in Measure(mine, theirs, true, yaw)) Consider(contact);
+            foreach (var contact in Measure(theirs, mine, false, yaw)) Consider(contact);
         }
 
         if (Environment.TickCount64 - measureStarted >= SampleMs)
             Finish(partner);
     }
 
-    private void Consider(Contact? contact)
+    private void Consider(Contact contact)
     {
-        if (contact is not null && (best is null || contact.Distance < best.Distance))
-            best = contact;
+        if (!bestByPart.TryGetValue(contact.Part, out var current) || contact.Distance < current.Distance)
+            bestByPart[contact.Part] = contact;
     }
 
-    /// <summary>The closest any receiving part of <paramref name="receiver"/> comes to the shaft of
+    /// <summary>
+    /// The part to line up: a mouth already in contact, then the preferred part if it is within
+    /// reach, then whichever came closest.
+    /// </summary>
+    private Contact? Choose(float limit)
+    {
+        if (bestByPart.Count == 0) return null;
+        if (bestByPart.TryGetValue(ContactPart.Mouth, out var mouth) && mouth.Distance <= MouthContactDistance)
+            return mouth;
+        ContactPart? wanted = preference() switch
+        {
+            ContactPreference.Mouth => ContactPart.Mouth,
+            ContactPreference.Vagina => ContactPart.Vagina,
+            ContactPreference.Anus => ContactPart.Anus,
+            _ => null
+        };
+        if (wanted is { } part && bestByPart.TryGetValue(part, out var preferred) && preferred.Distance <= limit)
+            return preferred;
+        return bestByPart.Values.MinBy(contact => contact.Distance);
+    }
+
+    /// <summary>How close each receiving part of <paramref name="receiver"/> comes to the shaft of
     /// <paramref name="giver"/> on this frame.</summary>
-    private static Contact? Measure(
+    private static IEnumerable<Contact> Measure(
         IReadOnlyDictionary<string, Vector3> giver,
         IReadOnlyDictionary<string, Vector3> receiver,
         bool localIsGiver,
         float localYaw)
     {
         var shaft = RealShaft(giver);
-        if (shaft is null) return null;
+        if (shaft is null) yield break;
 
-        Contact? closest = null;
         foreach (var (part, point) in ReceivingParts(receiver, RealShaft(receiver) is not null))
         {
             var onShaft = ClosestPointOnPolyline(shaft, point);
-            var distance = Vector3.Distance(onShaft, point);
-            if (closest is null || distance < closest.Distance)
-                closest = new Contact(distance, localIsGiver, part, onShaft, point, localYaw);
+            yield return new Contact(Vector3.Distance(onShaft, point), localIsGiver, part, onShaft, point, localYaw);
         }
-        return closest;
     }
 
     /// <summary>The shaft from base to tip, or null when the body has none or only the collapsed set.</summary>
@@ -255,14 +287,14 @@ internal sealed unsafe class ContactAlignService
     {
         measuring = false;
         var name = partner.Name.TextValue;
-        if (best is not { } contact)
+        var limit = manual ? ManualMaxDistance : AutomaticMaxDistance;
+        if (Choose(limit) is not { } contact)
         {
             if (manual) Status = $"Couldn't find the bones to line up with {name}. Both of you need an IVCS body.";
             return;
         }
 
         var part = PartName(contact.Part);
-        var limit = manual ? ManualMaxDistance : AutomaticMaxDistance;
         if (contact.Distance <= AlignedDistance)
         {
             if (manual) Status = $"Already lined up with {name}.";

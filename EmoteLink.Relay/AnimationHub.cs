@@ -240,6 +240,40 @@ public sealed class AnimationHub : Hub
             await Clients.OthersInGroup(room.Code).SendAsync("RoleLabelChanged", shared);
     }
 
+    // A body profile is the member's measured shape (bone-to-skin distances, opening and shaft
+    // sizes) as JSON the plugin defines. The relay only relays it within the room, in memory.
+    private const int MaximumBodyProfileBytes = 32 * 1024;
+
+    public async Task SetBodyProfile(string profileJson)
+    {
+        if (profileJson.Length > MaximumBodyProfileBytes)
+            throw new HubException("This body profile is too large.");
+        if (profileJson.Length > 0)
+        {
+            try { using var _ = JsonDocument.Parse(profileJson); }
+            catch (JsonException) { throw new HubException("This body profile is not valid JSON."); }
+        }
+        var room = GetCurrentRoom();
+        BodyProfileDto shared;
+        lock (room.Gate)
+        {
+            var member = room.Members[Context.ConnectionId];
+            member.BodyProfile = profileJson;
+            shared = new BodyProfileDto(member.ConnectionId, member.DisplayName, profileJson);
+        }
+        await Clients.OthersInGroup(room.Code).SendAsync("BodyProfileChanged", shared);
+    }
+
+    public IReadOnlyList<BodyProfileDto> GetBodyProfiles()
+    {
+        var room = GetCurrentRoom();
+        lock (room.Gate)
+            return room.Members.Values
+                .Where(member => member.ConnectionId != Context.ConnectionId && member.BodyProfile.Length > 0)
+                .Select(member => new BodyProfileDto(member.ConnectionId, member.DisplayName, member.BodyProfile))
+                .ToList();
+    }
+
     public IReadOnlyList<RoleLabelDto> GetRoleLabels()
     {
         var room = GetCurrentRoom();
@@ -752,11 +786,13 @@ public sealed class AnimationHub : Hub
         public HashSet<string> Catalog { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, OptionSelectionDto> OptionSelections { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, RoleLabelDto> RoleLabels { get; } = new(StringComparer.OrdinalIgnoreCase);
+        public string BodyProfile { get; set; } = "";
     }
 
     private sealed record LocalPresence(string Scope, string DisplayName, uint HomeWorldId);
 }
 
+public sealed record BodyProfileDto(string ConnectionId, string DisplayName, string ProfileJson);
 public sealed record RoomStateDto(string RoomCode, IReadOnlyList<RoomMemberDto> Members);
 public sealed record RoomMemberDto(
     string ConnectionId,

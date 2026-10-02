@@ -160,6 +160,75 @@ public sealed class SettingsWindow : Window
             ImGui.SetTooltip("Fetch role names other players agreed on. Names you typed yourself are kept.");
         ImGui.SameLine();
         if (Theme.Text("How it works")) plugin.OpenHowTo();
+
+        Divider();
+        DrawAdvanced();
+    }
+
+    /// <summary>Bending bones so couple animations meet, and the body setup that tells it where skin is.</summary>
+    private void DrawAdvanced()
+    {
+        var s = Theme.Scale;
+        Theme.Heading("Advanced");
+        Theme.Wrapped("During couple animations Synastry can bend bones so you and your partner actually meet. " +
+                      "Bones only turn at their joints, the way a body moves; nothing stretches, and a limb that " +
+                      "can't reach stops short. Everyone in the room with Synastry sees it.", Theme.Ash);
+        ImGui.Dummy(new Vector2(0, 4f * s));
+
+        if (!plugin.ContactIkAvailable)
+        {
+            Theme.Wrapped(plugin.ContactIkStatus, Theme.AzureText);
+            ImGui.BeginDisabled();
+        }
+        var shaft = plugin.BendShaftEnabled;
+        var openings = plugin.BendOpeningsEnabled;
+        var hands = plugin.BendHandsEnabled;
+        var changed = Theme.Toggle("##bend-shaft", "Aim the penis at your partner", ref shaft);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("The shaft bends at its joints to point through the mouth, vagina or anus it's\n" +
+                             "lined up with, keeping its depth. Bigger gaps still use Line up.");
+        changed |= Theme.Toggle("##bend-openings", "Open the mouth, vagina or anus to fit", ref openings);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("When the tip arrives, the opening widens a little for its thickness, within what the\n" +
+                             "body's own bones allow. Very large sizes will still clip.");
+        changed |= Theme.Toggle("##bend-hands", "Rest hands on your partner and grip", ref hands);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("A hand hovering near your partner's thigh, hip, waist, chest or arm settles onto the skin,\n" +
+                             "turns its palm to it and closes its fingers.");
+        if (changed) plugin.SetBendOptions(shaft, openings, hands);
+        if (!plugin.ContactIkAvailable) ImGui.EndDisabled();
+
+        ImGui.Dummy(new Vector2(0, 8f * s));
+        Theme.Label("Your body");
+        var profile = plugin.OwnBodyProfile;
+        Theme.Wrapped(profile is null
+            ? "Not set up yet. Setup reads your skeleton and the body models Penumbra has loaded for you, " +
+              "measures where your skin is, and shares it with your room so hands land on you and openings are found."
+            : $"Set up: {Plugin.DescribeBody(profile)}. Run it again after changing body mods.", Theme.Soft);
+        if (plugin.BodySetupRunning) ImGui.BeginDisabled();
+        if (Theme.Primary(plugin.BodySetupRunning ? "Measuring..." : profile is null ? "Set up my body" : "Measure again"))
+            plugin.SetUpBody();
+        if (plugin.BodySetupRunning) ImGui.EndDisabled();
+
+        if (profile is null) return;
+        ImGui.Dummy(new Vector2(0, 6f * s));
+        var gap = profile.Tuning.ContactGap * 100f;
+        var grip = profile.Tuning.GripStrength * 100f;
+        var opening = profile.Tuning.OpeningAmount * 100f;
+        ImGui.SetNextItemWidth(260f * s);
+        var tuned = ImGui.SliderFloat("Contact gap (cm-ish)", ref gap, -5f, 5f, "%.1f");
+        var released = ImGui.IsItemDeactivatedAfterEdit();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Space left between touching skin. Negative presses in a little.");
+        ImGui.SetNextItemWidth(260f * s);
+        tuned |= ImGui.SliderFloat("Grip", ref grip, 0f, 150f, "%.0f%%");
+        released |= ImGui.IsItemDeactivatedAfterEdit();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("How far your fingers close when your hand rests on someone.");
+        ImGui.SetNextItemWidth(260f * s);
+        tuned |= ImGui.SliderFloat("Opening", ref opening, 0f, 150f, "%.0f%%");
+        released |= ImGui.IsItemDeactivatedAfterEdit();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("How much your openings may widen, compared with what was measured.");
+        if (tuned) plugin.SetBodyTuning(gap / 100f, grip / 100f, opening / 100f);
+        if (released) plugin.ShareBodyProfile();
     }
 
     private static void Divider()
