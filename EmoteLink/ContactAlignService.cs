@@ -48,7 +48,7 @@ internal sealed unsafe class ContactAlignService
     private const float AlignedDistance = 0.02f;
 
     // Farther than this is not a contact animation, so automatic line-up leaves it alone.
-    private const float AutomaticMaxDistance = 0.5f;
+    private const float AutomaticMaxDistance = 0.25f;
 
     // Past this the drawn model visibly drifts from the real character.
     private const float ManualMaxDistance = 1.0f;

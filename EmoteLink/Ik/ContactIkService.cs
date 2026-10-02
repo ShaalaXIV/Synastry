@@ -24,14 +24,23 @@ internal sealed unsafe class ContactIkService : IDisposable
     // The same draw hook Customize+ uses, so it also works outside GPose.
     private const string RenderSignature = "E8 ?? ?? ?? ?? 48 81 C3 ?? ?? ?? ?? BF ?? ?? ?? ?? 33 ED";
 
-    // A shaft engages when its tip comes this close (model units) to an opening.
-    private const float ShaftEngageDistance = 0.14f;
+    // A shaft engages when its tip comes this close (model units) to an opening. Real pairs sit
+    // about 7 cm from the opening (sex-animation-corpus, 241 pairs); 10 cm catches them all without
+    // bending a shaft toward an opening it was never aimed at.
+    private const float ShaftEngageDistance = 0.10f;
     // A mouth this close always wins, whatever the preference.
     private const float MouthContactDistance = 0.08f;
     // A shaft shorter than this is the collapsed set every YAS body carries.
     private const float MinShaftLength = 0.05f;
-    // A hand engages when its palm is this close to a body's surface (world yalms).
-    private const float HandEngageDistance = 0.09f;
+    // Hands, measured on 1,142 hands in 262 scenes (sex-animation-corpus): a hand an animator put on
+    // a partner sits within 3 cm of the skin for most of the loop, while hands meant for a table, the
+    // floor or the air hover 3-15 cm away. Engaging at 3 cm after a quarter second, and letting go
+    // past 6 cm, catches 86.5% of intended contact and grabs 1% of the rest (9 cm grabbed 25.5%).
+    private const float HandEngageDistance = 0.03f;   // world yalms to skin
+    private const float HandReleaseDistance = 0.06f;
+    private const float HandHoldSeconds = 0.27f;      // eight animation frames at 30 fps
+    // A palm this low (model space, above the feet) is propping on the floor, not on a partner.
+    private const float FloorHeight = 0.12f;
     private const float ShaftJointLimitDegrees = 14f;
     private const float PalmTurnLimitDegrees = 40f;
     private const float EaseSeconds = 0.3f;
@@ -74,6 +83,16 @@ internal sealed unsafe class ContactIkService : IDisposable
     private readonly Dictionary<string, Quaternion[]> shaftDeltas = new(StringComparer.Ordinal);
     private readonly Dictionary<string, float> weights = new(StringComparer.Ordinal);
     private readonly Dictionary<string, OpeningTarget> openings = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, HandState> hands = new(StringComparer.Ordinal);
+
+    /// <summary>Per hand: whether it holds on, how long it has waited inside the engage distance, and
+    /// the surface it last held, so letting go eases out instead of snapping back.</summary>
+    private sealed class HandState
+    {
+        public bool Engaged;
+        public float Waiting;
+        public (string Actor, string From, string To, float Radius)? Surface;
+    }
     private volatile IReadOnlyList<IkActor> actors = [];
     private volatile IkSettings settings = new(false, false, false, ContactPreference.Closest);
     private long lastFrame;
@@ -395,8 +414,10 @@ internal sealed unsafe class ContactIkService : IDisposable
         var palmDepth = (profile?.Hands.GetValueOrDefault(side)?.PalmDepth is > 0 and var depth ? depth : 0.018f) * view.Scale;
         var gap = (profile?.Tuning.ContactGap ?? 0f) * view.Scale;
 
-        // The closest body surface on anyone else.
-        (Vector3 Point, Vector3 Normal, float Gap)? best = null;
+        if (!hands.TryGetValue(key, out var state)) hands[key] = state = new HandState();
+
+        // The closest body surface on anyone else, within the release distance.
+        (Vector3 Point, Vector3 Normal, float Gap, (string, string, string, float) Surface)? best = null;
         foreach (var (otherActor, other) in all)
         {
             if (otherActor.ObjectId == actor.ObjectId) continue;
@@ -404,23 +425,54 @@ internal sealed unsafe class ContactIkService : IDisposable
             foreach (var (from, to, defaultRadius) in Surfaces)
             {
                 if (!other.TryWorld(from, out var a) || !other.TryWorld(to, out var b)) continue;
-                var onBone = ClosestOnSegment(a, b, palmWorld);
-                var offset = palmWorld - onBone;
-                var distance = offset.Length();
-                if (distance < 1e-5f) continue;
                 var radius = (otherProfile?.SurfaceRadius.GetValueOrDefault(from) is > 0 and var measured ? measured : defaultRadius) * other.Scale;
-                var surfaceGap = distance - radius;
-                if (surfaceGap > HandEngageDistance * view.Scale || surfaceGap < -radius) continue;
-                if (best is null || surfaceGap < best.Value.Gap)
-                    best = (onBone + offset / distance * radius, offset / distance, surfaceGap);
+                if (SurfaceUnder(palmWorld, a, b, radius) is not { } hit) continue;
+                if (hit.Gap > HandReleaseDistance * view.Scale || hit.Gap < -radius) continue;
+                if (best is null || hit.Gap < best.Value.Gap)
+                    best = (hit.Point, hit.Normal, hit.Gap, (other.Name, from, to, radius));
             }
         }
 
-        var weight = Ease(key, best is null ? 0f : 1f, deltaSeconds);
-        if (best is not { } surface || weight <= 0f) return null;
+        // Engage only after staying within 3 cm for a moment; hold on until past 6 cm; never on the floor.
+        var onFloor = palmModel.Y < FloorHeight;
+        if (onFloor || best is null)
+        {
+            state.Engaged = false;
+            state.Waiting = 0f;
+        }
+        else if (state.Engaged)
+        {
+            state.Engaged = best.Value.Gap <= HandReleaseDistance * view.Scale;
+        }
+        else if (best.Value.Gap <= HandEngageDistance * view.Scale)
+        {
+            state.Waiting += deltaSeconds;
+            state.Engaged = state.Waiting >= HandHoldSeconds;
+        }
+        else
+        {
+            state.Waiting = 0f;
+        }
+        if (state.Engaged && best is { } held) state.Surface = held.Surface;
+
+        var weight = Ease(key, state.Engaged ? 1f : 0f, deltaSeconds);
+        if (weight <= 0f)
+        {
+            state.Surface = null;
+            return null;
+        }
+
+        // While letting go, keep resting on the surface it last held so the hand eases off it.
+        (Vector3 Point, Vector3 Normal)? surface = null;
+        if (state.Surface is { } last &&
+            all.FirstOrDefault(entry => entry.View.Name == last.Actor).View is { } holder &&
+            holder.TryWorld(last.From, out var lastA) && holder.TryWorld(last.To, out var lastB) &&
+            SurfaceUnder(palmWorld, lastA, lastB, last.Radius) is { } kept)
+            surface = (kept.Point, kept.Normal);
+        if (surface is null) return null;
 
         // Where the wrist must go for the palm to rest on the surface, in this character's space.
-        var restingPalm = surface.Point + surface.Normal * (palmDepth + gap);
+        var restingPalm = surface.Value.Point + surface.Value.Normal * (palmDepth + gap);
         var wristTarget = view.ToModel(restingPalm + (view.World(wrist) - palmWorld));
         var shoulder = view.Model(upper);
         var elbow = view.Model(lower);
@@ -429,9 +481,21 @@ internal sealed unsafe class ContactIkService : IDisposable
         var pole = elbow + Vector3.Normalize(elbow - (shoulder + hand) * 0.5f + new Vector3(0, -0.01f, 0)) * 0.3f;
         if (IkSolver.TwoBone(shoulder, elbow, hand, wristTarget, pole) is not { } arm) return null;
 
-        var surfaceNormalModel = Vector3.Normalize(view.ToModel(view.ToWorld(palmModel) - surface.Normal) - palmModel);
+        var surfaceNormalModel = Vector3.Normalize(view.ToModel(view.ToWorld(palmModel) - surface.Value.Normal) - palmModel);
         var grip = profile?.Tuning.GripStrength ?? 1f;
         return () => ApplyHand(view, side, arm, surfaceNormalModel, grip, IkSolver.Ease(weight));
+    }
+
+    /// <summary>The skin point on a bone segment under the palm: where on the segment, which way out,
+    /// and how far the palm is from the skin.</summary>
+    private static (Vector3 Point, Vector3 Normal, float Gap)? SurfaceUnder(Vector3 palm, Vector3 from, Vector3 to, float radius)
+    {
+        var onBone = ClosestOnSegment(from, to, palm);
+        var offset = palm - onBone;
+        var distance = offset.Length();
+        if (distance < 1e-5f) return null;
+        var normal = offset / distance;
+        return (onBone + normal * radius, normal, distance - radius);
     }
 
     private static void ApplyHand(SkeletonView view, string side, (Quaternion Root, Quaternion Middle) arm,
