@@ -1308,6 +1308,8 @@ public sealed class MainWindow : Window
         Tooltip("Which part a couple animation lines up with. A mouth already in contact always wins;\n" +
                 "otherwise your choice is used when it's within reach, and the closest part when it isn't.");
 
+        DrawMeshPicker(width);
+
         DrawOffersLine(width);
         BottomAligned(() =>
         {
@@ -1963,6 +1965,60 @@ public sealed class MainWindow : Window
         icon(draw, start + new Vector2(16f * s, size.Y * 0.5f), color);
         draw.AddText(start + new Vector2(28f * s, (size.Y - ImGui.GetTextLineHeight()) * 0.5f), color, label);
         return clicked;
+    }
+
+    private string newMeshName = "";
+
+    /// <summary>Which saved body mesh is in use (Male, Female, Futa...), and measuring a new one.</summary>
+    private void DrawMeshPicker(float width)
+    {
+        var s = Theme.Scale;
+        ImGui.Dummy(new Vector2(0, 4f * s));
+        Theme.Label("Current mesh");
+        ImGui.SetNextItemWidth(MathF.Min(width, 200f * s));
+        var meshes = plugin.BodyMeshNames;
+        var active = plugin.ActiveBodyMeshName;
+        var openNewMesh = false;
+        if (ImGui.BeginCombo("##current-mesh", plugin.BodySetupRunning ? "Measuring…" : active.Length > 0 ? active : "Not set up"))
+        {
+            foreach (var mesh in meshes)
+                if (ImGui.Selectable(mesh, mesh.Equals(active, StringComparison.OrdinalIgnoreCase)))
+                    plugin.SelectBodyMesh(mesh);
+            if (meshes.Count > 0) ImGui.Separator();
+            if (ImGui.Selectable("Measure new mesh…")) openNewMesh = true;
+            if (active.Length > 0 && ImGui.Selectable($"Measure {active} again")) plugin.SetUpBody();
+            ImGui.EndCombo();
+        }
+        Tooltip("The body your partners' hands and line-up aim at. Synastry switches by itself when your\n" +
+                "loaded models match a saved mesh; pick one here to switch now.");
+
+        if (openNewMesh)
+        {
+            newMeshName = "";
+            ImGui.OpenPopup("New mesh###SynastryNewMesh");
+        }
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(18f, 16f) * s);
+        if (ImGui.BeginPopup("New mesh###SynastryNewMesh"))
+        {
+            Theme.Label("Name this mesh");
+            Theme.Quiet("Put on the body you want first, then measure.");
+            ImGui.SetNextItemWidth(220f * s);
+            if (ImGui.IsWindowAppearing()) ImGui.SetKeyboardFocusHere();
+            var submit = ImGui.InputTextWithHint("##mesh-name", "Male, Female, Futa…", ref newMeshName, 24,
+                ImGuiInputTextFlags.EnterReturnsTrue);
+            var name = newMeshName.Trim();
+            if (name.Length == 0) ImGui.BeginDisabled();
+            if ((Theme.Primary("Measure") || submit) && name.Length > 0)
+            {
+                plugin.SetUpBody(name);
+                ImGui.CloseCurrentPopup();
+            }
+            if (name.Length == 0) ImGui.EndDisabled();
+            ImGui.SameLine();
+            if (Theme.Text("Cancel")) ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+        }
+        ImGui.PopStyleVar();
     }
 
     private static string LineUpPreferenceName(ContactPreference preference) => preference switch

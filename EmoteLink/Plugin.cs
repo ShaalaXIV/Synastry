@@ -1277,8 +1277,43 @@ public sealed unsafe class Plugin : IDalamudPlugin
         configuration.Save(PluginInterface);
     }
 
-    /// <summary>Measures this character's body from its loaded models, saves it and shares it with the room.</summary>
-    public void SetUpBody()
+    private const string DefaultMeshName = "My body";
+    private long nextMeshCheck;
+
+    /// <summary>This character's saved meshes, in the order they were made.</summary>
+    public IReadOnlyList<string> BodyMeshNames =>
+        CurrentCharacterName() is { } name ? MeshesOf(name).Keys.ToList() : [];
+
+    public string ActiveBodyMeshName =>
+        CurrentCharacterName() is { } name && configuration.ActiveBodyMesh.TryGetValue(name, out var mesh) &&
+        MeshesOf(name).ContainsKey(mesh)
+            ? mesh
+            : CurrentCharacterName() is { } other ? MeshesOf(other).Keys.FirstOrDefault() ?? "" : "";
+
+    /// <summary>Switches to a saved mesh and shares it with the room.</summary>
+    public void SelectBodyMesh(string mesh, bool automatic = false)
+    {
+        if (CurrentCharacterName() is not { } name || !MeshesOf(name).ContainsKey(mesh)) return;
+        configuration.ActiveBodyMesh[name] = mesh;
+        configuration.Save(PluginInterface);
+        ownBody = null;
+        if (sync.IsInRoom && OwnBody() is { } profile) _ = sync.SetBodyProfileAsync(profile.ToJson());
+        Status = automatic ? $"Your body changed; using the {mesh} mesh." : $"Using the {mesh} mesh.";
+    }
+
+    public void DeleteBodyMesh(string mesh)
+    {
+        if (CurrentCharacterName() is not { } name || !MeshesOf(name).Remove(mesh)) return;
+        if (configuration.ActiveBodyMesh.TryGetValue(name, out var active) && active.Equals(mesh, StringComparison.OrdinalIgnoreCase))
+            configuration.ActiveBodyMesh.Remove(name);
+        configuration.Save(PluginInterface);
+        ownBody = null;
+        if (sync.IsInRoom) _ = sync.SetBodyProfileAsync(OwnBody()?.ToJson() ?? "");
+    }
+
+    /// <summary>Measures this character's body from its loaded models into a saved mesh (the current
+    /// one, or a new one when a name is given), uses it, and shares it with the room.</summary>
+    public void SetUpBody(string? newMesh = null)
     {
         if (bodySetupRunning) return;
         if (Objects.LocalPlayer is not { } local || CurrentCharacterName() is not { } name)
@@ -1286,6 +1321,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Status = "Log in to a character before setting up your body.";
             return;
         }
+        var mesh = (newMesh ?? "").Trim();
+        if (mesh.Length == 0) mesh = ActiveBodyMeshName.Length > 0 ? ActiveBodyMeshName : DefaultMeshName;
+        mesh = mesh[..Math.Min(24, mesh.Length)];
         var capture = ReadBody(local.Address, local.ObjectIndex);
         if (capture is null)
         {
@@ -1293,8 +1331,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
         bodySetupRunning = true;
-        Status = "Measuring your body...";
-        var tuning = OwnBody()?.Tuning;
+        Status = $"Measuring your {mesh} mesh...";
+        var tuning = MeshesOf(name).TryGetValue(mesh, out var existing) ? Ik.BodyProfile.FromJson(existing)?.Tuning : null;
         _ = Task.Run(() => Ik.BodyMeasurer.Measure(capture, DataManager, Log)).ContinueWith(task =>
         {
             bodySetupRunning = false;
@@ -1307,12 +1345,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (tuning is not null) profile.Tuning = tuning;
             Framework.RunOnFrameworkThread(() =>
             {
-                configuration.BodyProfiles[name] = profile.ToJson();
+                MeshesOf(name)[mesh] = profile.ToJson();
+                configuration.ActiveBodyMesh[name] = mesh;
                 configuration.Save(PluginInterface);
                 ownBody = profile;
                 ownBodyName = name;
                 if (sync.IsInRoom) _ = sync.SetBodyProfileAsync(profile.ToJson());
-                Status = $"Body set up: {DescribeBody(profile)}.";
+                Status = $"{mesh} mesh set up: {DescribeBody(profile)}.";
             });
         }, TaskScheduler.Default);
     }
@@ -1323,7 +1362,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         profile.Tuning.ContactGap = contactGap;
         profile.Tuning.GripStrength = gripStrength;
         profile.Tuning.OpeningAmount = openingAmount;
-        configuration.BodyProfiles[name] = profile.ToJson();
+        MeshesOf(name)[ActiveBodyMeshName] = profile.ToJson();
         configuration.Save(PluginInterface);
     }
 
@@ -1331,6 +1370,44 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public void ShareBodyProfile()
     {
         if (sync.IsInRoom && OwnBody() is { } profile) _ = sync.SetBodyProfileAsync(profile.ToJson());
+    }
+
+    /// <summary>A character's saved meshes. A single measurement from 1.0.80-1.0.81 becomes "My body".</summary>
+    private Dictionary<string, string> MeshesOf(string character)
+    {
+        if (!configuration.BodyMeshes.TryGetValue(character, out var meshes))
+            configuration.BodyMeshes[character] = meshes = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+        if (meshes.Count == 0 && configuration.BodyProfiles.Remove(character, out var legacy))
+        {
+            meshes[DefaultMeshName] = legacy;
+            configuration.ActiveBodyMesh[character] = DefaultMeshName;
+            configuration.Save(PluginInterface);
+        }
+        return meshes;
+    }
+
+    /// <summary>Every few seconds, when the loaded models match a saved mesh exactly (the body, gear
+    /// and everything else that was on when it was measured), switch to that mesh.</summary>
+    private void RememberBodyMesh(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter local)
+    {
+        var now = Environment.TickCount64;
+        if (now < nextMeshCheck || bodySetupRunning || CurrentCharacterName() is not { } name) return;
+        nextMeshCheck = now + 5000;
+        var meshes = MeshesOf(name);
+        if (meshes.Count < 2) return;
+        var models = penumbra.GetLoadedModels(local.ObjectIndex);
+        if (models.Count == 0) return;
+        var signature = Ik.BodyMeasurer.SignatureOf(models);
+        var active = ActiveBodyMeshName;
+        foreach (var (mesh, json) in meshes)
+        {
+            if (mesh.Equals(active, StringComparison.OrdinalIgnoreCase)) continue;
+            if (Ik.BodyProfile.FromJson(json)?.BodySignature == signature)
+            {
+                SelectBodyMesh(mesh, true);
+                return;
+            }
+        }
     }
 
     internal static string DescribeBody(Ik.BodyProfile profile)
@@ -1350,7 +1427,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (name is null) return null;
         if (ownBody is not null && ownBodyName.Equals(name, StringComparison.OrdinalIgnoreCase)) return ownBody;
         ownBodyName = name;
-        ownBody = configuration.BodyProfiles.TryGetValue(name, out var json) ? Ik.BodyProfile.FromJson(json) : null;
+        var mesh = ActiveBodyMeshName;
+        ownBody = mesh.Length > 0 && MeshesOf(name).TryGetValue(mesh, out var json) ? Ik.BodyProfile.FromJson(json) : null;
         return ownBody;
     }
 
@@ -1394,6 +1472,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
         OwnBody();
+        RememberBodyMesh(local);
         var nearby = new List<Ik.IkActor> { ToIkActor(local, true) };
         foreach (var player in Objects.OfType<Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter>())
         {

@@ -44,8 +44,12 @@ public sealed class Configuration : IPluginConfiguration
     public bool BendShaft { get; set; } = true;
     public bool BendOpenings { get; set; } = true;
     public bool BendHands { get; set; } = true;
-    // Body setup results, as shared JSON, by character name.
+    // Body setup results from 1.0.80-1.0.81, one per character; moved into BodyMeshes as "My body".
     public Dictionary<string, string> BodyProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    // Saved meshes per character (for example Male, Female, Futa), each a body profile as JSON.
+    public Dictionary<string, Dictionary<string, string>> BodyMeshes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    // Which saved mesh each character is using.
+    public Dictionary<string, string> ActiveBodyMesh { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<CustomAnimationCommand> CustomAnimationCommands { get; set; } = [];
     public Dictionary<uint, string> TypedEmoteDefaults { get; set; } = [];
 

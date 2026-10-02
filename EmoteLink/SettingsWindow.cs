@@ -201,14 +201,21 @@ public sealed class SettingsWindow : Window
         ImGui.Dummy(new Vector2(0, 8f * s));
         Theme.Label("Your body");
         var profile = plugin.OwnBodyProfile;
+        var mesh = plugin.ActiveBodyMeshName;
         Theme.Wrapped(profile is null
             ? "Not set up yet. Setup reads your skeleton and the body models Penumbra has loaded for you, " +
               "measures where your skin is, and shares it with your room so hands land on you and openings are found."
-            : $"Set up: {Plugin.DescribeBody(profile)}. Run it again after changing body mods.", Theme.Soft);
+            : $"{mesh} mesh: {Plugin.DescribeBody(profile)}. Measure again after changing body mods. " +
+              "Save other bodies (Male, Female, Futa…) from the Current mesh list in the room.", Theme.Soft);
         if (plugin.BodySetupRunning) ImGui.BeginDisabled();
-        if (Theme.Primary(plugin.BodySetupRunning ? "Measuring..." : profile is null ? "Set up my body" : "Measure again"))
+        if (Theme.Primary(plugin.BodySetupRunning ? "Measuring..." : profile is null ? "Set up my body" : $"Measure {mesh} again"))
             plugin.SetUpBody();
         if (plugin.BodySetupRunning) ImGui.EndDisabled();
+        if (profile is not null && plugin.BodyMeshNames.Count > 1)
+        {
+            ImGui.SameLine();
+            if (Theme.Text($"Delete {mesh}", Theme.Ash)) plugin.DeleteBodyMesh(mesh);
+        }
 
         if (profile is null) return;
         ImGui.Dummy(new Vector2(0, 6f * s));

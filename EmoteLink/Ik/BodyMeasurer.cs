@@ -88,11 +88,15 @@ internal static class BodyMeasurer
         var models = penumbra.GetLoadedModels(objectIndex);
         if (models.Count == 0) return null;
         var rig = bind.ContainsKey("iv_ochinko_a") || bind.ContainsKey("iv_omanko") ? "ivcs" : "vanilla";
-        var signature = Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
-            string.Join("\n", models.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)))))[..16];
+        var signature = SignatureOf(models);
         return new BodyCapture(bind.ToDictionary(pair => pair.Key, pair => pair.Value.Position, StringComparer.Ordinal),
             models, rig, signature);
     }
+
+    /// <summary>Fingerprint of a set of loaded models, so a saved mesh can be recognised again.</summary>
+    public static string SignatureOf(IReadOnlyList<string> models) =>
+        Convert.ToHexString(SHA256.HashData(Encoding.UTF8.GetBytes(
+            string.Join("\n", models.OrderBy(path => path, StringComparer.OrdinalIgnoreCase)))))[..16];
 
     /// <summary>Loads the models and measures them. Safe to run off the framework thread.</summary>
     public static BodyProfile Measure(BodyCapture capture, IDataManager data, IPluginLog log)
