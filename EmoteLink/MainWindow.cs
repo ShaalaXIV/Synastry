@@ -219,11 +219,14 @@ public sealed class MainWindow : Window
         var button = 30f * s;
         var right = start.X + width - 12f * s;
         var searchWidth = MathF.Min(270f * s, width * 0.28f);
-        ImGui.SetCursorScreenPos(new Vector2(right - button * 2 - 10f * s - searchWidth,
+        ImGui.SetCursorScreenPos(new Vector2(right - button * 3 - 14f * s - searchWidth,
             start.Y + (height - ImGui.GetFrameHeight()) * 0.5f));
         ImGui.SetNextItemWidth(searchWidth);
         ImGui.InputTextWithHint("##search", "Search every folder", ref search, 128);
 
+        ImGui.SetCursorScreenPos(new Vector2(right - button * 3 - 8f * s, start.Y + (height - button) * 0.5f));
+        if (IconButton("##minimize", button, DrawMinimizeIcon)) plugin.ShowMiniPlayer();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Shrink to the mini player");
         ImGui.SetCursorScreenPos(new Vector2(right - button * 2 - 4f * s, start.Y + (height - button) * 0.5f));
         if (IconButton("##menu", button, DrawMenuIcon)) ImGui.OpenPopup("synastry-menu");
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Menu");
@@ -887,9 +890,9 @@ public sealed class MainWindow : Window
         var right = ImGui.GetCursorScreenPos().X + ImGui.GetContentRegionAvail().X;
         var first = true;
 
-        void Place(string label)
+        void Place(string label, float extra)
         {
-            var chipWidth = ImGui.CalcTextSize(label).X + 30f * Theme.Scale;
+            var chipWidth = ImGui.CalcTextSize(label).X + 30f * Theme.Scale + extra;
             if (!first)
             {
                 ImGui.SameLine(0, 8f * Theme.Scale);
@@ -951,7 +954,7 @@ public sealed class MainWindow : Window
         string option,
         string animationName,
         bool suggestionMode,
-        Action<string> place,
+        Action<string, float> place,
         out bool solo)
     {
         solo = false;
@@ -970,16 +973,17 @@ public sealed class MainWindow : Window
             : mine
                 ? ($"{role}, you're ready", ChipState.Mine)
                 : (role, ChipState.Open);
-        place(label);
+        var showSolo = inRoom && !suggestionMode;
+        place(label, showSolo ? ImGui.CalcTextSize("Solo").X + 16f * Theme.Scale : 0f);
         var clicked = Theme.Chip($"{label}##chip", state);
+        var chipHeight = ImGui.GetItemRectSize().Y;
         if (ImGui.IsItemHovered())
         {
             var action = suggestionMode ? $"Ready as {role}" : inRoom ? $"Get ready as {role}" : $"Play {animationName}";
             var who = pickedBy is not null ? $"\n{pickedBy} picked this role." : "";
             var name = !role.Equals(animationName, StringComparison.Ordinal) ? $"\n{animationName}" : "";
-            ImGui.SetTooltip($"{action}{name}{who}\nRight-click to rename{(inRoom && !suggestionMode ? " or play solo" : "")}.");
+            ImGui.SetTooltip($"{action}{name}{who}\nRight-click to rename.");
         }
-
         if (ImGui.BeginPopupContextItem("roleMenu"))
         {
             ImGui.TextUnformatted(animationName);
@@ -1022,6 +1026,16 @@ public sealed class MainWindow : Window
                 Tooltip("Changes it for you now. Five matching suggestions change it for everyone.");
             }
             ImGui.EndPopup();
+        }
+
+        // After the chip's right-click menu, which attaches to the item drawn just before it.
+        if (showSolo)
+        {
+            // Back from before the redesign: play this role just for you, without readying the room.
+            ImGui.SameLine(0, 2f * Theme.Scale);
+            ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (chipHeight - ImGui.GetFrameHeight()) * 0.5f);
+            if (Theme.Text("Solo", Theme.Ash)) solo = true;
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"Play {animationName} just for you, without the room.");
         }
         return clicked;
     }
@@ -1935,6 +1949,12 @@ public sealed class MainWindow : Window
         icon(draw, start + new Vector2(16f * s, size.Y * 0.5f), color);
         draw.AddText(start + new Vector2(28f * s, (size.Y - ImGui.GetTextLineHeight()) * 0.5f), color, label);
         return clicked;
+    }
+
+    private static void DrawMinimizeIcon(ImDrawListPtr draw, Vector2 center, uint color)
+    {
+        var r = 5f * Theme.Scale;
+        draw.AddLine(center + new Vector2(-r, r * 0.6f), center + new Vector2(r, r * 0.6f), color, 1.6f * Theme.Scale);
     }
 
     private static void DrawMenuIcon(ImDrawListPtr draw, Vector2 center, uint color)

@@ -34,6 +34,8 @@ public sealed class Configuration : IPluginConfiguration
     public bool SitDozeAnywhere { get; set; }
     // With SitDozeAnywhere on: only doze plays in place; sitting still needs real furniture.
     public bool DozeAnywhereOnly { get; set; }
+    // Open Synastry as the small mini player instead of the full window.
+    public bool UseMiniPlayer { get; set; }
     // Line up a couple animation's contact (penis with mouth, vagina or anus) through Simple Heels.
     public bool AutomaticLineUp { get; set; } = true;
     public List<CustomAnimationCommand> CustomAnimationCommands { get; set; } = [];

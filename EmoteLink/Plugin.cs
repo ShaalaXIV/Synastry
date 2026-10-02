@@ -116,6 +116,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly AnimationSyncService sync;
     private readonly WindowSystem windows = new("Synastry");
     private readonly MainWindow mainWindow;
+    private readonly MiniPlayerWindow miniPlayerWindow;
+
+    /// <summary>The animation this player last started, until it's cleared (moving or another start).</summary>
+    public NowPlayingInfo? NowPlaying { get; private set; }
     private readonly SettingsWindow settingsWindow;
     private readonly CustomCommandsWindow customCommandsWindow;
     private readonly TypedEmoteChooserWindow typedEmoteChooserWindow;
@@ -309,6 +313,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         };
         Theme.Initialize(PluginInterface.UiBuilder);
         mainWindow = new MainWindow(this);
+        miniPlayerWindow = new MiniPlayerWindow(this);
         settingsWindow = new SettingsWindow(this);
         customCommandsWindow = new CustomCommandsWindow(this);
         typedEmoteChooserWindow = new TypedEmoteChooserWindow(this);
@@ -328,6 +333,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Log.Warning(exception, "Typed locked-emote interception could not be initialized.");
         }
         windows.AddWindow(mainWindow);
+        windows.AddWindow(miniPlayerWindow);
         windows.AddWindow(settingsWindow);
         windows.AddWindow(customCommandsWindow);
         windows.AddWindow(typedEmoteChooserWindow);
@@ -1591,6 +1597,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (string.IsNullOrWhiteSpace(senderName)) senderName = "A player";
         roomInvites.Enqueue(new RoomInvite(senderName, code));
         Status = $"{senderName} invited you to room {code}.";
+        miniPlayerWindow.IsOpen = false;
         mainWindow.IsOpen = true;
         chatMessage.Message = $"Synastry invitation: {senderName} invited you to room {code}.";
     }
@@ -1935,8 +1942,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (sync.Room is not { } room || IsModPrivate(directory) || !modCatalogKeys.ContainsKey(directory)) return;
         foreach (var member in room.Members.Where(member =>
                      member.FreeUse && !sync.IsCurrentMember(member.ConnectionId)))
+        {
             mainWindow.ShowFreeUsePrompt(new FreeUsePrompt(
                 directory, name, ownTrigger, member.ConnectionId, member.DisplayName));
+            SurfacePromptFromMiniPlayer();
+        }
     }
 
     private void ProcessFreeUseDirectives()
@@ -2365,6 +2375,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
         configuration.ActiveAssignments.Add(new TemporaryAssignment(collection.Value.Id, directory, name));
         configuration.Save(PluginInterface);
+        NowPlaying = new NowPlayingInfo(directory, name, NowPlayingLabel(directory, requestedPose, requestedCommand));
         waitingForAnimation = true;
         activationTime = Environment.TickCount64;
         movementTrackingStart = activationTime + 1200;
@@ -3393,8 +3404,18 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void ClearTemporaryAssignments() => ClearTemporaryAssignmentsInternal(true);
 
+    private string NowPlayingLabel(string directory, PoseTarget? pose, string? command)
+    {
+        if (pose is not null) return PoseDisplayName(pose);
+        if (command is null) return "";
+        var emote = modEmotes.GetValueOrDefault(directory)?.FirstOrDefault(candidate =>
+            candidate.Command.Equals(command, StringComparison.OrdinalIgnoreCase));
+        return emote?.Name ?? command;
+    }
+
     private void ClearTemporaryAssignmentsInternal(bool cancelGroupReady, bool clearRemote = true)
     {
+        NowPlaying = null;
         if (activeDirectPlayback is { } direct)
         {
             ActionTimelinePlayback.Stop(direct.ActorAddress, direct.OriginalBaseOverride);
@@ -3815,7 +3836,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void ProcessAnimationSuggestionNotifications()
     {
         while (incomingAnimationSuggestions.TryDequeue(out var suggestion))
+        {
             mainWindow.ShowAnimationSuggestion(suggestion);
+            SurfacePromptFromMiniPlayer();
+        }
     }
 
     public bool IsAnimationSuggestionActive(AnimationSuggestion suggestion) =>
@@ -4466,7 +4490,42 @@ public sealed unsafe class Plugin : IDalamudPlugin
         else nextPoseCycleTime = Environment.TickCount64 + 100;
     }
 
-    private void ToggleWindow() => mainWindow.Toggle();
+    private void ToggleWindow()
+    {
+        if (mainWindow.IsOpen || miniPlayerWindow.IsOpen)
+        {
+            mainWindow.IsOpen = false;
+            miniPlayerWindow.IsOpen = false;
+            return;
+        }
+        if (configuration.UseMiniPlayer) miniPlayerWindow.IsOpen = true;
+        else mainWindow.IsOpen = true;
+    }
+
+    /// <summary>Prompts only show in the full window; bring it up for one while the mini player is
+    /// showing, without changing which one Synastry opens as.</summary>
+    private void SurfacePromptFromMiniPlayer()
+    {
+        if (!miniPlayerWindow.IsOpen) return;
+        miniPlayerWindow.IsOpen = false;
+        mainWindow.IsOpen = true;
+    }
+
+    public void ShowMiniPlayer()
+    {
+        mainWindow.IsOpen = false;
+        miniPlayerWindow.IsOpen = true;
+        configuration.UseMiniPlayer = true;
+        configuration.Save(PluginInterface);
+    }
+
+    public void ShowFullWindow()
+    {
+        miniPlayerWindow.IsOpen = false;
+        mainWindow.IsOpen = true;
+        configuration.UseMiniPlayer = false;
+        configuration.Save(PluginInterface);
+    }
 
     public void OpenSettings()
     {
@@ -4545,6 +4604,7 @@ public sealed record AnimationSuggestion(
     string ModName,
     string ActivatedTrigger = "");
 public sealed record EmoteTarget(uint Id, string Name, string Command);
+public sealed record NowPlayingInfo(string Directory, string ModName, string Animation);
 public sealed record TypedEmoteCandidate(string Directory, string ModName, EmoteTarget Emote);
 public sealed record AnimationCommandTarget(
     string ModDirectory,
