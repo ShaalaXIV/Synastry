@@ -26,7 +26,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.81.0",
+    "AssemblyVersion": "1.0.82.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -41,10 +41,10 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.81/Synastry-1.0.81.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.81/Synastry-1.0.81.zip",
-    "Changelog": "Fixes body setup finding '0 body surfaces': current model files are read correctly now, so run Settings > Advanced > Measure again. Bodies whose shaft follows the soft physics bones are now measured, bent and lined up correctly.",
-    "LastUpdate": "1790967063"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.82/Synastry-1.0.82.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.82/Synastry-1.0.82.zip",
+    "Changelog": "Saved body meshes: keep several measured bodies per character (Male, Female, Futa...) and switch from the new Current mesh list in the room, or measure a new one there. Synastry switches by itself when your loaded models match a saved mesh.",
+    "LastUpdate": "1790968663"
   },
   {
     "Author": "ShaalaXIV",
