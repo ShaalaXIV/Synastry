@@ -679,10 +679,18 @@ public sealed class MainWindow : Window
             draw.ChannelsSetCurrent(1);
         }
 
-        ImGui.Selectable("##row", selected, ImGuiSelectableFlags.AllowDoubleClick | ImGuiSelectableFlags.AllowItemOverlap,
-            new Vector2(width, height));
+        // The row's click area stops short of the Send to room button instead of lying under it:
+        // an overlapped row took the button's clicks, so Send never fired.
+        var canSend = inRoom && !isPrivate;
+        var sendLabel = "Send to room";
+        var sendArea = canSend ? ImGui.CalcTextSize(sendLabel).X + 36f * s : 0f;
+        ImGui.Selectable("##row", selected, ImGuiSelectableFlags.AllowDoubleClick,
+            new Vector2(width - sendArea, height));
         var rowHovered = ImGui.IsWindowHovered(ImGuiHoveredFlags.AllowWhenBlockedByActiveItem) &&
                          ImGui.IsMouseHoveringRect(start, start + new Vector2(width, height));
+        if (canSend && (selected || rowHovered))
+            draw.AddRectFilled(new Vector2(start.X + width - sendArea, start.Y), start + new Vector2(width, height),
+                ImGui.GetColorU32(selected ? ImGuiCol.Header : ImGuiCol.HeaderHovered));
         if (ImGui.IsItemClicked(ImGuiMouseButton.Left))
         {
             var io = ImGui.GetIO();
@@ -716,8 +724,6 @@ public sealed class MainWindow : Window
         // What sits at the right: Send to room on hover, otherwise who picked it or what it holds.
         var trailing = pickedBy is not null ? $"{pickedBy} picked this" : isPrivate ? "private" : Summary(mod.Directory);
         var trailingColor = pickedBy is not null ? Theme.AzureText : Theme.Faint;
-        var canSend = inRoom && !isPrivate;
-        var sendLabel = "Send to room";
         var trailingWidth = rowHovered && canSend
             ? ImGui.CalcTextSize(sendLabel).X + 24f * s
             : ImGui.CalcTextSize(trailing).X;

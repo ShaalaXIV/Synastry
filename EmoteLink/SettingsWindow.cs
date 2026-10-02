@@ -25,8 +25,8 @@ public sealed class SettingsWindow : Window
 
     public void Open()
     {
-        RefreshReceiveFolders(true);
         IsOpen = true;
+        RefreshReceiveFolders(true);
     }
 
     public override void PreDraw()
@@ -70,6 +70,20 @@ public sealed class SettingsWindow : Window
         if (!plugin.SitDozeAnywhereAvailable) ImGui.EndDisabled();
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled) && !plugin.SitDozeAnywhereAvailable)
             ImGui.SetTooltip("Unavailable: its game hooks couldn't be set up.");
+
+        // Indented under its parent and only usable while the parent is on.
+        var dozeOnly = plugin.DozeAnywhereOnlyEnabled;
+        var parentOn = anywhere && plugin.SitDozeAnywhereAvailable;
+        ImGui.Indent(28f * s);
+        if (!parentOn) ImGui.BeginDisabled();
+        if (Theme.Toggle("##doze-only", "Doze only", ref dozeOnly))
+            plugin.SetDozeAnywhereOnly(dozeOnly);
+        if (!parentOn) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(parentOn
+                ? "Doze plays in place anywhere; sitting still needs a real chair."
+                : "Turn on sit and doze anywhere first.");
+        ImGui.Unindent(28f * s);
 
         ImGui.Dummy(new Vector2(0, 6f * s));
         var convertedCount = plugin.ConvertedAnimationCount;
@@ -174,7 +188,18 @@ public sealed class SettingsWindow : Window
 
     private void RefreshReceiveFolders(bool announce = false)
     {
-        var penumbraFolders = plugin.GetPenumbraModFolders();
+        IReadOnlyList<string> penumbraFolders;
+        try
+        {
+            penumbraFolders = plugin.GetPenumbraModFolders();
+        }
+        catch (Exception ex)
+        {
+            // Settings must stay usable even when Penumbra can't list its folders right now.
+            penumbraFolders = [];
+            receiveFolderStatus = "Couldn't read Penumbra's folders: " + ex.GetBaseException().Message;
+            announce = false;
+        }
         receiveFolders = penumbraFolders
             .Append(plugin.ReceivedModFolder)
             .Where(folder => !string.IsNullOrWhiteSpace(folder))

@@ -239,6 +239,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public bool AutomaticEmoteSyncEnabled => configuration.AutomaticEmoteSync;
     public bool SitDozeAnywhereEnabled => configuration.SitDozeAnywhere;
     public bool SitDozeAnywhereAvailable => anywherePoses is not null;
+    public bool DozeAnywhereOnlyEnabled => configuration.DozeAnywhereOnly;
     public bool IsRefreshingMods => modRefreshCancellation is not null;
     public string ReceivedModFolder => (configuration.ReceivedModFolder ?? "").Replace('\\', '/').Trim('/');
     public string Status { get; private set; } = "Ready.";
@@ -1177,6 +1178,15 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = added == 0
             ? "All animation mods are already private."
             : $"Marked {added} animation mod(s) private. Unhide individual mods from their right-click menu.";
+    }
+
+    public void SetDozeAnywhereOnly(bool enabled)
+    {
+        configuration.DozeAnywhereOnly = enabled;
+        configuration.Save(PluginInterface);
+        Status = enabled
+            ? "Doze anywhere only: doze plays in place; sitting uses normal game placement."
+            : "Sit and doze anywhere: both play in place.";
     }
 
     public void SetSitDozeAnywhere(bool enabled)
@@ -4414,7 +4424,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             case PoseKind.GroundSit: ExecuteCommand("/groundsit"); break;
             case PoseKind.Sit:
-                if (configuration.SitDozeAnywhere && anywherePoses is not null)
+                if (configuration.SitDozeAnywhere && !configuration.DozeAnywhereOnly && anywherePoses is not null)
                     anywherePoses.EnterChairPose();
                 else
                     ExecuteCommand("/sit");
@@ -4460,7 +4470,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void OpenSettings()
     {
-        settingsWindow.Open();
+        try
+        {
+            settingsWindow.Open();
+        }
+        catch (Exception ex)
+        {
+            // Never let a failed folder lookup keep the window shut.
+            Log.Warning(ex, "Settings opened without Penumbra's folder list.");
+            settingsWindow.IsOpen = true;
+        }
     }
 
     public void OpenCustomCommands()
