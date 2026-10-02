@@ -1968,6 +1968,7 @@ public sealed class MainWindow : Window
     }
 
     private string newMeshName = "";
+    private string renameMeshName = "";
 
     /// <summary>Which saved body mesh is in use (Male, Female, Futa...), and measuring a new one.</summary>
     private void DrawMeshPicker(float width)
@@ -1979,6 +1980,7 @@ public sealed class MainWindow : Window
         var meshes = plugin.BodyMeshNames;
         var active = plugin.ActiveBodyMeshName;
         var openNewMesh = false;
+        var openRename = false;
         if (ImGui.BeginCombo("##current-mesh", plugin.BodySetupRunning ? "Measuring…" : active.Length > 0 ? active : "Not set up"))
         {
             foreach (var mesh in meshes)
@@ -1987,10 +1989,35 @@ public sealed class MainWindow : Window
             if (meshes.Count > 0) ImGui.Separator();
             if (ImGui.Selectable("Measure new mesh…")) openNewMesh = true;
             if (active.Length > 0 && ImGui.Selectable($"Measure {active} again")) plugin.SetUpBody();
+            if (active.Length > 0 && ImGui.Selectable($"Rename {active}…")) openRename = true;
             ImGui.EndCombo();
         }
         Tooltip("The body your partners' hands and line-up aim at. Synastry switches by itself when your\n" +
                 "loaded models match a saved mesh; pick one here to switch now.");
+
+        if (openRename)
+        {
+            renameMeshName = active;
+            ImGui.OpenPopup("Rename mesh###SynastryRenameMesh");
+        }
+        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(18f, 16f) * s);
+        if (ImGui.BeginPopup("Rename mesh###SynastryRenameMesh"))
+        {
+            Theme.Label($"Rename {active}");
+            ImGui.SetNextItemWidth(220f * s);
+            if (ImGui.IsWindowAppearing()) ImGui.SetKeyboardFocusHere();
+            var submit = ImGui.InputTextWithHint("##rename-mesh", "Male, Female, Futa…", ref renameMeshName, 24,
+                ImGuiInputTextFlags.EnterReturnsTrue);
+            var name = renameMeshName.Trim();
+            if (name.Length == 0) ImGui.BeginDisabled();
+            if ((Theme.Primary("Rename") || submit) && name.Length > 0 && plugin.RenameBodyMesh(active, name))
+                ImGui.CloseCurrentPopup();
+            if (name.Length == 0) ImGui.EndDisabled();
+            ImGui.SameLine();
+            if (Theme.Text("Cancel")) ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
+        }
+        ImGui.PopStyleVar();
 
         if (openNewMesh)
         {

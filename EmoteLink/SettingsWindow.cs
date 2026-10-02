@@ -10,6 +10,7 @@ public sealed class SettingsWindow : Window
     private string newReceiveFolder = "";
     private string receiveFolderStatus = "";
     private List<string> receiveFolders = [];
+    private string renameMesh = "";
 
     public SettingsWindow(Plugin plugin) : base("Settings###SynastrySettings")
     {
@@ -211,10 +212,30 @@ public sealed class SettingsWindow : Window
         if (Theme.Primary(plugin.BodySetupRunning ? "Measuring..." : profile is null ? "Set up my body" : $"Measure {mesh} again"))
             plugin.SetUpBody();
         if (plugin.BodySetupRunning) ImGui.EndDisabled();
+        if (profile is not null)
+        {
+            ImGui.SameLine();
+            if (Theme.Text("Rename", Theme.Ash))
+            {
+                renameMesh = mesh;
+                ImGui.OpenPopup("Rename mesh###SettingsRenameMesh");
+            }
+        }
         if (profile is not null && plugin.BodyMeshNames.Count > 1)
         {
             ImGui.SameLine();
             if (Theme.Text($"Delete {mesh}", Theme.Ash)) plugin.DeleteBodyMesh(mesh);
+        }
+        if (ImGui.BeginPopup("Rename mesh###SettingsRenameMesh"))
+        {
+            Theme.Label($"Rename {mesh}");
+            ImGui.SetNextItemWidth(220f * s);
+            if (ImGui.IsWindowAppearing()) ImGui.SetKeyboardFocusHere();
+            var submit = ImGui.InputTextWithHint("##settings-rename-mesh", "Male, Female, Futa…", ref renameMesh, 24,
+                ImGuiInputTextFlags.EnterReturnsTrue);
+            if ((Theme.Primary("Rename") || submit) && renameMesh.Trim().Length > 0 && plugin.RenameBodyMesh(mesh, renameMesh))
+                ImGui.CloseCurrentPopup();
+            ImGui.EndPopup();
         }
 
         if (profile is null) return;

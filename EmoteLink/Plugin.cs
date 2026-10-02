@@ -1301,6 +1301,31 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = automatic ? $"Your body changed; using the {mesh} mesh." : $"Using the {mesh} mesh.";
     }
 
+    /// <summary>Renames a saved mesh, keeping its place in the list and whether it's in use.</summary>
+    public bool RenameBodyMesh(string mesh, string newName)
+    {
+        var clean = newName.Trim();
+        clean = clean[..Math.Min(24, clean.Length)];
+        if (clean.Length == 0 || CurrentCharacterName() is not { } name) return false;
+        var meshes = MeshesOf(name);
+        if (!meshes.ContainsKey(mesh)) return false;
+        if (!clean.Equals(mesh, StringComparison.OrdinalIgnoreCase) && meshes.ContainsKey(clean))
+        {
+            Status = $"You already have a mesh called {clean}.";
+            return false;
+        }
+        // Rebuild in order so the renamed mesh keeps its place.
+        var renamed = meshes.ToList();
+        meshes.Clear();
+        foreach (var (key, json) in renamed)
+            meshes[key.Equals(mesh, StringComparison.OrdinalIgnoreCase) ? clean : key] = json;
+        if (configuration.ActiveBodyMesh.TryGetValue(name, out var active) && active.Equals(mesh, StringComparison.OrdinalIgnoreCase))
+            configuration.ActiveBodyMesh[name] = clean;
+        configuration.Save(PluginInterface);
+        Status = $"Renamed {mesh} to {clean}.";
+        return true;
+    }
+
     public void DeleteBodyMesh(string mesh)
     {
         if (CurrentCharacterName() is not { } name || !MeshesOf(name).Remove(mesh)) return;
