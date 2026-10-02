@@ -183,11 +183,11 @@ internal sealed unsafe class ContactIkService : IDisposable
         IkSettings current, float deltaSeconds)
     {
         var key = "shaft|" + giver.Name;
-        var names = Shaft.Where(view.Has).ToArray();
+        var profile = profileOf(giver.Name);
+        var names = ShaftChainOf(view, profile);
         var joints = names.Select(view.Model).ToList();
         if (joints.Count < 2 || Length(joints) < MinShaftLength) return Decay(key, deltaSeconds, view, names);
 
-        var profile = profileOf(giver.Name);
         var lastDirection = Vector3.Normalize(joints[^1] - joints[^2]);
         var tipExtra = profile?.Shaft?.TipBeyondLastBone is > 0 and var extra ? extra : Vector3.Distance(joints[^1], joints[^2]);
         var tip = joints[^1] + lastDirection * tipExtra;
@@ -298,6 +298,19 @@ internal sealed unsafe class ContactIkService : IDisposable
         return deltas;
     }
 
+    /// <summary>The shaft chain this body's mesh follows: what body setup measured, otherwise the
+    /// iv_ochinko chain when it's real, otherwise the iv_funyachin_phy chain some bodies use.</summary>
+    private static string[] ShaftChainOf(SkeletonView view, BodyProfile? profile)
+    {
+        if (profile?.Shaft?.Chain is { Count: >= 2 } measured && measured.All(view.Has)) return measured.ToArray();
+        foreach (var chain in BodyMeasurer.ShaftChains)
+        {
+            var names = chain.Where(view.Has).ToArray();
+            if (names.Length >= 2 && Length(names.Select(view.Model).ToList()) >= MinShaftLength) return names;
+        }
+        return [];
+    }
+
     private IEnumerable<(ContactPart Part, Vector3 World)> OpeningsOf(SkeletonView receiver)
     {
         var profile = profileOf(receiver.Name);
@@ -312,7 +325,7 @@ internal sealed unsafe class ContactIkService : IDisposable
                 yield return (ContactPart.Mouth, present.Aggregate(Vector3.Zero, (sum, name) => sum + receiver.World(name)) / present.Count);
             break;
         }
-        var receiverShaft = Shaft.Where(receiver.Has).Select(receiver.Model).ToList();
+        var receiverShaft = ShaftChainOf(receiver, profile).Select(receiver.Model).ToList();
         var hasShaft = receiverShaft.Count >= 2 && Length(receiverShaft) >= MinShaftLength;
         // A body with a real shaft carries an unused vagina bone, so only a profile can say it has one.
         if (receiver.TryWorld("iv_omanko", out var vagina) && Allowed(ContactPart.Vagina) &&
@@ -575,7 +588,7 @@ internal sealed unsafe class ContactIkService : IDisposable
     private static string[] BuildWanted()
     {
         var names = new HashSet<string>(StringComparer.Ordinal);
-        names.UnionWith(Shaft);
+        foreach (var chain in BodyMeasurer.ShaftChains) names.UnionWith(chain);
         foreach (var group in MouthGroups) names.UnionWith(group);
         names.UnionWith(["iv_omanko", "iv_inshin_l", "iv_inshin_r", "iv_koumon", "iv_koumon_l", "iv_koumon_r", "j_ago"]);
         foreach (var (from, to, _) in Surfaces) { names.Add(from); names.Add(to); }

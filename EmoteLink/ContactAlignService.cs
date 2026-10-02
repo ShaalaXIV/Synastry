@@ -74,7 +74,8 @@ internal sealed unsafe class ContactAlignService
     ];
 
     private static readonly HashSet<string> WantedBones = new(
-        Shaft.Concat(MouthGroups.SelectMany(group => group)).Concat(["iv_omanko", "iv_koumon"]),
+        Ik.BodyMeasurer.ShaftChains.SelectMany(chain => chain).Concat(MouthGroups.SelectMany(group => group))
+            .Concat(["iv_omanko", "iv_koumon"]),
         StringComparer.Ordinal);
 
     private readonly IObjectTable objects;
@@ -259,11 +260,16 @@ internal sealed unsafe class ContactAlignService
     /// <summary>The shaft from base to tip, or null when the body has none or only the collapsed set.</summary>
     private static List<Vector3>? RealShaft(IReadOnlyDictionary<string, Vector3> bones)
     {
-        var shaft = Shaft.Where(bones.ContainsKey).Select(name => bones[name]).ToList();
-        if (shaft.Count < 2) return null;
-        var length = 0f;
-        for (var i = 0; i + 1 < shaft.Count; i++) length += Vector3.Distance(shaft[i], shaft[i + 1]);
-        return length >= MinShaftLength ? shaft : null;
+        // Some bodies skin the shaft to the iv_funyachin_phy chain instead of iv_ochinko.
+        foreach (var chain in Ik.BodyMeasurer.ShaftChains)
+        {
+            var shaft = chain.Where(bones.ContainsKey).Select(name => bones[name]).ToList();
+            if (shaft.Count < 2) continue;
+            var length = 0f;
+            for (var i = 0; i + 1 < shaft.Count; i++) length += Vector3.Distance(shaft[i], shaft[i + 1]);
+            if (length >= MinShaftLength) return shaft;
+        }
+        return null;
     }
 
     /// <summary>A body with a real shaft carries an unused vagina bone beside the anus, so its vagina

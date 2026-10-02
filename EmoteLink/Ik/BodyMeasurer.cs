@@ -3,8 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
-using Lumina.Data.Files;
-using Lumina.Models.Models;
+using EmoteLink.Ik.Mdl;
 
 namespace EmoteLink.Ik;
 
@@ -27,8 +26,12 @@ internal static class BodyMeasurer
     private const int MinimumVertices = 24;
     private const float DominantWeight = 0.5f;
 
-    private static readonly string[] Shaft =
-        ["iv_ochinko_a", "iv_ochinko_b", "iv_ochinko_c", "iv_ochinko_d", "iv_ochinko_e", "iv_ochinko_f"];
+    // The two chains a shaft's mesh can follow; setup keeps whichever the mesh really uses.
+    internal static readonly string[][] ShaftChains =
+    [
+        ["iv_ochinko_a", "iv_ochinko_b", "iv_ochinko_c", "iv_ochinko_d", "iv_ochinko_e", "iv_ochinko_f"],
+        ["iv_funyachin_phy_a", "iv_funyachin_phy_b", "iv_funyachin_phy_c", "iv_funyachin_phy_d"],
+    ];
 
     /// <summary>Reads the neutral skeleton and the loaded model list. Framework thread only.</summary>
     public static unsafe BodyCapture? Capture(nint drawObject, ushort objectIndex, PenumbraService penumbra)
@@ -95,45 +98,29 @@ internal static class BodyMeasurer
     public static BodyProfile Measure(BodyCapture capture, IDataManager data, IPluginLog log)
     {
         var buckets = new Dictionary<string, List<Vector3>>(StringComparer.Ordinal);
+        var readModels = 0;
         foreach (var path in capture.Models)
         {
             try
             {
-                var file = Path.IsPathRooted(path)
-                    ? data.GameData.GetFileFromDisk<MdlFile>(path)
-                    : data.GameData.GetFile<MdlFile>(path);
-                if (file is null) continue;
-                var model = new Model(file, Model.ModelLod.High, 1);
-                foreach (var mesh in model.Meshes)
+                // Read the bytes ourselves: Lumina can't parse Dawntrail (v6) models.
+                var bytes = Path.IsPathRooted(path) ? File.ReadAllBytes(path) : data.GetFile(path)?.Data;
+                if (bytes is null) continue;
+                foreach (var (position, bone, weight) in SkinnedVertices.Read(bytes))
                 {
-                    var boneNames = mesh.BoneTable
-                        .Select(index => index < file.BoneNameOffsets.Length &&
-                                         model.StringOffsetToStringMap.TryGetValue((int)file.BoneNameOffsets[index], out var name)
-                            ? name
-                            : "")
-                        .ToArray();
-                    foreach (var vertex in mesh.Vertices)
-                    {
-                        if (vertex.Position is not { } position || vertex.BlendWeights is not { } weights ||
-                            vertex.BlendIndices is not { Length: >= 4 } indices) continue;
-                        var dominant = 0;
-                        var strongest = weights.X;
-                        if (weights.Y > strongest) { dominant = 1; strongest = weights.Y; }
-                        if (weights.Z > strongest) { dominant = 2; strongest = weights.Z; }
-                        if (weights.W > strongest) { dominant = 3; strongest = weights.W; }
-                        if (strongest < DominantWeight || indices[dominant] >= boneNames.Length) continue;
-                        var bone = boneNames[indices[dominant]];
-                        if (bone.Length == 0) continue;
-                        if (!buckets.TryGetValue(bone, out var list)) buckets[bone] = list = [];
-                        list.Add(new Vector3(position.X, position.Y, position.Z));
-                    }
+                    if (weight < DominantWeight) continue;
+                    if (!buckets.TryGetValue(bone, out var list)) buckets[bone] = list = [];
+                    list.Add(position);
                 }
+                readModels++;
             }
             catch (Exception ex)
             {
                 log.Debug(ex, "Body setup skipped a model it couldn't read: {Path}", path);
             }
         }
+        log.Information("Body setup read {Read} of {Total} models, {Bones} bones with skin.",
+            readModels, capture.Models.Count, buckets.Count);
 
         var bind = capture.BindBones;
         var profile = new BodyProfile { Rig = capture.Rig, BodySignature = capture.Signature };
@@ -155,14 +142,20 @@ internal static class BodyMeasurer
             profile.Hands[side] = new HandShape { PalmDepth = depth, GripWidth = depth * 2f + 0.02f };
         }
 
-        // The shaft: thickness, and how far the tip runs past its last bone.
-        var shaftBones = Shaft.Where(bind.ContainsKey).Select(name => bind[name]).ToList();
-        var shaftVertices = Shaft.SelectMany(name => buckets.GetValueOrDefault(name) ?? []).ToList();
-        if (shaftBones.Count >= 2 && PolylineLength(shaftBones) >= 0.05f && shaftVertices.Count >= MinimumVertices)
+        // The shaft: whichever chain its mesh follows, its thickness, and how far the tip runs past
+        // the last bone.
+        foreach (var chain in ShaftChains)
         {
+            var names = chain.Where(bind.ContainsKey).ToList();
+            var shaftBones = names.Select(name => bind[name]).ToList();
+            var shaftVertices = names.SelectMany(name => buckets.GetValueOrDefault(name) ?? []).ToList();
+            if (shaftBones.Count < 2 || PolylineLength(shaftBones) < 0.03f || shaftVertices.Count < MinimumVertices) continue;
+            if (profile.Shaft is not null && shaftVertices.Count <= profile.Shaft.Chain.Sum(name => buckets.GetValueOrDefault(name)?.Count ?? 0))
+                continue;
             var direction = Vector3.Normalize(shaftBones[^1] - shaftBones[^2]);
             profile.Shaft = new ShaftShape
             {
+                Chain = names,
                 Length = PolylineLength(shaftBones),
                 Radius = Median(shaftVertices.Select(vertex => Vector3.Distance(vertex, ClosestOnPolyline(shaftBones, vertex)))),
                 TipBeyondLastBone = MathF.Max(0f, shaftVertices.Max(vertex => Vector3.Dot(vertex - shaftBones[^1], direction)))

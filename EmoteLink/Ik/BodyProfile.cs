@@ -65,6 +65,8 @@ internal sealed class BodyProfile
         foreach (var key in SurfaceRadius.Keys.ToList()) SurfaceRadius[key] = Clamp(SurfaceRadius[key], 0.5f);
         if (Shaft is { } shaft)
         {
+            shaft.Chain = shaft.Chain.Where(name => name.StartsWith("iv_", StringComparison.Ordinal) && name.Length < 32)
+                .Take(8).ToList();
             shaft.Length = Clamp(shaft.Length, 1f);
             shaft.Radius = Clamp(shaft.Radius, 0.2f);
             shaft.TipBeyondLastBone = Clamp(shaft.TipBeyondLastBone, 0.3f);
@@ -89,6 +91,9 @@ internal sealed class BodyProfile
 
 internal sealed class ShaftShape
 {
+    /// <summary>The bones the shaft's mesh actually follows, base to tip: the iv_ochinko chain, or
+    /// the iv_funyachin_phy chain some bodies use instead.</summary>
+    public List<string> Chain { get; set; } = [];
     public float Length { get; set; }
     public float Radius { get; set; }
     /// <summary>How far the mesh tip extends past the last shaft bone.</summary>
