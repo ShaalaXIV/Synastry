@@ -3,20 +3,24 @@
     "Author": "ShaalaXIV",
     "Name": "AetherPress",
     "InternalName": "AetherPress",
-    "AssemblyVersion": "1.3.5.0",
-    "Description": "Detects completed Penumbra mod installations and offers configurable Base, Normal, and Mask texture compression. Use /aetherpress to open settings.",
+    "AssemblyVersion": "1.3.8.0",
+    "Description": "Detects completed Penumbra mod installations and can optimize the mods supplying your equipped glamour textures. Offers configurable Base, Normal, and Mask texture compression with optional skin protection. Use /aetherpress to open settings.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
-    "Punchline": "Automatically compress textures in newly installed Penumbra mods.",
+    "Punchline": "Automatically compress textures in installed and equipped Penumbra mods.",
     "RepoUrl": "https://github.com/ShaalaXIV/AetherPress",
     "IconUrl": "https://shaalaxiv.github.io/AetherPress/images/icon.png",
-    "Tags": [ "penumbra", "textures", "compression" ],
+    "Tags": [
+      "penumbra",
+      "textures",
+      "compression"
+    ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/AetherPress/releases/download/v1.3.5/AetherPress-1.3.5.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/AetherPress/releases/download/v1.3.5/AetherPress-1.3.5.zip",
-    "Changelog": "Skips unreadable, unsupported, or abnormal texture files instead of failing the entire mod, while preserving atomic protection for genuine conversion failures.",
-    "LastUpdate": "1786419089"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/AetherPress/releases/download/v1.3.8/AetherPress-1.3.8.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/AetherPress/releases/download/v1.3.8/AetherPress-1.3.8.zip",
+    "Changelog": "Adds optional automatic optimization for the Penumbra mods supplying your currently equipped glamour textures. It waits for glamour changes to settle, processes each detected mod once per session, and respects your selected preset and skin protection setting.",
+    "LastUpdate": "1790843366"
   },
   {
     "Author": "ShaalaXIV",
@@ -29,12 +33,42 @@
     "Punchline": "Paired animation sync for Penumbra.",
     "RepoUrl": "https://github.com/ShaalaXIV/Synastry",
     "IconUrl": "https://raw.githubusercontent.com/ShaalaXIV/Synastry/main/images/icon.png",
-    "Tags": [ "penumbra", "animation", "emote", "sync" ],
+    "Tags": [
+      "penumbra",
+      "animation",
+      "emote",
+      "sync"
+    ],
     "IsHide": false,
     "IsTestingExclusive": false,
     "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.79/Synastry-1.0.79.zip",
     "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.79/Synastry-1.0.79.zip",
     "Changelog": "New mini player: shrink Synastry to a small window showing what's playing and your room. Solo buttons are back on every role in a room. New Doze only option under sit and doze anywhere. Send to room works again and Settings always opens.",
     "LastUpdate": "1790955787"
+  },
+  {
+    "Author": "ShaalaXIV",
+    "Name": "Beacon",
+    "InternalName": "Beacon",
+    "AssemblyVersion": "0.1.14.0",
+    "Description": "A directory of roleplay beacons anywhere in the world, not just in housing wards. Raise a beacon where your camp, court or crossroads actually is, describe it, show a screenshot, and let anyone travel to it across worlds and data centres. Light your beacon when you are there and open to play, and the atlas shows who is out there right now. Use /beacon to open the atlas.",
+    "ApplicableVersion": "any",
+    "DalamudApiLevel": 15,
+    "Punchline": "Find the fires. Light your own.",
+    "RepoUrl": "https://github.com/ShaalaXIV/Beacon",
+    "IconUrl": "https://plugins.aethercast.org/images/beacon-icon.png",
+    "Tags": [
+      "roleplay",
+      "rp",
+      "travel",
+      "social",
+      "beacons"
+    ],
+    "IsHide": false,
+    "IsTestingExclusive": false,
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Beacon/releases/download/v0.1.14/Beacon-0.1.14.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Beacon/releases/download/v0.1.14/Beacon-0.1.14.zip",
+    "Changelog": "Added a larger live portrait preview with zoom and position controls. Pictures up to 25 MB are cropped to 600x720 before upload and the new crop becomes the active portrait.",
+    "LastUpdate": 1790393076
   }
 ]
