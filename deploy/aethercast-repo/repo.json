@@ -26,7 +26,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.79.0",
+    "AssemblyVersion": "1.0.80.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -41,10 +41,10 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.79/Synastry-1.0.79.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.79/Synastry-1.0.79.zip",
-    "Changelog": "New mini player: shrink Synastry to a small window showing what's playing and your room. Solo buttons are back on every role in a room. New Doze only option under sit and doze anywhere. Send to room works again and Settings always opens.",
-    "LastUpdate": "1790955787"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.80/Synastry-1.0.80.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.80/Synastry-1.0.80.zip",
+    "Changelog": "Bodies meet during couple animations: the penis aims through the opening it's lined up with, the opening widens a little, and hands rest on your partner and grip, with no stretching. Set up your body under Settings > Advanced so contact lands on skin. New 'Line up with' choice in the room. Experimental: switch parts off in Settings if needed.",
+    "LastUpdate": "1790966049"
   },
   {
     "Author": "ShaalaXIV",
