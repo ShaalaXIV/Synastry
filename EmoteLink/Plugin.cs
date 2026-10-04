@@ -280,6 +280,17 @@ public sealed unsafe class Plugin : IDalamudPlugin
             configuration.CommunityReporterId = Guid.NewGuid().ToString("N");
             generatedReporterIdentity = true;
         }
+        // 1.0.86 makes line-up and bone bending experimental: off for everyone once, then the
+        // player's choice.
+        if (!configuration.ExperimentalFeaturesReset)
+        {
+            configuration.AutomaticLineUp = false;
+            configuration.BendShaft = false;
+            configuration.BendOpenings = false;
+            configuration.BendHands = false;
+            configuration.ExperimentalFeaturesReset = true;
+            upgradedConfiguration = true;
+        }
         if (generatedReporterIdentity || upgradedConfiguration) configuration.Save(PluginInterface);
         penumbra = new PenumbraService(PluginInterface, Log);
         inPlaceEmoteConverter = new InPlaceEmoteConverter(

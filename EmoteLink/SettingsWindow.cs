@@ -52,17 +52,6 @@ public sealed class SettingsWindow : Window
         if (Theme.Toggle("##auto-sync", "Sync emotes six seconds after a room starts", ref automaticSync))
             plugin.SetAutomaticEmoteSync(automaticSync);
 
-        var lineUp = plugin.AutomaticLineUpEnabled;
-        if (Theme.Toggle("##auto-line-up", "Line up couple animations automatically", ref lineUp))
-            plugin.SetAutomaticLineUp(lineUp);
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("When a couple animation starts, Synastry lines up penis with mouth, vagina or anus\n" +
-                             "through Simple Heels. Only the receiving partner moves.");
-        if (!plugin.SimpleHeelsAvailable)
-        {
-            ImGui.SameLine();
-            Theme.Quiet("needs Simple Heels");
-        }
 
         var anywhere = plugin.SitDozeAnywhereEnabled;
         if (!plugin.SitDozeAnywhereAvailable) ImGui.BeginDisabled();
@@ -170,11 +159,25 @@ public sealed class SettingsWindow : Window
     private void DrawAdvanced()
     {
         var s = Theme.Scale;
-        Theme.Heading("Advanced");
-        Theme.Wrapped("During couple animations Synastry can bend bones so you and your partner actually meet. " +
-                      "Bones only turn at their joints, the way a body moves; nothing stretches, and a limb that " +
-                      "can't reach stops short. Everyone in the room with Synastry sees it.", Theme.Ash);
+        Theme.Heading("Experimental");
+        Theme.Wrapped("Still being tested, so everything here starts switched off. During a couple animation you " +
+                      "started with Synastry, these can line you up with your partner and bend bones so you actually " +
+                      "meet. Bones only turn at their joints, nothing stretches, and only someone in your room or your " +
+                      "target is affected.", Theme.Ash);
         ImGui.Dummy(new Vector2(0, 4f * s));
+
+        var lineUp = plugin.AutomaticLineUpEnabled;
+        if (Theme.Toggle("##auto-line-up", "Line up couple animations automatically", ref lineUp))
+            plugin.SetAutomaticLineUp(lineUp);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("When a couple animation starts, Synastry lines up penis with mouth, vagina or anus\n" +
+                             "through Simple Heels. Only the receiving partner moves.");
+        if (!plugin.SimpleHeelsAvailable)
+        {
+            ImGui.SameLine();
+            Theme.Quiet("needs Simple Heels");
+        }
+
 
         if (!plugin.ContactIkAvailable)
         {

@@ -37,13 +37,17 @@ public sealed class Configuration : IPluginConfiguration
     // Open Synastry as the small mini player instead of the full window.
     public bool UseMiniPlayer { get; set; }
     // Line up a couple animation's contact (penis with mouth, vagina or anus) through Simple Heels.
-    public bool AutomaticLineUp { get; set; } = true;
+    // Experimental, off until the player turns it on (1.0.86).
+    public bool AutomaticLineUp { get; set; }
     // Which part line-up aims for when more than one is in reach.
     public ContactPreference LineUpPreference { get; set; } = ContactPreference.Closest;
     // Bending bones to make couple animations meet.
-    public bool BendShaft { get; set; } = true;
-    public bool BendOpenings { get; set; } = true;
-    public bool BendHands { get; set; } = true;
+    public bool BendShaft { get; set; }
+    public bool BendOpenings { get; set; }
+    public bool BendHands { get; set; }
+    // Set once 1.0.86 has switched the experimental features off for everyone, so a player's own
+    // choice afterwards is kept.
+    public bool ExperimentalFeaturesReset { get; set; }
     // Body setup results from 1.0.80-1.0.81, one per character; moved into BodyMeshes as "My body".
     public Dictionary<string, string> BodyProfiles { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     // Saved meshes per character (for example Male, Female, Futa), each a body profile as JSON.
