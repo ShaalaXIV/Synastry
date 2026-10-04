@@ -26,7 +26,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.84.0",
+    "AssemblyVersion": "1.0.85.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -41,10 +41,10 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.84/Synastry-1.0.84.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.84/Synastry-1.0.84.zip",
-    "Changelog": "Hands rest on your partner only when the animation already has them within about 3 cm of the skin, and let go past 6 cm, so hands meant for tables or the floor stay put. Shaft aiming and automatic line-up only correct small gaps. Tuned on 539 couple animations.",
-    "LastUpdate": "1790974242"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.85/Synastry-1.0.85.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.85/Synastry-1.0.85.zip",
+    "Changelog": "Automatic line-up and bone bending now only happen during an animation Synastry started, and only with someone in your room or your current target. Sitting, dozing or emoting next to people no longer moves anyone. The Line up button still works any time.",
+    "LastUpdate": "1791099902"
   },
   {
     "Author": "ShaalaXIV",
