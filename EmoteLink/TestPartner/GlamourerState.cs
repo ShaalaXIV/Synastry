@@ -27,8 +27,7 @@ internal sealed class GlamourerState
         {
             var bytes = Convert.FromBase64String(base64);
             if (bytes.Length < 2) return null;
-            using var gzip = new GZipStream(new MemoryStream(bytes, 1, bytes.Length - 1), CompressionMode.Decompress);
-            using var document = JsonDocument.Parse(new StreamReader(gzip, Encoding.UTF8).ReadToEnd());
+            using var document = JsonDocument.Parse(Inflate(bytes));
             var root = document.RootElement;
             var state = new GlamourerState();
             if (root.TryGetProperty("Customize", out var customize)) state.ReadCustomize(customize);
@@ -41,11 +40,35 @@ internal sealed class GlamourerState
         }
     }
 
+    /// <summary>
+    /// The JSON after the version byte. Glamourer's gzip often ends without its trailer, which a strict
+    /// read rejects, so this keeps everything that inflated before the stream ran out.
+    /// </summary>
+    private static string Inflate(byte[] bytes)
+    {
+        using var gzip = new GZipStream(new MemoryStream(bytes, 1, bytes.Length - 1), CompressionMode.Decompress);
+        using var output = new MemoryStream();
+        var buffer = new byte[8192];
+        try
+        {
+            int read;
+            while ((read = gzip.Read(buffer, 0, buffer.Length)) > 0) output.Write(buffer, 0, read);
+        }
+        catch (InvalidDataException) { /* no trailer; what came out is complete */ }
+        catch (EndOfStreamException) { }
+        return Encoding.UTF8.GetString(output.ToArray());
+    }
+
     private void ReadCustomize(JsonElement customize)
     {
-        int Value(string name) =>
-            customize.TryGetProperty(name, out var entry) && entry.TryGetProperty("Value", out var value) &&
-            value.TryGetInt32(out var number) ? number : 0;
+        // Most entries are {"Value": n, "Apply": b}; a few (ModelId) are a bare number.
+        int Value(string name)
+        {
+            if (!customize.TryGetProperty(name, out var entry)) return 0;
+            if (entry.ValueKind == JsonValueKind.Number) return entry.TryGetInt32(out var bare) ? bare : 0;
+            return entry.ValueKind == JsonValueKind.Object && entry.TryGetProperty("Value", out var value) &&
+                   value.TryGetInt32(out var number) ? number : 0;
+        }
         bool On(string name) => Value(name) != 0;
         if (Value("ModelId") != 0) return;   // not a human model; leave the minion as it is
         if (Value("Race") == 0) return;
@@ -89,7 +112,7 @@ internal sealed class GlamourerState
         var items = data.GetExcelSheet<Lumina.Excel.Sheets.Item>();
         for (var slot = 0; slot < Slots.Length; slot++)
         {
-            if (!equipment.TryGetProperty(Slots[slot], out var entry) ||
+            if (!equipment.TryGetProperty(Slots[slot], out var entry) || entry.ValueKind != JsonValueKind.Object ||
                 !entry.TryGetProperty("ItemId", out var idElement) || !idElement.TryGetUInt64(out var itemId)) continue;
             var dye = entry.TryGetProperty("Stain", out var s) && s.TryGetInt32(out var stain) ? (ulong)(byte)stain : 0;
             var dye2 = entry.TryGetProperty("Stain2", out var s2) && s2.TryGetInt32(out var stain2) ? (ulong)(byte)stain2 : 0;

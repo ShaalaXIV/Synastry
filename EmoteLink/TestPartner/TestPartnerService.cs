@@ -214,7 +214,9 @@ internal sealed unsafe class TestPartnerService : IDisposable
         penumbra.Redraw(minionIndex);
         dressed = true;
         dressedAt = Environment.TickCount64;
-        Status = glamour == 0 || glamour == 1
+        Status = look is not { HasCustomize: true }
+            ? $"{Name} is now {name}, but its look couldn't be read from the file, so it has your face and body shape."
+            : glamour == 0 || glamour == 1 || look is not null
             ? $"{Name} is now {name}. Pick a role for it to play."
             : $"{Name} is now {name}, but Glamourer couldn't apply the look (code {glamour}); its mods are on.";
     }

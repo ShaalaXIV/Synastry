@@ -1707,7 +1707,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             !modsByDirectory.TryGetValue(directory, out var mod)) return;
         var triggers = GetDetectedPoses(directory).Select(pose => $"pose:{pose.Kind}:{pose.Index}")
             .Concat(GetDetectedEmotes(directory).Select(emote => $"emote:{emote.Id}")).ToList();
-        var trigger = partnerPick is { } pick && pick.Directory == directory && triggers.Contains(pick.Trigger)
+        var trigger = partnerPick is { } pick && pick.Directory == directory && triggers.Contains(pick.Trigger) &&
+                      !pick.Trigger.Equals(ownTrigger, StringComparison.OrdinalIgnoreCase)
             ? pick.Trigger
             : triggers.FirstOrDefault(candidate => !candidate.Equals(ownTrigger, StringComparison.OrdinalIgnoreCase)) ?? ownTrigger;
         var options = GetActivationSelections(directory).ToDictionary(pair => pair.Key, pair => pair.Value.ToList());
@@ -1789,7 +1790,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
                 ? () => PlayTestPartnerPose(playing, pose, selections)
                 : () => PlayTestPartnerCommand(playing, command!, selections);
             partnerReplay = play;
-            partnerPick = (directory, directive.Trigger);
+            if (directive.DirectedBy != "you") partnerPick = (directory, directive.Trigger);
             _ = partner.SetReadyAsync(directive.ModKey);
             Status = directive.DirectedBy == "you"
                 ? $"{testPartner.Name} is ready as {animationName}."
