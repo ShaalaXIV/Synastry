@@ -46,6 +46,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public bool IsRoomLeader => Room?.Members.Any(member =>
         member.ConnectionId == connection?.ConnectionId && member.IsLeader) == true;
     public bool IsCurrentMember(string connectionId) => connection?.ConnectionId == connectionId;
+    public string? ConnectionId => connection?.ConnectionId;
     public RoomStateDto? Room => Volatile.Read(ref room);
     public IReadOnlyDictionary<string, int> MatchCounts => Volatile.Read(ref matchCounts);
     public bool IsInRoom => Volatile.Read(ref room) is not null;

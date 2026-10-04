@@ -1607,12 +1607,20 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             var label = PoseDisplayName(pose);
             var note = GetOptionNote(playing.Directory, "$detected-pose", $"{pose.Kind}:{pose.Index}");
-            roles.Add((note.Length > 0 ? $"{note} ({label})" : label, () => PlayTestPartnerPose(playing, pose)));
+            roles.Add((note.Length > 0 ? $"{note} ({label})" : label, () =>
+            {
+                partnerPick = (playing.Directory, $"pose:{pose.Kind}:{pose.Index}");
+                PlayTestPartnerPose(playing, pose);
+            }));
         }
         foreach (var emote in GetDetectedEmotes(playing.Directory))
         {
             var note = GetOptionNote(playing.Directory, "$detected-emote", emote.Id.ToString());
-            roles.Add((note.Length > 0 ? $"{note} ({emote.Name})" : emote.Name, () => PlayTestPartnerEmote(playing, emote)));
+            roles.Add((note.Length > 0 ? $"{note} ({emote.Name})" : emote.Name, () =>
+            {
+                partnerPick = (playing.Directory, $"emote:{emote.Id}");
+                PlayTestPartnerEmote(playing, emote);
+            }));
         }
         return roles;
     }
@@ -1683,6 +1691,28 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private string partnerRoom = "";
     private string partnerProfileShared = "";
     private Action? partnerReplay;
+    private long partnerPlayAt;
+    /// <summary>The role last picked for the test partner ("pose:Kind:Index" or "emote:Id") and its mod.</summary>
+    private (string Directory, string Trigger)? partnerPick;
+
+    /// <summary>
+    /// When you ready an animation in the room, your test partner readies the other role (or the one
+    /// you last picked for it in this mod) with your options, and starts with the room.
+    /// </summary>
+    private void FollowWithTestPartner(string directory, string ownTrigger)
+    {
+        if (partnerSync is not { IsInRoom: true } || !testPartner.Active ||
+            !modCatalogKeys.TryGetValue(directory, out var fingerprint) ||
+            !modSyncKeys.TryGetValue(directory, out var modKey) ||
+            !modsByDirectory.TryGetValue(directory, out var mod)) return;
+        var triggers = GetDetectedPoses(directory).Select(pose => $"pose:{pose.Kind}:{pose.Index}")
+            .Concat(GetDetectedEmotes(directory).Select(emote => $"emote:{emote.Id}")).ToList();
+        var trigger = partnerPick is { } pick && pick.Directory == directory && triggers.Contains(pick.Trigger)
+            ? pick.Trigger
+            : triggers.FirstOrDefault(candidate => !candidate.Equals(ownTrigger, StringComparison.OrdinalIgnoreCase)) ?? ownTrigger;
+        var options = GetActivationSelections(directory).ToDictionary(pair => pair.Key, pair => pair.Value.ToList());
+        partnerDirectives.Enqueue(new FreeUseDirectiveDto("you", fingerprint, modKey, mod.Name, trigger, options));
+    }
 
     /// <summary>
     /// While a test partner exists and you're in a room, it joins that room through a second relay
@@ -1758,15 +1788,27 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Action play = pose is not null
                 ? () => PlayTestPartnerPose(playing, pose, selections)
                 : () => PlayTestPartnerCommand(playing, command!, selections);
-            play();
             partnerReplay = play;
+            partnerPick = (directory, directive.Trigger);
             _ = partner.SetReadyAsync(directive.ModKey);
-            Status = $"{directive.DirectedBy} chose {animationName} for {testPartner.Name}.";
+            Status = directive.DirectedBy == "you"
+                ? $"{testPartner.Name} is ready as {animationName}."
+                : $"{directive.DirectedBy} chose {animationName} for {testPartner.Name}.";
         }
 
-        // The room started: restart its animation with everyone else's.
-        while (partnerStarts.TryDequeue(out _))
+        // The room started: play on the same countdown as everyone else.
+        while (partnerStarts.TryDequeue(out var start))
+        {
+            var delay = start.DelayMilliseconds > 0
+                ? start.DelayMilliseconds
+                : Math.Max(0, start.StartUnixMilliseconds - DateTimeOffset.UtcNow.ToUnixTimeMilliseconds());
+            partnerPlayAt = Environment.TickCount64 + delay;
+        }
+        if (partnerPlayAt != 0 && Environment.TickCount64 >= partnerPlayAt)
+        {
+            partnerPlayAt = 0;
             partnerReplay?.Invoke();
+        }
     }
 
     private void LeaveTestPartnerRoom()
@@ -1775,6 +1817,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         partnerSync = null;
         partnerRoom = "";
         partnerReplay = null;
+        partnerPlayAt = 0;
         partnerProfileShared = "";
         while (partnerDirectives.TryDequeue(out _)) { }
         while (partnerStarts.TryDequeue(out _)) { }
@@ -2569,8 +2612,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void OfferFreeUsePrompts(string directory, string name, string ownTrigger)
     {
         if (sync.Room is not { } room || IsModPrivate(directory) || !modCatalogKeys.ContainsKey(directory)) return;
+        FollowWithTestPartner(directory, ownTrigger);
+        var partnerId = partnerSync?.ConnectionId;
         foreach (var member in room.Members.Where(member =>
-                     member.FreeUse && !sync.IsCurrentMember(member.ConnectionId)))
+                     member.FreeUse && !sync.IsCurrentMember(member.ConnectionId) && member.ConnectionId != partnerId))
         {
             mainWindow.ShowFreeUsePrompt(new FreeUsePrompt(
                 directory, name, ownTrigger, member.ConnectionId, member.DisplayName));

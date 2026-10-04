@@ -263,7 +263,8 @@ internal sealed unsafe class TestPartnerService : IDisposable
         var name = Name;
         if (revert && minion != 0)
         {
-            StopAnimation();
+            if (Playing) ((Character*)minion)->Timeline.BaseOverride = originalBaseOverride;
+            Playing = false;
             try { glamourerRevert.InvokeFunc(minionIndex, 0, GlamourerEquipmentAndCustomize); } catch { /* Glamourer gone */ }
             var character = (Character*)minion;
             character->ModelContainer.ModelCharaId = originalModel;
