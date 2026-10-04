@@ -235,9 +235,12 @@ internal sealed unsafe class ContactIkService : IDisposable
         {
             if (receiverActor.ObjectId == giver.ObjectId) continue;
             if (!giver.Map.IsPartner(shaftMap.Partner, receiverActor.Hash)) continue;
+            // "Animation's choice" aims where the animation was made to go; picking Mouth, Vagina or
+            // Anus yourself overrides it for pairs you're in.
+            var aimFor = wanted is { } chosenPart && (giver.IsLocal || receiverActor.IsLocal) ? chosenPart : mappedPart;
             foreach (var (part, world) in OpeningsOf(receiver))
             {
-                if (part != mappedPart) continue;
+                if (part != aimFor) continue;
                 var point = view.ToModel(world);
                 var distance = MathF.Min(Vector3.Distance(point, tip), Vector3.Distance(point, ClosestOnPolyline(joints, point)));
                 if (distance > ShaftEngageDistance) continue;

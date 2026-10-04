@@ -86,6 +86,7 @@ internal sealed unsafe class ContactAlignService
     private readonly Action<string> executeCommand;
     private readonly Func<ContactPreference> preference;
     private readonly Func<ICharacter?> testPartner;
+    private readonly Func<ICharacter, string?> mappedOpening;
 
     private string handledSignature = "";
     private string pendingSignature = "";
@@ -103,8 +104,10 @@ internal sealed unsafe class ContactAlignService
         Func<string, bool> usesSynastry,
         Action<string> executeCommand,
         Func<ContactPreference> preference,
-        Func<ICharacter?> testPartner)
+        Func<ICharacter?> testPartner,
+        Func<ICharacter, string?> mappedOpening)
     {
+        this.mappedOpening = mappedOpening;
         this.testPartner = testPartner;
         this.preference = preference;
         this.objects = objects;
@@ -231,17 +234,29 @@ internal sealed unsafe class ContactAlignService
     /// The part to line up: a mouth already in contact, then the preferred part if it is within
     /// reach, then whichever came closest.
     /// </summary>
-    private Contact? Choose(float limit)
+    /// <summary>
+    /// The part to line up: a mouth already in contact, then your own choice, or with "Animation's
+    /// choice" the opening the animation's contact map names, if it is within reach; otherwise
+    /// whichever came closest.
+    /// </summary>
+    private Contact? Choose(float limit, ICharacter? local, ICharacter partner)
     {
         if (bestByPart.Count == 0) return null;
         if (bestByPart.TryGetValue(ContactPart.Mouth, out var mouth) && mouth.Distance <= MouthContactDistance)
             return mouth;
+        var mapped = (local is null ? null : mappedOpening(local)) ?? mappedOpening(partner);
         ContactPart? wanted = preference() switch
         {
             ContactPreference.Mouth => ContactPart.Mouth,
             ContactPreference.Vagina => ContactPart.Vagina,
             ContactPreference.Anus => ContactPart.Anus,
-            _ => null
+            _ => mapped switch
+            {
+                "mouth" => ContactPart.Mouth,
+                "vagina" => ContactPart.Vagina,
+                "anus" => ContactPart.Anus,
+                _ => null
+            }
         };
         if (wanted is { } part && bestByPart.TryGetValue(part, out var preferred) && preferred.Distance <= limit)
             return preferred;
@@ -303,7 +318,7 @@ internal sealed unsafe class ContactAlignService
         measuring = false;
         var name = partner.Name.TextValue;
         var limit = manual ? ManualMaxDistance : AutomaticMaxDistance;
-        if (Choose(limit) is not { } contact)
+        if (Choose(limit, objects.LocalPlayer, partner) is not { } contact)
         {
             if (manual) Status = $"Couldn't find the bones to line up with {name}. Both of you need an IVCS body.";
             return;

@@ -1305,8 +1305,9 @@ public sealed class MainWindow : Window
                     plugin.SetLineUpPreference(option);
             ImGui.EndCombo();
         }
-        Tooltip("Which part a couple animation lines up with. A mouth already in contact always wins;\n" +
-                "otherwise your choice is used when it's within reach, and the closest part when it isn't.");
+        Tooltip("Which opening a couple animation lines up with and aims at.\n" +
+                "Animation's choice: the one the animation was made for (or the closest, if it has no contact map).\n" +
+                "Mouth, Vagina or Anus: your own choice, overriding the animation's. A mouth already in contact always wins.");
 
         DrawMeshPicker(width);
 
@@ -2053,7 +2054,7 @@ public sealed class MainWindow : Window
         ContactPreference.Mouth => "Mouth",
         ContactPreference.Vagina => "Vagina",
         ContactPreference.Anus => "Anus",
-        _ => "Closest part"
+        _ => "Animation's choice"
     };
 
     private static void DrawMinimizeIcon(ImDrawListPtr draw, Vector2 center, uint color)

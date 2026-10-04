@@ -346,7 +346,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         contactAlign = new ContactAlignService(Objects, Targets, Log,
             name => IsRoomMemberNamed(name) && !(testPartner.Active && name.Equals(testPartner.Name, StringComparison.OrdinalIgnoreCase)),
             ExecuteCommand,
-            () => configuration.LineUpPreference, TestPartnerCharacter);
+            () => configuration.LineUpPreference, TestPartnerCharacter, MappedOpeningOf);
         preloader = new AnimationPreloader(PluginInterface, Objects, penumbra, sync, Log);
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
         sync.LocalAnimationReceived += signal => localAnimationSignals.Enqueue(signal);
@@ -1780,6 +1780,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
         while (partnerStarts.TryDequeue(out _)) { }
         if (connection is null) return;
         _ = TestPartner.TestPartnerRoom.Leave(connection);
+    }
+
+    /// <summary>The opening a character's playing animation is mapped to aim at, if it has a map.</summary>
+    private string? MappedOpeningOf(Dalamud.Game.ClientState.Objects.Types.ICharacter character)
+    {
+        var isLocal = Objects.LocalPlayer?.Address == character.Address;
+        return contactMaps.Resolve(character.Address, character.GameObjectId, character.ObjectIndex, isLocal).Map?.Shaft?.Opening;
     }
 
     private Dalamud.Game.ClientState.Objects.Types.ICharacter? TestPartnerCharacter() =>
