@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.91.0",
+    "AssemblyVersion": "1.0.92.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -18,9 +18,9 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.91/Synastry-1.0.91.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.91/Synastry-1.0.91.zip",
-    "Changelog": "Line up with now starts with Animation's choice: line-up and penis aim go where the animation was made to go. Picking Mouth, Vagina or Anus overrides it for you.",
-    "LastUpdate": "1791139254"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.92/Synastry-1.0.92.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.92/Synastry-1.0.92.zip",
+    "Changelog": "Test partner follows the room: ready a role and it readies the other one, then starts on the countdown with you. Fixed a game crash when Synastry unloaded or updated with a test partner out.",
+    "LastUpdate": "1791141585"
   }
 ]
