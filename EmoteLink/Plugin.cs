@@ -120,6 +120,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly MiniPlayerWindow miniPlayerWindow;
     private readonly Ik.ContactIkService? contactIk;
     private readonly Ik.ContactMapResolver contactMaps;
+    private readonly TestPartner.TestPartnerService testPartner;
     // Body profiles shared by room partners, and ones measured here for partners who haven't run
     // setup, by character name.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Ik.BodyProfile> sharedBodies =
@@ -328,6 +329,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             Log.Warning(exception, "Contact IK could not start; couple animations line up the old way.");
         }
+        testPartner = new TestPartner.TestPartnerService(PluginInterface, Objects, penumbra, Log);
+        testPartner.Released += name =>
+        {
+            measuredBodies.TryRemove(name, out _);
+            measuringBodies.Remove(name);
+        };
         contactMaps = new Ik.ContactMapResolver(DataManager, penumbra, hashes => sync.GetContactMapsAsync(hashes), Log);
         sync.BodyProfileChanged += shared =>
         {
@@ -335,7 +342,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             else sharedBodies.TryRemove(shared.DisplayName, out _);
         };
         contactAlign = new ContactAlignService(Objects, Targets, Log, IsRoomMemberNamed, ExecuteCommand,
-            () => configuration.LineUpPreference);
+            () => configuration.LineUpPreference, TestPartnerCharacter);
         preloader = new AnimationPreloader(PluginInterface, Objects, penumbra, sync, Log);
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
         sync.LocalAnimationReceived += signal => localAnimationSignals.Enqueue(signal);
@@ -1524,6 +1531,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (!sharedBodies.ContainsKey(name) && !measuredBodies.ContainsKey(name) && measuringBodies.Add(name))
                 MeasurePartner(player, name);
         }
+        // Your test partner (a dressed minion) counts as a partner too.
+        if (testPartner.Active)
+        {
+            var (hash, map) = contactMaps.Resolve(testPartner.Address, testPartner.ObjectId, testPartner.ObjectIndex, false);
+            nearby.Add(new Ik.IkActor(testPartner.Address, testPartner.ObjectId, testPartner.Name, false,
+                testPartner.Playing, hash, map));
+        }
         contactIk.Update(nearby, settings);
     }
 
@@ -1540,6 +1554,104 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var looping = character is not null &&
                       character->Mode is CharacterModes.EmoteLoop or CharacterModes.InPositionLoop;
         return new Ik.IkActor(player.Address, player.GameObjectId, player.Name.TextValue, isLocal, looping);
+    }
+
+    // ---- Test partner --------------------------------------------------------------------
+
+    public bool TestPartnerActive => testPartner.Active;
+    public bool TestPartnerLoading => testPartner.Loading;
+    public bool TestPartnerPlaying => testPartner.Playing;
+    public string TestPartnerStatus => testPartner.Status;
+    public string TestPartnerDescription => testPartner.Active ? $"{testPartner.Name} as {testPartner.FileName}" : "";
+
+    public void LoadTestPartner(string mcdfPath) => testPartner.Load(mcdfPath);
+    public void ReleaseTestPartner() => testPartner.Release();
+    public void StopTestPartner() => testPartner.StopAnimation();
+
+    /// <summary>The other roles of the animation you're playing, for the test partner to take.</summary>
+    public IReadOnlyList<(string Label, Action Play)> TestPartnerRoles()
+    {
+        if (NowPlaying is not { } playing || !testPartner.Active) return [];
+        var roles = new List<(string, Action)>();
+        foreach (var pose in GetDetectedPoses(playing.Directory))
+        {
+            var label = PoseDisplayName(pose);
+            var note = GetOptionNote(playing.Directory, "$detected-pose", $"{pose.Kind}:{pose.Index}");
+            roles.Add((note.Length > 0 ? $"{note} ({label})" : label, () => PlayTestPartnerPose(playing, pose)));
+        }
+        foreach (var emote in GetDetectedEmotes(playing.Directory))
+        {
+            var note = GetOptionNote(playing.Directory, "$detected-emote", emote.Id.ToString());
+            roles.Add((note.Length > 0 ? $"{note} ({emote.Name})" : emote.Name, () => PlayTestPartnerEmote(playing, emote)));
+        }
+        return roles;
+    }
+
+    private void PlayTestPartnerPose(NowPlayingInfo playing, PoseTarget pose)
+    {
+        var prefix = pose.Kind switch
+        {
+            PoseKind.GroundSit => "j_pose",
+            PoseKind.Sit => "s_pose",
+            PoseKind.Doze => "l_pose",
+            _ => null
+        };
+        if (prefix is null)
+        {
+            Status = "The test partner can't play standing idle poses yet.";
+            return;
+        }
+        var loop = TimelineByKey($"emote/{prefix}{pose.Index:D2}_loop");
+        if (loop == 0)
+        {
+            Status = $"Couldn't find the game animation for {PoseDisplayName(pose)}.";
+            return;
+        }
+        var start = TimelineByKey($"emote/{prefix}{pose.Index:D2}_start");
+        testPartner.Play(playing.Directory, playing.ModName, GetActivationSelections(playing.Directory),
+            new EmotePlayback(0, loop, start, true));
+    }
+
+    private void PlayTestPartnerEmote(NowPlayingInfo playing, EmoteTarget emote)
+    {
+        if (!TryCreatePlayback(emote.Command, out var playback))
+        {
+            Status = $"{emote.Command} has no animation the test partner can play.";
+            return;
+        }
+        testPartner.Play(playing.Directory, playing.ModName, GetActivationSelections(playing.Directory), playback);
+    }
+
+    private ushort TimelineByKey(string key)
+    {
+        var sheet = DataManager.GetExcelSheet<Lumina.Excel.Sheets.ActionTimeline>();
+        if (sheet is null) return 0;
+        foreach (var row in sheet)
+            if (row.Key.ExtractText().Equals(key, StringComparison.OrdinalIgnoreCase))
+                return row.RowId <= ushort.MaxValue ? (ushort)row.RowId : (ushort)0;
+        return 0;
+    }
+
+    private Dalamud.Game.ClientState.Objects.Types.ICharacter? TestPartnerCharacter() =>
+        testPartner.Active ? Objects.CreateObjectReference(testPartner.Address) as Dalamud.Game.ClientState.Objects.Types.ICharacter : null;
+
+    /// <summary>Measures the test partner once its models have loaded; forgotten when it's released.</summary>
+    private void MeasureTestPartner()
+    {
+        if (!testPartner.ReadyToMeasure) return;
+        var name = testPartner.Name;
+        if (measuredBodies.ContainsKey(name) || !measuringBodies.Add(name)) return;
+        var capture = ReadBody(testPartner.Address, testPartner.ObjectIndex);
+        if (capture is null)
+        {
+            measuringBodies.Remove(name);
+            return;
+        }
+        _ = Task.Run(() => Ik.BodyMeasurer.Measure(capture, DataManager, Log)).ContinueWith(task =>
+        {
+            if (task.IsCompletedSuccessfully && testPartner.Active && testPartner.Name == name)
+                measuredBodies[name] = task.Result;
+        }, TaskScheduler.Default);
     }
 
     private void MeasurePartner(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter player, string name)
@@ -3907,6 +4019,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         UpdateAlignment();
         contactAlign.Tick(configuration.AutomaticLineUp, IsSimpleHeelsLoadedCached(), IsSynastryAnimationPlaying());
         if (bodySyncPending) StartBodyProfileSync();
+        testPartner.Tick();
+        MeasureTestPartner();
         UpdateContactIk();
         preloader.Tick();
         UpdateAnimationSpeed();
@@ -4926,6 +5040,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        testPartner.Dispose();
         contactIk?.Dispose();
         agentExecuteEmoteHook?.Dispose();
         Theme.Dispose();

@@ -1,6 +1,7 @@
 using System.Globalization;
 using System.Numerics;
 using Dalamud.Game.ClientState.Objects.SubKinds;
+using Dalamud.Game.ClientState.Objects.Types;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.Character;
 using FFXIVClientStructs.FFXIV.Client.Graphics.Scene;
@@ -84,6 +85,7 @@ internal sealed unsafe class ContactAlignService
     private readonly Func<string, bool> usesSynastry;
     private readonly Action<string> executeCommand;
     private readonly Func<ContactPreference> preference;
+    private readonly Func<ICharacter?> testPartner;
 
     private string handledSignature = "";
     private string pendingSignature = "";
@@ -100,8 +102,10 @@ internal sealed unsafe class ContactAlignService
         IPluginLog log,
         Func<string, bool> usesSynastry,
         Action<string> executeCommand,
-        Func<ContactPreference> preference)
+        Func<ContactPreference> preference,
+        Func<ICharacter?> testPartner)
     {
+        this.testPartner = testPartner;
         this.preference = preference;
         this.objects = objects;
         this.targets = targets;
@@ -183,7 +187,7 @@ internal sealed unsafe class ContactAlignService
         Begin(partner, false);
     }
 
-    private void Begin(IPlayerCharacter partner, bool fromButton)
+    private void Begin(ICharacter partner, bool fromButton)
     {
         measuring = true;
         manual = fromButton;
@@ -193,9 +197,12 @@ internal sealed unsafe class ContactAlignService
         if (manual) Status = $"Measuring against {partner.Name.TextValue}...";
     }
 
-    private void Sample(IPlayerCharacter local)
+    private void Sample(ICharacter local)
     {
-        if (objects.SearchById(partnerId) is not IPlayerCharacter partner || !IsLooping(local))
+        var partner = testPartner() is { } test && test.GameObjectId == partnerId
+            ? test
+            : objects.SearchById(partnerId) as ICharacter;
+        if (partner is null || !IsLooping(local))
         {
             measuring = false;
             if (manual) Status = "Line up stopped: the animation or your partner changed.";
@@ -291,7 +298,7 @@ internal sealed unsafe class ContactAlignService
         if (bones.TryGetValue("iv_koumon", out var anus)) yield return (ContactPart.Anus, anus);
     }
 
-    private void Finish(IPlayerCharacter partner)
+    private void Finish(ICharacter partner)
     {
         measuring = false;
         var name = partner.Name.TextValue;
@@ -345,9 +352,12 @@ internal sealed unsafe class ContactAlignService
 
     /// <summary>The partner to line up with: your target, or someone in your room. Never a stranger
     /// who happens to be sitting nearby.</summary>
-    private IPlayerCharacter? FindPartner(IPlayerCharacter local)
+    private ICharacter? FindPartner(ICharacter local)
     {
-        if ((targets.Target ?? targets.SoftTarget) is IPlayerCharacter target &&
+        // A test partner (your dressed minion) always comes first.
+        if (testPartner() is { } test) return test;
+
+        if ((targets.Target ?? targets.SoftTarget) is ICharacter target &&
             target.GameObjectId != local.GameObjectId &&
             Vector3.Distance(target.Position, local.Position) <= PartnerSearchRadius &&
             IsLooping(target))
@@ -364,7 +374,7 @@ internal sealed unsafe class ContactAlignService
             .FirstOrDefault();
     }
 
-    private static bool IsLooping(IPlayerCharacter player)
+    private static bool IsLooping(ICharacter player)
     {
         var character = (Character*)player.Address;
         return character is not null &&
@@ -372,7 +382,7 @@ internal sealed unsafe class ContactAlignService
     }
 
     /// <summary>What the character is playing: changes whenever a new emote, pose or timeline starts.</summary>
-    internal static string Signature(IPlayerCharacter player)
+    internal static string Signature(ICharacter player)
     {
         var character = (Character*)player.Address;
         if (character is null) return "";
@@ -380,7 +390,7 @@ internal sealed unsafe class ContactAlignService
             $"{(byte)character->Mode}:{character->ModeParam}:{character->EmoteController.EmoteId}:{character->Timeline.BaseOverride}");
     }
 
-    private static bool TryGetModelYaw(IPlayerCharacter player, out float yaw)
+    private static bool TryGetModelYaw(ICharacter player, out float yaw)
     {
         yaw = 0;
         var character = (Character*)player.Address;
@@ -395,7 +405,7 @@ internal sealed unsafe class ContactAlignService
     }
 
     /// <summary>World positions of the bones this service needs, as currently drawn.</summary>
-    private static Dictionary<string, Vector3> ReadBones(IPlayerCharacter player)
+    private static Dictionary<string, Vector3> ReadBones(ICharacter player)
     {
         var found = new Dictionary<string, Vector3>(StringComparer.Ordinal);
         var character = (Character*)player.Address;

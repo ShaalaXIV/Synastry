@@ -36,6 +36,11 @@ public sealed class PenumbraService : IDisposable
     private readonly ICallGateSubscriber<string, string> resolvePlayerPath;
     private readonly ICallGateSubscriber<string, int, string> resolveGameObjectPath;
     private readonly ICallGateSubscriber<ushort[], Dictionary<string, HashSet<string>>?[]> getGameObjectResourcePaths;
+    private readonly ICallGateSubscriber<string, string, (int, Guid)> createTemporaryCollection;
+    private readonly ICallGateSubscriber<string, Guid, Dictionary<string, string>, string, int, int> addTemporaryMod;
+    private readonly ICallGateSubscriber<Guid, int, bool, int> assignTemporaryCollection;
+    private readonly ICallGateSubscriber<Guid, int> deleteTemporaryCollection;
+    private readonly ICallGateSubscriber<int, int, object> redrawObject;
 
     public event Action<string>? ModAdded;
 
@@ -67,6 +72,11 @@ public sealed class PenumbraService : IDisposable
         resolveGameObjectPath = pi.GetIpcSubscriber<string, int, string>("Penumbra.ResolveGameObjectPath.V5");
         getGameObjectResourcePaths = pi.GetIpcSubscriber<ushort[], Dictionary<string, HashSet<string>>?[]>(
             "Penumbra.GetGameObjectResourcePaths.V5");
+        createTemporaryCollection = pi.GetIpcSubscriber<string, string, (int, Guid)>("Penumbra.CreateTemporaryCollection.V6");
+        addTemporaryMod = pi.GetIpcSubscriber<string, Guid, Dictionary<string, string>, string, int, int>("Penumbra.AddTemporaryMod.V5");
+        assignTemporaryCollection = pi.GetIpcSubscriber<Guid, int, bool, int>("Penumbra.AssignTemporaryCollection.V5");
+        deleteTemporaryCollection = pi.GetIpcSubscriber<Guid, int>("Penumbra.DeleteTemporaryCollection.V5");
+        redrawObject = pi.GetIpcSubscriber<int, int, object>("Penumbra.RedrawObject.V5");
         modAdded.Subscribe(OnModAdded);
     }
 
@@ -255,6 +265,48 @@ public sealed class PenumbraService : IDisposable
         {
             return [];
         }
+    }
+
+    // ---- Temporary collections (the test partner) ------------------------------------------
+
+    public Guid? CreateTemporaryCollection(string name)
+    {
+        try
+        {
+            var (code, id) = createTemporaryCollection.InvokeFunc(Source, name);
+            return code == 0 ? id : null;
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "Penumbra couldn't create a temporary collection.");
+            return null;
+        }
+    }
+
+    /// <summary>A mod made of file redirects (game path → file on disk, or another game path for a
+    /// swap) and Penumbra's meta manipulation string, living in one temporary collection.</summary>
+    public int AddTemporaryMod(string tag, Guid collection, Dictionary<string, string> files, string manipulations, int priority)
+    {
+        try { return addTemporaryMod.InvokeFunc(tag, collection, files, manipulations, priority); }
+        catch (Exception ex) { log.Warning(ex, "Penumbra couldn't add a temporary mod."); return -1; }
+    }
+
+    public int AssignTemporaryCollection(Guid collection, int objectIndex)
+    {
+        try { return assignTemporaryCollection.InvokeFunc(collection, objectIndex, true); }
+        catch (Exception ex) { log.Warning(ex, "Penumbra couldn't assign a temporary collection."); return -1; }
+    }
+
+    public void DeleteTemporaryCollection(Guid collection)
+    {
+        try { deleteTemporaryCollection.InvokeFunc(collection); }
+        catch { /* Penumbra gone */ }
+    }
+
+    public void Redraw(int objectIndex)
+    {
+        try { redrawObject.InvokeAction(objectIndex, 0); }
+        catch { /* Penumbra gone */ }
     }
 
     public string? GetModRoot()

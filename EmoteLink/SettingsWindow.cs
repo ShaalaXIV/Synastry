@@ -11,6 +11,7 @@ public sealed class SettingsWindow : Window
     private string receiveFolderStatus = "";
     private List<string> receiveFolders = [];
     private string renameMesh = "";
+    private readonly Dalamud.Interface.ImGuiFileDialog.FileDialogManager fileDialog = new();
 
     public SettingsWindow(Plugin plugin) : base("Settings###SynastrySettings")
     {
@@ -44,6 +45,7 @@ public sealed class SettingsWindow : Window
 
     public override void Draw()
     {
+        fileDialog.Draw();
         var s = Theme.Scale;
         Theme.Heading("Playing");
         ImGui.Dummy(new Vector2(0, 2f * s));
@@ -241,8 +243,11 @@ public sealed class SettingsWindow : Window
             ImGui.EndPopup();
         }
 
+        DrawTestPartner();
+
         if (profile is null) return;
         ImGui.Dummy(new Vector2(0, 6f * s));
+        Theme.Label("Fine-tune your body");
         var gap = profile.Tuning.ContactGap * 100f;
         var grip = profile.Tuning.GripStrength * 100f;
         var opening = profile.Tuning.OpeningAmount * 100f;
@@ -260,6 +265,42 @@ public sealed class SettingsWindow : Window
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("How much your openings may widen, compared with what was measured.");
         if (tuned) plugin.SetBodyTuning(gap / 100f, grip / 100f, opening / 100f);
         if (released) plugin.ShareBodyProfile();
+    }
+
+    /// <summary>Your summoned minion as a stand-in partner, dressed from a Mare character file.</summary>
+    private void DrawTestPartner()
+    {
+        var s = Theme.Scale;
+        ImGui.Dummy(new Vector2(0, 10f * s));
+        Theme.Label("Test partner");
+        Theme.Wrapped("Summon any minion, then load a Mare character file (.mcdf): the minion becomes that character, on " +
+                      "your screen only, stands on your spot and can play the other role of the animation you're " +
+                      "playing. Line-up, contact maps and bending treat it as your partner. Its files and measurements " +
+                      "are deleted when you release it or the minion leaves.", Theme.Ash);
+
+        if (plugin.TestPartnerLoading) ImGui.BeginDisabled();
+        if (Theme.Primary(plugin.TestPartnerLoading ? "Loading..." : plugin.TestPartnerActive ? "Load a different .mcdf" : "Load .mcdf onto my minion"))
+            fileDialog.OpenFileDialog("Choose a Mare character file", "Mare character file{.mcdf}",
+                (chosen, path) => { if (chosen) plugin.LoadTestPartner(path); });
+        if (plugin.TestPartnerLoading) ImGui.EndDisabled();
+        if (plugin.TestPartnerActive)
+        {
+            ImGui.SameLine();
+            if (Theme.Text("Release", Theme.Ash)) plugin.ReleaseTestPartner();
+        }
+        if (plugin.TestPartnerStatus.Length > 0) Theme.Wrapped(plugin.TestPartnerStatus, Theme.Soft);
+        if (!plugin.TestPartnerActive) return;
+
+        var roles = plugin.TestPartnerRoles();
+        if (roles.Count == 0)
+        {
+            Theme.Quiet("Start your own role of an animation, then pick the role your test partner plays here.");
+            return;
+        }
+        Theme.Quiet("Play as your partner:");
+        foreach (var (label, play) in roles)
+            if (Theme.Text(label)) play();
+        if (plugin.TestPartnerPlaying && Theme.Text("Stop its animation", Theme.Ash)) plugin.StopTestPartner();
     }
 
     private static void Divider()
