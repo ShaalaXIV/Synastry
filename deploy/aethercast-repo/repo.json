@@ -26,7 +26,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.88.0",
+    "AssemblyVersion": "1.0.89.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -41,10 +41,10 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.88/Synastry-1.0.88.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.88/Synastry-1.0.88.zip",
-    "Changelog": "Experimental test partner: summon a minion and load a Mare character file (.mcdf) under Settings > Experimental. On your screen only it becomes that character, stands on your spot and plays the other role of your animation, so you can test couple animations alone.",
-    "LastUpdate": "1791135694"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.89/Synastry-1.0.89.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.89/Synastry-1.0.89.zip",
+    "Changelog": "Experimental test partner: make an empty Penumbra collection named Synastry (Collections tab, New). Synastry gives it to your minion only, fills it with the character file's mods without saving them, and cleans up when you release the minion.",
+    "LastUpdate": "1791137588"
   },
   {
     "Author": "ShaalaXIV",
