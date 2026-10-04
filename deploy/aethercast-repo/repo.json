@@ -26,7 +26,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.87.0",
+    "AssemblyVersion": "1.0.88.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -41,10 +41,10 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.87/Synastry-1.0.87.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.87/Synastry-1.0.87.zip",
-    "Changelog": "Experimental bone bending now follows each animation: hands grip only the body parts the animation was made to touch and the penis aims only at its intended opening, from maps measured on the animations. Animations without a map bend nothing.",
-    "LastUpdate": "1791132748"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.88/Synastry-1.0.88.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.88/Synastry-1.0.88.zip",
+    "Changelog": "Experimental test partner: summon a minion and load a Mare character file (.mcdf) under Settings > Experimental. On your screen only it becomes that character, stands on your spot and plays the other role of your animation, so you can test couple animations alone.",
+    "LastUpdate": "1791135694"
   },
   {
     "Author": "ShaalaXIV",
