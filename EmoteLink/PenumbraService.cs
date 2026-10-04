@@ -41,6 +41,9 @@ public sealed class PenumbraService : IDisposable
     private readonly ICallGateSubscriber<Guid, int, bool, int> assignTemporaryCollection;
     private readonly ICallGateSubscriber<Guid, int> deleteTemporaryCollection;
     private readonly ICallGateSubscriber<int, int, object> redrawObject;
+    private readonly ICallGateSubscriber<Dictionary<Guid, string>> getCollections;
+    private readonly ICallGateSubscriber<int, Guid?, bool, bool, (int, (Guid Id, string Name)?)> setCollectionForObject;
+    private readonly ICallGateSubscriber<string, Guid, int, int> removeTemporaryMod;
 
     public event Action<string>? ModAdded;
 
@@ -77,6 +80,10 @@ public sealed class PenumbraService : IDisposable
         assignTemporaryCollection = pi.GetIpcSubscriber<Guid, int, bool, int>("Penumbra.AssignTemporaryCollection.V5");
         deleteTemporaryCollection = pi.GetIpcSubscriber<Guid, int>("Penumbra.DeleteTemporaryCollection.V5");
         redrawObject = pi.GetIpcSubscriber<int, int, object>("Penumbra.RedrawObject.V5");
+        getCollections = pi.GetIpcSubscriber<Dictionary<Guid, string>>("Penumbra.GetCollections.V5");
+        setCollectionForObject = pi.GetIpcSubscriber<int, Guid?, bool, bool, (int, (Guid Id, string Name)?)>(
+            "Penumbra.SetCollectionForObject.V5");
+        removeTemporaryMod = pi.GetIpcSubscriber<string, Guid, int, int>("Penumbra.RemoveTemporaryMod.V5");
         modAdded.Subscribe(OnModAdded);
     }
 
@@ -295,6 +302,34 @@ public sealed class PenumbraService : IDisposable
     {
         try { return assignTemporaryCollection.InvokeFunc(collection, objectIndex, true); }
         catch (Exception ex) { log.Warning(ex, "Penumbra couldn't assign a temporary collection."); return -1; }
+    }
+
+    /// <summary>A collection the player made, found by its name (case-insensitive).</summary>
+    public Guid? FindCollection(string name)
+    {
+        try
+        {
+            foreach (var (id, collectionName) in getCollections.InvokeFunc())
+                if (collectionName.Trim().Equals(name, StringComparison.OrdinalIgnoreCase)) return id;
+        }
+        catch (Exception ex)
+        {
+            log.Warning(ex, "Penumbra couldn't list its collections.");
+        }
+        return null;
+    }
+
+    /// <summary>Gives one character a collection of its own, or with null takes that assignment away.</summary>
+    public int SetCollectionForObject(int objectIndex, Guid? collection)
+    {
+        try { return setCollectionForObject.InvokeFunc(objectIndex, collection, true, collection is null).Item1; }
+        catch (Exception ex) { log.Warning(ex, "Penumbra couldn't assign a collection to object {Index}.", objectIndex); return -1; }
+    }
+
+    public void RemoveTemporaryMod(string tag, Guid collection, int priority)
+    {
+        try { removeTemporaryMod.InvokeFunc(tag, collection, priority); }
+        catch { /* Penumbra gone */ }
     }
 
     public void DeleteTemporaryCollection(Guid collection)

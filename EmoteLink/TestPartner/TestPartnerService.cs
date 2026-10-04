@@ -16,6 +16,8 @@ namespace EmoteLink.TestPartner;
 internal sealed unsafe class TestPartnerService : IDisposable
 {
     private const string Tag = "Synastry test partner";
+    /// <summary>The Penumbra collection the player makes for the test partner.</summary>
+    public const string CollectionName = "Synastry";
     // Glamourer.ApplyState flags: equipment and customization (body, face, hair); not "once", not locked.
     private const ulong GlamourerEquipmentAndCustomize = 2 | 4;
 
@@ -35,6 +37,7 @@ internal sealed unsafe class TestPartnerService : IDisposable
     private FFXIVClientStructs.FFXIV.Client.Game.Character.CustomizeData originalCustomize;
     private float originalScale = 1f;
     private ushort originalBaseOverride;
+    private TemporaryAssignment? animation;
     private bool dressed;
     private long dressedAt;
 
@@ -78,6 +81,11 @@ internal sealed unsafe class TestPartnerService : IDisposable
         if (companion is null)
         {
             Status = "Summon a minion first; Synastry turns it into your test partner.";
+            return;
+        }
+        if (penumbra.FindCollection(CollectionName) is null)
+        {
+            Status = MissingCollection;
             return;
         }
         if (Active) Release();
@@ -150,20 +158,21 @@ internal sealed unsafe class TestPartnerService : IDisposable
         originalScale = character->Scale;
         originalBaseOverride = character->Timeline.BaseOverride;
 
-        // Its mods, in a collection of its own so nothing else changes.
-        if (penumbra.CreateTemporaryCollection(Tag) is not { } created)
+        // Its mods go into the player's own "Synastry" collection, given to the minion only. The
+        // .mcdf's files join it as a temporary mod, which Penumbra never saves.
+        if (penumbra.FindCollection(CollectionName) is not { } found)
         {
-            Status = "Penumbra couldn't make a collection for the test partner.";
+            Status = MissingCollection;
             Cleanup(revert: false);
             return;
         }
-        collection = created;
+        collection = found;
         var redirects = new Dictionary<string, string>(file.Files, StringComparer.OrdinalIgnoreCase);
         foreach (var (from, to) in file.Swaps) redirects.TryAdd(from, to);
-        var added = penumbra.AddTemporaryMod(Tag, collection, redirects, file.ManipulationData, 0);
-        var assigned = penumbra.AssignTemporaryCollection(collection, minionIndex);
-        if (assigned is not (0 or 1))
-            log.Warning("Test partner: Penumbra assignment returned {Code} (mod {Added}).", assigned, added);
+        var added = penumbra.AddTemporaryMod(Tag, collection, redirects, file.ManipulationData, 99);
+        var assigned = penumbra.SetCollectionForObject(minionIndex, collection);
+        if (added is not (0 or 1) || assigned is not (0 or 1))
+            log.Warning("Test partner: Penumbra returned mod {Added}, assignment {Assigned}.", added, assigned);
 
         // A human body, full size. Start from your own body description so the human model never
         // draws with an empty one if Glamourer won't dress a minion; the file's look goes on top.
@@ -192,12 +201,14 @@ internal sealed unsafe class TestPartnerService : IDisposable
     public bool Play(string directory, string modName, IReadOnlyDictionary<string, List<string>> selections, EmotePlayback playback)
     {
         if (!Active || collection == Guid.Empty) return false;
+        if (animation is { } previous) penumbra.Remove(previous);
         var (success, error) = penumbra.Activate(collection, directory, modName, selections);
         if (!success)
         {
             Status = "Couldn't turn the animation on for the test partner: " + error;
             return false;
         }
+        animation = new TemporaryAssignment(collection, directory, modName);
         StopAnimation();
         if (!ActionTimelinePlayback.Start(minion, playback, out var before))
         {
@@ -238,7 +249,13 @@ internal sealed unsafe class TestPartnerService : IDisposable
             character->Scale = originalScale;
             penumbra.Redraw(minionIndex);
         }
-        if (collection != Guid.Empty) penumbra.DeleteTemporaryCollection(collection);
+        if (collection != Guid.Empty)
+        {
+            if (animation is { } activated) penumbra.Remove(activated);
+            penumbra.RemoveTemporaryMod(Tag, collection, 99);
+            if (minionIndex != 0) penumbra.SetCollectionForObject(minionIndex, null);
+        }
+        animation = null;
         collection = Guid.Empty;
         if (folder.Length > 0)
         {
@@ -254,6 +271,13 @@ internal sealed unsafe class TestPartnerService : IDisposable
         FileName = "";
         if (name.Length > 0) Released?.Invoke(name);
     }
+
+    public const string MissingCollection =
+        "Make a collection named \"Synastry\" in Penumbra first (Collections tab, then New). Leave it empty; " +
+        "Synastry puts the character file's mods in it for your minion only, and nothing is saved.";
+
+    /// <summary>Whether the player has made the collection yet, for the settings panel.</summary>
+    public bool HasCollection() => penumbra.FindCollection(CollectionName) is not null;
 
     public void Dispose() => Cleanup(revert: true);
 }

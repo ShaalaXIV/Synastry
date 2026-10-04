@@ -278,6 +278,13 @@ public sealed class SettingsWindow : Window
                       "playing. Line-up, contact maps and bending treat it as your partner. Its files and measurements " +
                       "are deleted when you release it or the minion leaves.", Theme.Ash);
 
+        if (!plugin.HasTestPartnerCollection)
+        {
+            Theme.Wrapped("To use it, make a collection named \"Synastry\" in Penumbra: Collections tab, then New, name it " +
+                          "Synastry. Leave it empty; Synastry fills it for your minion only and saves nothing in it.",
+                Theme.AzureText);
+            return;
+        }
         if (plugin.TestPartnerLoading) ImGui.BeginDisabled();
         if (Theme.Primary(plugin.TestPartnerLoading ? "Loading..." : plugin.TestPartnerActive ? "Load a different .mcdf" : "Load .mcdf onto my minion"))
             fileDialog.OpenFileDialog("Choose a Mare character file", "Mare character file{.mcdf}",

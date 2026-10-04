@@ -1559,6 +1559,22 @@ public sealed unsafe class Plugin : IDalamudPlugin
     // ---- Test partner --------------------------------------------------------------------
 
     public bool TestPartnerActive => testPartner.Active;
+    private long nextCollectionCheck;
+    private bool hasTestPartnerCollection;
+
+    /// <summary>Whether the player has made the "Synastry" collection (checked every few seconds).</summary>
+    public bool HasTestPartnerCollection
+    {
+        get
+        {
+            if (Environment.TickCount64 >= nextCollectionCheck)
+            {
+                hasTestPartnerCollection = testPartner.HasCollection();
+                nextCollectionCheck = Environment.TickCount64 + 3000;
+            }
+            return hasTestPartnerCollection;
+        }
+    }
     public bool TestPartnerLoading => testPartner.Loading;
     public bool TestPartnerPlaying => testPartner.Playing;
     public string TestPartnerStatus => testPartner.Status;
