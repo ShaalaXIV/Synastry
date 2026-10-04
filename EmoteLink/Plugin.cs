@@ -1491,7 +1491,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (contactIk is null) return;
         var settings = new Ik.IkSettings(configuration.BendShaft, configuration.BendOpenings, configuration.BendHands,
             configuration.LineUpPreference);
-        if (Objects.LocalPlayer is not { } local || (!settings.Shaft && !settings.Openings && !settings.Hands))
+        if (Objects.LocalPlayer is not { } local || (!settings.Shaft && !settings.Openings && !settings.Hands) ||
+            !IsSynastryAnimationPlaying())
         {
             contactIk.Update([], settings);
             return;
@@ -1503,9 +1504,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             if (player.Address == local.Address || System.Numerics.Vector3.Distance(player.Position, local.Position) > 3f) continue;
             var name = player.Name.TextValue;
-            var partner = sync.IsInRoom
-                ? IsRoomMemberNamed(name)
-                : Targets.Target?.Address == player.Address;
+            // Your room partners and your target; never a stranger nearby.
+            var partner = IsRoomMemberNamed(name) || Targets.Target?.Address == player.Address;
             if (!partner) continue;
             nearby.Add(ToIkActor(player, false));
             if (!sharedBodies.ContainsKey(name) && !measuredBodies.ContainsKey(name) && measuringBodies.Add(name))
@@ -1530,6 +1530,39 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             if (task.IsCompletedSuccessfully) measuredBodies[name] = task.Result;
         }, TaskScheduler.Default);
+    }
+
+    private long playingSince;
+    private string? playingSignature;
+    // Set when the emote really starts: a room animation is activated when you ready up but plays
+    // only when the room starts.
+    private bool playingStarted;
+
+    /// <summary>
+    /// True while an animation Synastry started is still playing: something was activated (from the
+    /// list, a room sync, Free Use, a slash command) and you haven't moved or switched to another
+    /// emote since. Line-up and bone bending only ever act then, never on ordinary sitting or emotes.
+    /// </summary>
+    private bool IsSynastryAnimationPlaying()
+    {
+        if (NowPlaying is null || !playingStarted || Objects.LocalPlayer is not { } local) return false;
+        var looping = IsLoopingNow(local);
+        if (playingSignature is null)
+        {
+            // Remember the loop it settles into once the emote has started and any pose-variant
+            // cycling is over; until then, any loop counts (it may still be the old sit).
+            if (looping && Environment.TickCount64 - playingSince > 3000)
+                playingSignature = ContactAlignService.Signature(local);
+            return looping && Environment.TickCount64 - playingSince < 30000;
+        }
+        return looping && ContactAlignService.Signature(local) == playingSignature;
+    }
+
+    private static unsafe bool IsLoopingNow(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter player)
+    {
+        var character = (Character*)player.Address;
+        return character is not null &&
+               character->Mode is CharacterModes.EmoteLoop or CharacterModes.InPositionLoop;
     }
 
     private bool IsRoomMemberNamed(string name) =>
@@ -2683,6 +2716,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         configuration.ActiveAssignments.Add(new TemporaryAssignment(collection.Value.Id, directory, name));
         configuration.Save(PluginInterface);
         NowPlaying = new NowPlayingInfo(directory, name, NowPlayingLabel(directory, requestedPose, requestedCommand));
+        playingSince = Environment.TickCount64;
+        playingSignature = null;
+        playingStarted = false;
         waitingForAnimation = true;
         activationTime = Environment.TickCount64;
         movementTrackingStart = activationTime + 1200;
@@ -3849,7 +3885,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (roleSyncPending) StartRoleLabelSync();
         if (communityRoleSyncPending) StartCommunityRoleLabelSync();
         UpdateAlignment();
-        contactAlign.Tick(configuration.AutomaticLineUp, IsSimpleHeelsLoadedCached());
+        contactAlign.Tick(configuration.AutomaticLineUp, IsSimpleHeelsLoadedCached(), IsSynastryAnimationPlaying());
         if (bodySyncPending) StartBodyProfileSync();
         UpdateContactIk();
         preloader.Tick();
@@ -3929,6 +3965,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
             movementTrackingStart = Environment.TickCount64 + 2000;
             hasMovementSample = false;
             movementFrames = 0;
+            // The same goes for line-up and bone bending: learn the loop from the real start.
+            playingSince = Environment.TickCount64;
+            playingSignature = null;
+            playingStarted = true;
         }
         if (animationStarted && pendingSelectionModKey is not null)
         {

@@ -142,7 +142,9 @@ internal sealed unsafe class ContactAlignService
         Begin(partner, true);
     }
 
-    public void Tick(bool automatic, bool simpleHeels)
+    /// <param name="synastryAnimation">True only while an animation Synastry started is playing:
+    /// automatic line-up never acts on ordinary sitting, dozing or emotes.</param>
+    public void Tick(bool automatic, bool simpleHeels, bool synastryAnimation)
     {
         var local = objects.LocalPlayer;
         if (local is null) return;
@@ -153,7 +155,7 @@ internal sealed unsafe class ContactAlignService
             return;
         }
 
-        if (!automatic || !simpleHeels || !IsLooping(local))
+        if (!automatic || !simpleHeels || !synastryAnimation || !IsLooping(local))
         {
             pendingSignature = "";
             return;
@@ -341,6 +343,8 @@ internal sealed unsafe class ContactAlignService
         _ => "anus",
     };
 
+    /// <summary>The partner to line up with: your target, or someone in your room. Never a stranger
+    /// who happens to be sitting nearby.</summary>
     private IPlayerCharacter? FindPartner(IPlayerCharacter local)
     {
         if ((targets.Target ?? targets.SoftTarget) is IPlayerCharacter target &&
@@ -350,7 +354,8 @@ internal sealed unsafe class ContactAlignService
             return target;
 
         return objects.OfType<IPlayerCharacter>()
-            .Where(player => player.GameObjectId != local.GameObjectId && IsLooping(player))
+            .Where(player => player.GameObjectId != local.GameObjectId && IsLooping(player) &&
+                             usesSynastry(player.Name.TextValue))
             .Select(player => (Player: player, Distance: Vector3.Distance(player.Position, local.Position)))
             .Where(item => item.Distance <= PartnerSearchRadius)
             .OrderByDescending(item => usesSynastry(item.Player.Name.TextValue))
@@ -367,7 +372,7 @@ internal sealed unsafe class ContactAlignService
     }
 
     /// <summary>What the character is playing: changes whenever a new emote, pose or timeline starts.</summary>
-    private static string Signature(IPlayerCharacter player)
+    internal static string Signature(IPlayerCharacter player)
     {
         var character = (Character*)player.Address;
         if (character is null) return "";
