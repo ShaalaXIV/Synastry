@@ -119,6 +119,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private readonly MainWindow mainWindow;
     private readonly MiniPlayerWindow miniPlayerWindow;
     private readonly Ik.ContactIkService? contactIk;
+    private readonly Ik.ContactMapResolver contactMaps;
     // Body profiles shared by room partners, and ones measured here for partners who haven't run
     // setup, by character name.
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, Ik.BodyProfile> sharedBodies =
@@ -327,6 +328,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             Log.Warning(exception, "Contact IK could not start; couple animations line up the old way.");
         }
+        contactMaps = new Ik.ContactMapResolver(DataManager, penumbra, hashes => sync.GetContactMapsAsync(hashes), Log);
         sync.BodyProfileChanged += shared =>
         {
             if (Ik.BodyProfile.FromJson(shared.ProfileJson) is { } profile) sharedBodies[shared.DisplayName] = profile;
@@ -1510,7 +1512,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
         OwnBody();
         RememberBodyMesh(local);
-        var nearby = new List<Ik.IkActor> { ToIkActor(local, true) };
+        var nearby = new List<Ik.IkActor> { WithMap(ToIkActor(local, true), local) };
         foreach (var player in Objects.OfType<Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter>())
         {
             if (player.Address == local.Address || System.Numerics.Vector3.Distance(player.Position, local.Position) > 3f) continue;
@@ -1518,11 +1520,18 @@ public sealed unsafe class Plugin : IDalamudPlugin
             // Your room partners and your target; never a stranger nearby.
             var partner = IsRoomMemberNamed(name) || Targets.Target?.Address == player.Address;
             if (!partner) continue;
-            nearby.Add(ToIkActor(player, false));
+            nearby.Add(WithMap(ToIkActor(player, false), player));
             if (!sharedBodies.ContainsKey(name) && !measuredBodies.ContainsKey(name) && measuringBodies.Add(name))
                 MeasurePartner(player, name);
         }
         contactIk.Update(nearby, settings);
+    }
+
+    /// <summary>Adds the playing animation's file hash and contact map to a character.</summary>
+    private Ik.IkActor WithMap(Ik.IkActor actor, Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter player)
+    {
+        var (hash, map) = contactMaps.Resolve(player.Address, player.GameObjectId, player.ObjectIndex, actor.IsLocal);
+        return actor with { Hash = hash, Map = map };
     }
 
     private static unsafe Ik.IkActor ToIkActor(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter player, bool isLocal)
@@ -4262,6 +4271,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             roleSyncPending = true;
             bodySyncPending = true;
             sharedBodies.Clear();
+            contactMaps.Forget();
         }
         var room = sync.Room!;
         var currentMembers = room.Members.Select(member => member.DisplayName).ToHashSet(StringComparer.OrdinalIgnoreCase);

@@ -18,11 +18,13 @@ public sealed class AnimationHub : Hub
     private const int MaxMembers = 16;
     private readonly TransferStore transfers;
     private readonly CommunityRoleLabelStore communityRoles;
+    private readonly ContactMapStore contactMaps;
     private readonly RelayStatisticsStore statistics;
 
     public AnimationHub(TransferStore transfers, CommunityRoleLabelStore communityRoles,
-        RelayStatisticsStore statistics)
+        RelayStatisticsStore statistics, ContactMapStore contactMaps)
     {
+        this.contactMaps = contactMaps;
         this.transfers = transfers;
         this.communityRoles = communityRoles;
         this.statistics = statistics;
@@ -273,6 +275,9 @@ public sealed class AnimationHub : Hub
                 .Select(member => new BodyProfileDto(member.ConnectionId, member.DisplayName, member.BodyProfile))
                 .ToList();
     }
+
+    /// <summary>Contact maps for the animation files being played (at most 16 per call).</summary>
+    public IReadOnlyList<ContactMapDto> GetContactMaps(IReadOnlyList<string> hashes) => contactMaps.Get(hashes);
 
     public IReadOnlyList<RoleLabelDto> GetRoleLabels()
     {

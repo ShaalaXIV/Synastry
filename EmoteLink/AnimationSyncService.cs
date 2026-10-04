@@ -301,6 +301,19 @@ public sealed class AnimationSyncService : IAsyncDisposable
         catch { return []; }
     }
 
+    public async Task<IReadOnlyList<(string Hash, string Json)>> GetContactMapsAsync(IReadOnlyList<string> hashes)
+    {
+        try
+        {
+            var maps = await RequireConnection().InvokeAsync<IReadOnlyList<ContactMapDto>>("GetContactMaps", hashes);
+            return maps.Select(map => (map.Hash, map.MapJson)).ToList();
+        }
+        catch (HubException)
+        {
+            return [];   // an older relay without contact maps
+        }
+    }
+
     public async Task<IReadOnlyList<RoleLabelDto>> GetRoleLabelsAsync()
     {
         try { return await RequireConnection().InvokeAsync<IReadOnlyList<RoleLabelDto>>("GetRoleLabels"); }
@@ -725,6 +738,7 @@ public sealed record ModTransferOfferDto(string TransferId, string ModName, stri
     string Sha256, string DownloadToken, DateTimeOffset ExpiresAt, string CatalogFingerprint = "");
 public sealed record ModTransferSendResult(int PendingRecipients, int AlreadyReceived);
 public sealed record OptionSelectionDto(string MemberName, string ModKey, string Group, string Option);
+public sealed record ContactMapDto(string Hash, string MapJson);
 public sealed record BodyProfileDto(string ConnectionId, string DisplayName, string ProfileJson);
 public sealed record RoleLabelDto(string MemberName, string ModKey, string Group, string Option, string Label);
 /// <summary>A community tag. Revision counts moderator actions on it; 0 means players chose it.</summary>

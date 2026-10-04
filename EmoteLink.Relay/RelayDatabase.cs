@@ -9,7 +9,7 @@ namespace EmoteLink.Relay;
 /// </summary>
 public sealed class RelayDatabase
 {
-    public const int CurrentSchemaVersion = 8;
+    public const int CurrentSchemaVersion = 9;
     private const int BusyTimeoutMilliseconds = 5_000;
     private readonly string connectionString;
     private readonly ILogger<RelayDatabase> logger;
@@ -528,6 +528,20 @@ public sealed class RelayDatabase
             DROP TABLE IF EXISTS animation_artifact_reports;
             DROP TABLE IF EXISTS animation_artifact_names;
             DROP TABLE IF EXISTS animation_artifacts;
+            """),
+        new(9, "per-animation contact maps", """
+            -- One row per animation file (SHA-256 of the .pap): which partner surfaces each hand grips
+            -- and which opening the shaft is for. locked = a moderator edited it; imports skip it.
+            CREATE TABLE animation_contact_maps (
+                pap_hash TEXT PRIMARY KEY COLLATE NOCASE CHECK (length(pap_hash) = 64),
+                map_json TEXT NOT NULL,
+                scene TEXT NOT NULL DEFAULT '',
+                role TEXT NOT NULL DEFAULT '',
+                source TEXT NOT NULL DEFAULT 'corpus',
+                locked INTEGER NOT NULL DEFAULT 0,
+                updated_utc TEXT NOT NULL
+            );
+            CREATE INDEX ix_animation_contact_maps_scene ON animation_contact_maps(scene COLLATE NOCASE);
             """)
     ];
 

@@ -6,7 +6,10 @@ using FFXIVClientStructs.FFXIV.Client.Game.Object;
 namespace EmoteLink.Ik;
 
 /// <summary>A character near you this frame, gathered on the framework thread.</summary>
-internal sealed record IkActor(nint Address, ulong ObjectId, string Name, bool IsLocal, bool Looping);
+/// <summary>A character near you this frame, gathered on the framework thread, with the animation
+/// file it's playing (SHA-256) and that file's contact map when one exists.</summary>
+internal sealed record IkActor(nint Address, ulong ObjectId, string Name, bool IsLocal, bool Looping,
+    string? Hash = null, ContactMap? Map = null);
 
 /// <summary>What the player has switched on, read once per frame.</summary>
 internal sealed record IkSettings(bool Shaft, bool Openings, bool Hands, ContactPreference Preference);
@@ -206,6 +209,14 @@ internal sealed unsafe class ContactIkService : IDisposable
         var names = ShaftChainOf(view, profile);
         var joints = names.Select(view.Model).ToList();
         if (joints.Count < 2 || Length(joints) < MinShaftLength) return Decay(key, deltaSeconds, view, names);
+        // Only an animation whose contact map says where the shaft goes is bent.
+        if (giver.Map?.Shaft is not { } shaftMap) return Decay(key, deltaSeconds, view, names);
+        var mappedPart = shaftMap.Opening switch
+        {
+            "mouth" => ContactPart.Mouth,
+            "anus" => ContactPart.Anus,
+            _ => ContactPart.Vagina
+        };
 
         var lastDirection = Vector3.Normalize(joints[^1] - joints[^2]);
         var tipExtra = profile?.Shaft?.TipBeyondLastBone is > 0 and var extra ? extra : Vector3.Distance(joints[^1], joints[^2]);
@@ -223,8 +234,10 @@ internal sealed unsafe class ContactIkService : IDisposable
         foreach (var (receiverActor, receiver) in all)
         {
             if (receiverActor.ObjectId == giver.ObjectId) continue;
+            if (!giver.Map.IsPartner(shaftMap.Partner, receiverActor.Hash)) continue;
             foreach (var (part, world) in OpeningsOf(receiver))
             {
+                if (part != mappedPart) continue;
                 var point = view.ToModel(world);
                 var distance = MathF.Min(Vector3.Distance(point, tip), Vector3.Distance(point, ClosestOnPolyline(joints, point)));
                 if (distance > ShaftEngageDistance) continue;
@@ -416,14 +429,20 @@ internal sealed unsafe class ContactIkService : IDisposable
 
         if (!hands.TryGetValue(key, out var state)) hands[key] = state = new HandState();
 
-        // The closest body surface on anyone else, within the release distance.
+        // Only the surfaces this animation's contact map says the hand grips, on the partner playing the
+        // role it names. No map, or a hand the map leaves free, never grabs anything.
+        var handMap = actor.Map?.Hands.GetValueOrDefault(side);
+
+        // The closest mapped surface, within the release distance.
         (Vector3 Point, Vector3 Normal, float Gap, (string, string, string, float) Surface)? best = null;
         foreach (var (otherActor, other) in all)
         {
-            if (otherActor.ObjectId == actor.ObjectId) continue;
+            if (otherActor.ObjectId == actor.ObjectId || handMap is null) continue;
+            if (!actor.Map!.IsPartner(handMap.Partner, otherActor.Hash)) continue;
             var otherProfile = profileOf(other.Name);
             foreach (var (from, to, defaultRadius) in Surfaces)
             {
+                if (!handMap.Surfaces.Contains(from, StringComparer.Ordinal)) continue;
                 if (!other.TryWorld(from, out var a) || !other.TryWorld(to, out var b)) continue;
                 var radius = (otherProfile?.SurfaceRadius.GetValueOrDefault(from) is > 0 and var measured ? measured : defaultRadius) * other.Scale;
                 if (SurfaceUnder(palmWorld, a, b, radius) is not { } hit) continue;

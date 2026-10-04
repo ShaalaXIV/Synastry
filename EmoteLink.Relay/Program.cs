@@ -25,6 +25,7 @@ builder.Services.AddSingleton<CatalogSearchService>();
 builder.Services.AddSingleton<AdminTransferEventBroker>();
 builder.Services.AddSingleton<TransferStore>();
 builder.Services.AddSingleton<CommunityRoleLabelStore>();
+builder.Services.AddSingleton<ContactMapStore>();
 builder.Services.AddHostedService(provider => provider.GetRequiredService<TransferStore>());
 builder.Services.Configure<ForwardedHeadersOptions>(options =>
 {
@@ -125,6 +126,29 @@ admin.MapDelete("/record", async (string key, CommunityRoleLabelStore store, IHu
     await Moderated(store.Remove(key), hub));
 admin.MapPost("/unlock", (string key, CommunityRoleLabelStore store) =>
     store.Unlock(key) is { } record ? Results.Ok(record) : Results.NotFound());
+
+var mapAdmin = adminRoot.MapGroup("/contact-maps");
+mapAdmin.MapGet("/", (string? query, int? limit, ContactMapStore store) => store.List(query, limit ?? 2000));
+mapAdmin.MapPut("/", async (string hash, HttpRequest request, ContactMapStore store) =>
+{
+    using var reader = new StreamReader(request.Body);
+    var json = await reader.ReadToEndAsync();
+    try
+    {
+        return store.Set(hash, json) is { } saved ? Results.Ok(saved) : Results.NotFound();
+    }
+    catch (ArgumentException exception)
+    {
+        return Results.BadRequest(exception.Message);
+    }
+});
+mapAdmin.MapDelete("/", (string hash, ContactMapStore store) =>
+    store.Delete(hash) ? Results.NoContent() : Results.NotFound());
+mapAdmin.MapPost("/import", (Dictionary<string, JsonElement> maps, ContactMapStore store) =>
+{
+    var (written, kept) = store.Import(maps);
+    return Results.Ok(new { written, kept });
+});
 
 var catalogAdmin = adminRoot.MapGroup("/catalog");
 catalogAdmin.MapGet("/search", (string query, int? limit, CatalogSearchService search) =>
