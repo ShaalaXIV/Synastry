@@ -297,6 +297,8 @@ public sealed class SettingsWindow : Window
         }
         if (plugin.TestPartnerStatus.Length > 0) Theme.Wrapped(plugin.TestPartnerStatus, Theme.Soft);
         if (!plugin.TestPartnerActive) return;
+        Theme.Wrapped(plugin.TestPartnerRoomStatus, Theme.AzureText);
+        Theme.Quiet(plugin.TestPartnerMeasured ? "Body measured (temporary; deleted when it leaves)." : "Measuring its body...");
 
         var roles = plugin.TestPartnerRoles();
         if (roles.Count == 0)

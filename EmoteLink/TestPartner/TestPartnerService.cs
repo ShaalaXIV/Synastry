@@ -24,6 +24,7 @@ internal sealed unsafe class TestPartnerService : IDisposable
     private readonly IObjectTable objects;
     private readonly PenumbraService penumbra;
     private readonly IPluginLog log;
+    private readonly IDataManager data;
     private readonly string workFolder;
     private readonly ICallGateSubscriber<object, int, uint, ulong, int> glamourerApply;
     private readonly ICallGateSubscriber<int, uint, ulong, int> glamourerRevert;
@@ -35,14 +36,17 @@ internal sealed unsafe class TestPartnerService : IDisposable
     private string folder = "";
     private int originalModel;
     private FFXIVClientStructs.FFXIV.Client.Game.Character.CustomizeData originalCustomize;
+    private readonly EquipmentModelId[] originalEquipment = new EquipmentModelId[10];
     private float originalScale = 1f;
     private ushort originalBaseOverride;
     private TemporaryAssignment? animation;
     private bool dressed;
     private long dressedAt;
 
-    public TestPartnerService(IDalamudPluginInterface pluginInterface, IObjectTable objects, PenumbraService penumbra, IPluginLog log)
+    public TestPartnerService(IDalamudPluginInterface pluginInterface, IObjectTable objects, PenumbraService penumbra,
+        IDataManager data, IPluginLog log)
     {
+        this.data = data;
         this.objects = objects;
         this.penumbra = penumbra;
         this.log = log;
@@ -152,7 +156,7 @@ internal sealed unsafe class TestPartnerService : IDisposable
         minionId = companion->GetGameObjectId().ObjectId;
         folder = extracted;
         FileName = name;
-        Name = companion->NameString is { Length: > 0 } minionName ? minionName : "Test partner";
+        Name = $"{name} (test)"[..Math.Min(name.Length + 7, 32)];
         var character = (Character*)minion;
         originalModel = character->ModelContainer.ModelCharaId;
         originalScale = character->Scale;
@@ -174,10 +178,28 @@ internal sealed unsafe class TestPartnerService : IDisposable
         if (added is not (0 or 1) || assigned is not (0 or 1))
             log.Warning("Test partner: Penumbra returned mod {Added}, assignment {Assigned}.", added, assigned);
 
-        // A human body, full size. Start from your own body description so the human model never
-        // draws with an empty one if Glamourer won't dress a minion; the file's look goes on top.
+        // A human body, full size, wearing the file's look: its body description and gear models
+        // (body mods follow the gear slots the character wore). Glamourer won't dress a minion, so
+        // this is written directly; a file without a look falls back to your own body description.
         originalCustomize = character->DrawData.CustomizeData;
-        character->DrawData.CustomizeData = ((Character*)local.Address)->DrawData.CustomizeData;
+        for (var slot = 0; slot < 10; slot++) originalEquipment[slot] = character->DrawData.EquipmentModelIds[slot];
+        var look = GlamourerState.Parse(file.GlamourerData, data);
+        if (look is { HasCustomize: true })
+        {
+            var bytes = character->DrawData.CustomizeData.Data;
+            for (var i = 0; i < 26; i++) bytes[i] = look.Customize[i];
+        }
+        else
+        {
+            character->DrawData.CustomizeData = ((Character*)local.Address)->DrawData.CustomizeData;
+        }
+        if (look is not null)
+            for (var slot = 0; slot < 10; slot++)
+                if (look.Equipment[slot] is { } model)
+                {
+                    var value = model;
+                    character->DrawData.EquipmentModelIds[slot] = *(EquipmentModelId*)&value;
+                }
         character->ModelContainer.ModelCharaId = 0;
         character->Scale = 1f;
         character->CharacterData.ModelScale = 1f;
@@ -246,6 +268,7 @@ internal sealed unsafe class TestPartnerService : IDisposable
             var character = (Character*)minion;
             character->ModelContainer.ModelCharaId = originalModel;
             character->DrawData.CustomizeData = originalCustomize;
+            for (var slot = 0; slot < 10; slot++) character->DrawData.EquipmentModelIds[slot] = originalEquipment[slot];
             character->Scale = originalScale;
             penumbra.Redraw(minionIndex);
         }

@@ -329,9 +329,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
         {
             Log.Warning(exception, "Contact IK could not start; couple animations line up the old way.");
         }
-        testPartner = new TestPartner.TestPartnerService(PluginInterface, Objects, penumbra, Log);
+        testPartner = new TestPartner.TestPartnerService(PluginInterface, Objects, penumbra, DataManager, Log);
         testPartner.Released += name =>
         {
+            LeaveTestPartnerRoom();
             measuredBodies.TryRemove(name, out _);
             measuringBodies.Remove(name);
         };
@@ -341,7 +342,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (Ik.BodyProfile.FromJson(shared.ProfileJson) is { } profile) sharedBodies[shared.DisplayName] = profile;
             else sharedBodies.TryRemove(shared.DisplayName, out _);
         };
-        contactAlign = new ContactAlignService(Objects, Targets, Log, IsRoomMemberNamed, ExecuteCommand,
+        // A test partner has no Synastry of its own, so your side always does the lining up.
+        contactAlign = new ContactAlignService(Objects, Targets, Log,
+            name => IsRoomMemberNamed(name) && !(testPartner.Active && name.Equals(testPartner.Name, StringComparison.OrdinalIgnoreCase)),
+            ExecuteCommand,
             () => configuration.LineUpPreference, TestPartnerCharacter);
         preloader = new AnimationPreloader(PluginInterface, Objects, penumbra, sync, Log);
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
@@ -1559,6 +1563,12 @@ public sealed unsafe class Plugin : IDalamudPlugin
     // ---- Test partner --------------------------------------------------------------------
 
     public bool TestPartnerActive => testPartner.Active;
+    public string TestPartnerRoomStatus =>
+        !testPartner.Active ? "" :
+        partnerSync is { IsInRoom: true } ? $"In your room as {testPartner.Name}, Free Use on." :
+        partnerJoining ? "Joining your room..." :
+        sync.IsInRoom ? "Couldn't join your room; see /xllog." : "Join or create a room and it joins you in Free Use mode.";
+    public bool TestPartnerMeasured => testPartner.Active && measuredBodies.ContainsKey(testPartner.Name);
     private long nextCollectionCheck;
     private bool hasTestPartnerCollection;
 
@@ -1581,7 +1591,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
     public string TestPartnerDescription => testPartner.Active ? $"{testPartner.Name} as {testPartner.FileName}" : "";
 
     public void LoadTestPartner(string mcdfPath) => testPartner.Load(mcdfPath);
-    public void ReleaseTestPartner() => testPartner.Release();
+    public void ReleaseTestPartner()
+    {
+        LeaveTestPartnerRoom();
+        testPartner.Release();
+    }
     public void StopTestPartner() => testPartner.StopAnimation();
 
     /// <summary>The other roles of the animation you're playing, for the test partner to take.</summary>
@@ -1603,7 +1617,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         return roles;
     }
 
-    private void PlayTestPartnerPose(NowPlayingInfo playing, PoseTarget pose)
+    private void PlayTestPartnerPose(NowPlayingInfo playing, PoseTarget pose,
+        IReadOnlyDictionary<string, List<string>>? selections = null)
     {
         var prefix = pose.Kind switch
         {
@@ -1624,8 +1639,19 @@ public sealed unsafe class Plugin : IDalamudPlugin
             return;
         }
         var start = TimelineByKey($"emote/{prefix}{pose.Index:D2}_start");
-        testPartner.Play(playing.Directory, playing.ModName, GetActivationSelections(playing.Directory),
+        testPartner.Play(playing.Directory, playing.ModName, selections ?? GetActivationSelections(playing.Directory),
             new EmotePlayback(0, loop, start, true));
+    }
+
+    private void PlayTestPartnerCommand(NowPlayingInfo playing, string command,
+        IReadOnlyDictionary<string, List<string>> selections)
+    {
+        if (!TryCreatePlayback(command, out var playback))
+        {
+            Status = $"{command} has no animation the test partner can play.";
+            return;
+        }
+        testPartner.Play(playing.Directory, playing.ModName, selections, playback);
     }
 
     private void PlayTestPartnerEmote(NowPlayingInfo playing, EmoteTarget emote)
@@ -1646,6 +1672,114 @@ public sealed unsafe class Plugin : IDalamudPlugin
             if (row.Key.ExtractText().Equals(key, StringComparison.OrdinalIgnoreCase))
                 return row.RowId <= ushort.MaxValue ? (ushort)row.RowId : (ushort)0;
         return 0;
+    }
+
+    // ---- The test partner as a room member, in Free Use mode ---------------------------------
+
+    private AnimationSyncService? partnerSync;
+    private readonly System.Collections.Concurrent.ConcurrentQueue<FreeUseDirectiveDto> partnerDirectives = new();
+    private readonly System.Collections.Concurrent.ConcurrentQueue<PlaySignalDto> partnerStarts = new();
+    private bool partnerJoining;
+    private string partnerRoom = "";
+    private string partnerProfileShared = "";
+    private Action? partnerReplay;
+
+    /// <summary>
+    /// While a test partner exists and you're in a room, it joins that room through a second relay
+    /// connection under its own name, with Free Use on, so every room feature reaches it like a second
+    /// player: Free Use picks play on the minion, it readies, and room starts restart its animation.
+    /// It shares its temporary measurements and leaves when released.
+    /// </summary>
+    private void UpdateTestPartnerRoom()
+    {
+        var room = sync.Room;
+        var wanted = testPartner.Active && room is not null && sync.IsConnected;
+        if (!wanted)
+        {
+            if (partnerSync is not null && !partnerJoining) LeaveTestPartnerRoom();
+            return;
+        }
+
+        if (!partnerJoining && !partnerRoom.Equals(room!.RoomCode, StringComparison.OrdinalIgnoreCase))
+        {
+            partnerJoining = true;
+            var code = room.RoomCode;
+            var name = testPartner.Name;
+            var fingerprints = GetCatalogFingerprints();
+            var url = EffectiveRelayUrl();
+            if (partnerSync is null)
+            {
+                var connection = new AnimationSyncService();
+                connection.FreeUseDirected += directive => partnerDirectives.Enqueue(directive);
+                connection.PlayReceived += signal => partnerStarts.Enqueue(signal);
+                partnerSync = connection;
+            }
+            TestPartner.TestPartnerRoom.Join(partnerSync, url, code, name, fingerprints).ContinueWith(task =>
+            {
+                if (task.IsCompletedSuccessfully)
+                    Log.Information("Test partner {Name} joined room {Room} in Free Use mode.", name, code);
+                else
+                    Log.Warning(task.Exception?.GetBaseException(), "The test partner couldn't join the room.");
+                partnerRoom = code;   // on failure too: releasing or a new room tries again
+                partnerProfileShared = "";
+                partnerJoining = false;
+            }, TaskScheduler.Default);
+            return;
+        }
+
+        if (partnerSync is not { IsInRoom: true } partner) return;
+
+        // Its temporary measurements, shared like any member's.
+        if (measuredBodies.TryGetValue(testPartner.Name, out var body))
+        {
+            var json = body.ToJson();
+            if (json != partnerProfileShared)
+            {
+                partnerProfileShared = json;
+                _ = partner.SetBodyProfileAsync(json);
+            }
+        }
+
+        // Free Use picks play on the minion, and it readies for the room.
+        while (partnerDirectives.TryDequeue(out var directive))
+        {
+            var directory = modCatalogKeys.FirstOrDefault(pair =>
+                pair.Value.Equals(directive.Fingerprint, StringComparison.OrdinalIgnoreCase)).Key;
+            if (string.IsNullOrWhiteSpace(directory) || !modsByDirectory.TryGetValue(directory, out var mod) ||
+                !TryResolveFreeUseTrigger(directory, directive.Trigger, out var pose, out var command, out var animationName))
+            {
+                Status = $"{testPartner.Name} couldn't play what {directive.DirectedBy} chose.";
+                continue;
+            }
+            var selections = GetActivationSelections(directory).ToDictionary(
+                pair => pair.Key, pair => pair.Value.ToList(), StringComparer.OrdinalIgnoreCase);
+            foreach (var (group, options) in directive.Options) selections[group] = options.ToList();
+            var playing = new NowPlayingInfo(directory, mod.Name, animationName);
+            Action play = pose is not null
+                ? () => PlayTestPartnerPose(playing, pose, selections)
+                : () => PlayTestPartnerCommand(playing, command!, selections);
+            play();
+            partnerReplay = play;
+            _ = partner.SetReadyAsync(directive.ModKey);
+            Status = $"{directive.DirectedBy} chose {animationName} for {testPartner.Name}.";
+        }
+
+        // The room started: restart its animation with everyone else's.
+        while (partnerStarts.TryDequeue(out _))
+            partnerReplay?.Invoke();
+    }
+
+    private void LeaveTestPartnerRoom()
+    {
+        var connection = partnerSync;
+        partnerSync = null;
+        partnerRoom = "";
+        partnerReplay = null;
+        partnerProfileShared = "";
+        while (partnerDirectives.TryDequeue(out _)) { }
+        while (partnerStarts.TryDequeue(out _)) { }
+        if (connection is null) return;
+        _ = TestPartner.TestPartnerRoom.Leave(connection);
     }
 
     private Dalamud.Game.ClientState.Objects.Types.ICharacter? TestPartnerCharacter() =>
@@ -4037,6 +4171,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (bodySyncPending) StartBodyProfileSync();
         testPartner.Tick();
         MeasureTestPartner();
+        UpdateTestPartnerRoom();
         UpdateContactIk();
         preloader.Tick();
         UpdateAnimationSpeed();
@@ -5056,6 +5191,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        LeaveTestPartnerRoom();
         testPartner.Dispose();
         contactIk?.Dispose();
         agentExecuteEmoteHook?.Dispose();
