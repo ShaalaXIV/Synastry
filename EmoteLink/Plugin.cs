@@ -26,7 +26,7 @@ using System.Diagnostics;
 
 namespace EmoteLink;
 
-public sealed unsafe class Plugin : IDalamudPlugin
+public sealed unsafe partial class Plugin : IDalamudPlugin
 {
     private const string PrimaryCommand = "/syn";
     private const string FallbackCommand = "/synastry";
@@ -356,6 +356,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
         sync.CommunityRoleLabelChanged += label => receivedCommunityRoleLabels.Enqueue(label);
         sync.AnimationSuggestionDeclined += OnAnimationSuggestionDeclined;
         sync.FreeUseDirected += directive => freeUseDirectives.Enqueue(directive);
+        sync.WizardPlanReceived += plan => incomingWizardPlans.Enqueue(plan);
+        sync.WizardRequestReceived += request => incomingWizardRequests.Enqueue(request);
         sync.StateChanged += OnSyncStateChanged;
         sync.Diagnostic += (message, exception) =>
         {
@@ -368,6 +370,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         settingsWindow = new SettingsWindow(this);
         customCommandsWindow = new CustomCommandsWindow(this);
         typedEmoteChooserWindow = new TypedEmoteChooserWindow(this);
+        wizardWindow = new WizardWindow(this);
         BuildEmoteLookup();
         try
         {
@@ -388,6 +391,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         windows.AddWindow(settingsWindow);
         windows.AddWindow(customCommandsWindow);
         windows.AddWindow(typedEmoteChooserWindow);
+        windows.AddWindow(wizardWindow);
 
         if (!configuration.HasSeenHowTo)
         {
@@ -422,6 +426,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (Regex.IsMatch(arguments, @"^\s*tutorial\s*$", RegexOptions.IgnoreCase))
         {
             OpenHowTo();
+            return;
+        }
+        if (Regex.IsMatch(arguments, @"^\s*wizard\s*$", RegexOptions.IgnoreCase))
+        {
+            OpenWizard();
             return;
         }
         var match = Regex.Match(arguments, @"^\s*join\s+([A-Za-z0-9]{4,8})\s*$", RegexOptions.IgnoreCase);
@@ -1699,7 +1708,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     /// When you ready an animation in the room, your test partner readies the other role (or the one
     /// you last picked for it in this mod) with your options, and starts with the room.
     /// </summary>
-    private void FollowWithTestPartner(string directory, string ownTrigger)
+    private void FollowWithTestPartner(string directory, string ownTrigger, string? assignedTrigger = null)
     {
         if (partnerSync is not { IsInRoom: true } || !testPartner.Active ||
             !modCatalogKeys.TryGetValue(directory, out var fingerprint) ||
@@ -1707,7 +1716,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
             !modsByDirectory.TryGetValue(directory, out var mod)) return;
         var triggers = GetDetectedPoses(directory).Select(pose => $"pose:{pose.Kind}:{pose.Index}")
             .Concat(GetDetectedEmotes(directory).Select(emote => $"emote:{emote.Id}")).ToList();
-        var trigger = partnerPick is { } pick && pick.Directory == directory && triggers.Contains(pick.Trigger) &&
+        var trigger = assignedTrigger is not null && triggers.Contains(assignedTrigger)
+            ? assignedTrigger
+            : partnerPick is { } pick && pick.Directory == directory && triggers.Contains(pick.Trigger) &&
                       !pick.Trigger.Equals(ownTrigger, StringComparison.OrdinalIgnoreCase)
             ? pick.Trigger
             : triggers.FirstOrDefault(candidate => !candidate.Equals(ownTrigger, StringComparison.OrdinalIgnoreCase)) ?? ownTrigger;
@@ -1740,7 +1751,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             var url = EffectiveRelayUrl();
             if (partnerSync is null)
             {
-                var connection = new AnimationSyncService();
+                var connection = new AnimationSyncService { AnnouncesWizard = false };
                 connection.FreeUseDirected += directive => partnerDirectives.Enqueue(directive);
                 connection.PlayReceived += signal => partnerStarts.Enqueue(signal);
                 partnerSync = connection;
@@ -2122,6 +2133,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
 
         Status = $"Packaging {name} for the room...";
+        sendingMods[directory] = 0;
         _ = Task.Run(() =>
         {
             var package = Path.Combine(Path.GetTempPath(), $"EmoteLink-{Guid.NewGuid():N}.pmp");
@@ -2142,6 +2154,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
                         : sent.PendingRecipients > 0
                             ? $"Sent {name} to {sent.PendingRecipients} room member(s)."
                             : $"Sent {name} to the room.";
+                if (sent.PendingRecipients > 0) recentlySentMods[directory] = Environment.TickCount64;
             }
             catch (Exception ex)
             {
@@ -2151,6 +2164,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             finally
             {
                 try { File.Delete(package); } catch { }
+                sendingMods.TryRemove(directory, out _);
             }
         });
     }
@@ -2657,8 +2671,11 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
             Chat.Print($"[Synastry] FREE USE: {directive.DirectedBy} chose {animationName} in {mod.Name} for you.");
             Log.Information("FREE USE: {Sender} chose {Trigger} in {ModName}.", directive.DirectedBy, directive.Trigger, mod.Name);
+            var previousRole = lastSharedRole;
             PublishDetectedTriggerSelection(directory, directive.Trigger);
-            ActivateInternal(directory, mod.Name, pose, requestedCommand: command, selectionOverride: selections);
+            if (!ActivateInternal(directory, mod.Name, pose, requestedCommand: command, selectionOverride: selections))
+                lastSharedRole = previousRole;   // the earlier Ready (if any) still stands with its old role
+            RememberControllerDirective(directive);
         }
     }
 
@@ -2692,6 +2709,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
 
     private void PublishDetectedTriggerSelection(string directory, string trigger)
     {
+        lastSharedRole = (directory, trigger);
+        roleJustShared = true;
         if (sync.IsInRoom && modSyncKeys.TryGetValue(directory, out var modKey))
             RunSync(sync.SetOptionSelectionAsync(modKey, "$detected-trigger", trigger),
                 "Shared your selected animation role with the room.");
@@ -3032,6 +3051,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (requestedPose is null && requestedCommand is null &&
             modPoses.TryGetValue(directory, out var detected) && detected.Count == 1)
             requestedPose = detected[0];
+        // Only a pick that shared its role right before this keeps the wizard's record of your role.
+        if (!roleJustShared) lastSharedRole = null;
+        roleJustShared = false;
         ClearTemporaryAssignmentsInternal(false, false);
         var collection = penumbra.GetPlayerCollection();
         if (collection is null)
@@ -3174,6 +3196,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         CarrierPlayback? carrierPlayback = null)
     {
         if (!sync.IsInRoom) return false;
+        ReadyGeneration++;
         readyStandUpGaveUp = false;
         preparedModKey = modSyncKeys.TryGetValue(directory, out var key) ? key : NormalizeModKey(modName);
         preparedCatalogFingerprint = modCatalogKeys.GetValueOrDefault(directory);
@@ -4169,7 +4192,9 @@ public sealed unsafe class Plugin : IDalamudPlugin
         Status = "Temporary animation assignments cleared.";
     }
 
-    public void ToggleAlignment()
+    public void ToggleAlignment() => AlignTo(Targets.Target ?? Targets.SoftTarget);
+
+    private void AlignTo(Dalamud.Game.ClientState.Objects.Types.IGameObject? target)
     {
         if (IsAligning)
         {
@@ -4179,7 +4204,6 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Status = "Alignment cancelled.";
             return;
         }
-        var target = Targets.Target ?? Targets.SoftTarget;
         var localPlayer = Objects.LocalPlayer;
         var player = (Character*)(localPlayer?.Address ?? 0);
         if (target is null || localPlayer is null || player is null)
@@ -4222,6 +4246,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var rotation = target.Rotation;
         var targetAddress = target.Address;
         Status = "Aligning position and facing direction...";
+        // The short walk onto their spot isn't walking away from a readied animation.
+        movementTrackingStart = Math.Max(movementTrackingStart, Environment.TickCount64 + 2600);
+        hasMovementSample = false;
+        movementFrames = 0;
         movement.WalkTo(position, () =>
         {
             alignmentTargetAddress = targetAddress;
@@ -4262,6 +4290,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ProcessCompletedDownloads();
         ProcessAddedMod();
         ProcessFreeUseDirectives();
+        ProcessWizardMessages();
         ProcessSyncPlaySignals();
         ProcessLocalAnimationSignals();
         UpdateRemotePlaybacks();
@@ -4352,6 +4381,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         }
         if (animationStarted && pendingSelectionModKey is not null)
         {
+            ForgetStartedWizardPlan(pendingSelectionModKey);
             mainWindow.NotifyAnimationStarted();
             ClearRemoteSelections(pendingSelectionModKey);
             pendingSelectionModKey = null;
@@ -4557,7 +4587,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
             activatedTrigger = existing.ActivatedTrigger;
         var suggestion = new AnimationSuggestion(memberName, modKey, mod.Directory, mod.Name, activatedTrigger);
         activeAnimationSuggestions[suggestionKey] = suggestion;
-        if (notify && !sync.IsFreeUse && !modKey.Equals(preparedModKey, StringComparison.OrdinalIgnoreCase))
+        // The controller's picks reach you as a wizard plan. Its role broadcast arrives before that
+        // plan, so this goes by who sent it rather than by WizardPlan.
+        var fromController = WizardController is { } controller &&
+                             controller.DisplayName.Equals(memberName, StringComparison.OrdinalIgnoreCase);
+        if (notify && !sync.IsFreeUse && !fromController &&
+            !modKey.Equals(preparedModKey, StringComparison.OrdinalIgnoreCase) &&
+            !modKey.Equals(WizardPlan?.ModKey, StringComparison.OrdinalIgnoreCase))
             incomingAnimationSuggestions.Enqueue(suggestion);
         Log.Information("Marked animation suggestion from {MemberName}: {ModName}.", memberName, mod.Name);
     }

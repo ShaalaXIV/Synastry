@@ -219,10 +219,17 @@ public sealed class MainWindow : Window
         var button = 30f * s;
         var right = start.X + width - 12f * s;
         var searchWidth = MathF.Min(270f * s, width * 0.28f);
-        ImGui.SetCursorScreenPos(new Vector2(right - button * 3 - 14f * s - searchWidth,
+        const string wizardLabel = "Synastry Wizard";
+        var wizardWidth = ImGui.CalcTextSize(wizardLabel).X + 34f * s;
+        var wizardX = right - button * 3 - 14f * s - wizardWidth;
+        ImGui.SetCursorScreenPos(new Vector2(wizardX - 10f * s - searchWidth,
             start.Y + (height - ImGui.GetFrameHeight()) * 0.5f));
         ImGui.SetNextItemWidth(searchWidth);
         ImGui.InputTextWithHint("##search", "Search every folder", ref search, 128);
+
+        ImGui.SetCursorScreenPos(new Vector2(wizardX, start.Y + (height - ImGui.GetFrameHeight()) * 0.5f));
+        if (IconTextButton("##wizard", wizardLabel, Theme.WandIcon)) plugin.OpenWizard();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Ready an animation with your room, step by step");
 
         ImGui.SetCursorScreenPos(new Vector2(right - button * 3 - 8f * s, start.Y + (height - button) * 0.5f));
         if (IconButton("##minimize", button, DrawMinimizeIcon)) plugin.ShowMiniPlayer();
@@ -875,7 +882,7 @@ public sealed class MainWindow : Window
         if (groups.Count > 0)
         {
             ImGui.Dummy(new Vector2(0, 4f * Theme.Scale));
-            DrawOptionGroups(mod.Directory, groups);
+            DrawOptionGroups(plugin, mod.Directory, groups);
         }
         return activated;
     }
@@ -1040,7 +1047,8 @@ public sealed class MainWindow : Window
         return clicked;
     }
 
-    private void DrawOptionGroups(string directory, IReadOnlyList<ModOptionGroup> groups)
+    /// <summary>A mod's option groups as combos and checkboxes. Shared with the Synastry Wizard.</summary>
+    internal static void DrawOptionGroups(Plugin plugin, string directory, IReadOnlyList<ModOptionGroup> groups)
     {
         var s = Theme.Scale;
         plugin.EnsureDefaultOptionSelections(directory);
@@ -1378,6 +1386,9 @@ public sealed class MainWindow : Window
     private void DrawMenuPopup()
     {
         if (!ImGui.BeginPopup("synastry-menu")) return;
+        if (ImGui.MenuItem("Synastry Wizard")) plugin.OpenWizard();
+        Tooltip("Ready an animation with your room, step by step.");
+        ImGui.Separator();
         Disabled(plugin.IsRefreshingMods, () =>
         {
             if (ImGui.MenuItem(plugin.IsRefreshingMods ? "Updating your library…" : "Refresh library"))
@@ -2099,7 +2110,7 @@ public sealed class MainWindow : Window
     private static string NoteKey(string directory, string group, string option) =>
         directory + "\n" + group + "\n" + option;
 
-    private static string PoseDisplayName(PoseTarget pose) => pose.Kind switch
+    internal static string PoseDisplayName(PoseTarget pose) => pose.Kind switch
     {
         PoseKind.Sit => $"Chair sit {pose.Index}",
         PoseKind.GroundSit => $"Ground sit {pose.Index}",

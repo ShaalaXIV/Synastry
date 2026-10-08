@@ -633,6 +633,132 @@ public sealed class AnimationHub : Hub
         await Clients.Client(targetConnectionId).SendAsync("FreeUseDirected", directive);
     }
 
+    // ---- Synastry Wizard ---------------------------------------------------------------------
+
+    /// <summary>Sent by clients that have the Synastry Wizard after creating, joining or rejoining a
+    /// room, so picks and requests only go to members who can see them.</summary>
+    public async Task<RoomStateDto> SetWizardSupport()
+    {
+        var room = GetCurrentRoom();
+        lock (room.Gate) room.Members[Context.ConnectionId].Wizard = true;
+        var state = Snapshot(room);
+        await Clients.Group(room.Code).SendAsync("RoomStateChanged", state);
+        return state;
+    }
+
+    /// <summary>
+    /// Makes the caller the room's controller, who picks the animation and everyone's role in the
+    /// Synastry Wizard; false steps down. One controller at a time: only the host can take over
+    /// from another member.
+    /// </summary>
+    public async Task<RoomStateDto> SetController(bool enabled)
+    {
+        var room = GetCurrentRoom();
+        RoomStateDto state;
+        lock (room.Gate)
+        {
+            var caller = room.Members[Context.ConnectionId];
+            if (enabled)
+            {
+                var current = room.Members.Values.FirstOrDefault(member => member.Controller && member != caller);
+                if (current is not null && !caller.IsLeader)
+                    throw new HubException($"{current.DisplayName} is already choosing for the room.");
+                foreach (var member in room.Members.Values) member.Controller = member == caller;
+                caller.Wizard = true;
+            }
+            else
+            {
+                caller.Controller = false;
+            }
+        }
+        state = Snapshot(room);
+        await Clients.Group(room.Code).SendAsync("RoomStateChanged", state);
+        return state;
+    }
+
+    /// <summary>
+    /// The controller's pick for one member: the animation and the role chosen for them. Unlike
+    /// FREE USE it isn't readied for them; they ready it themselves or ask to swap.
+    /// </summary>
+    public async Task SendWizardPlan(string targetConnectionId, FreeUseDirectionRequest request)
+    {
+        var room = GetCurrentRoom();
+        FreeUseDirectiveDto plan;
+        lock (room.Gate)
+        {
+            var sender = room.Members[Context.ConnectionId];
+            if (!sender.Controller)
+                throw new HubException("Only the member choosing for the room can send picks.");
+            if (targetConnectionId == Context.ConnectionId)
+                throw new HubException("Choose another room member.");
+            if (!room.Members.TryGetValue(targetConnectionId, out var target))
+                throw new HubException("That member is no longer in the room.");
+            if (!target.Wizard)
+                throw new HubException($"{target.DisplayName} is on an older Synastry without the wizard.");
+            var fingerprint = CleanFingerprint(request.Fingerprint);
+            if (fingerprint.Length != 64)
+                throw new HubException("A valid animation fingerprint is required.");
+            if (!target.Catalog.Contains(fingerprint))
+                throw new HubException($"{target.DisplayName} does not have this animation.");
+            var trigger = request.Trigger.Trim();
+            if (!FreeUseTrigger.IsMatch(trigger))
+                throw new HubException("Choose a pose or emote role.");
+            plan = new FreeUseDirectiveDto(
+                sender.DisplayName,
+                fingerprint,
+                CleanModKey(request.ModKey),
+                CleanDisplayMetadata(request.ModName, 160),
+                trigger,
+                CleanFreeUseOptions(request.Options));
+        }
+        await Clients.Client(targetConnectionId).SendAsync("WizardPlan", plan);
+    }
+
+    /// <summary>
+    /// A request from one member to another in the Synastry Wizard: "swap" asks the controller for a
+    /// different role, "lineup" asks a member to line up to the sender.
+    /// </summary>
+    public async Task SendWizardRequest(string targetConnectionId, string kind)
+    {
+        var room = GetCurrentRoom();
+        WizardRequestDto request;
+        lock (room.Gate)
+        {
+            var sender = room.Members[Context.ConnectionId];
+            var cleanKind = (kind ?? "").Trim().ToLowerInvariant();
+            if (cleanKind is not ("swap" or "lineup"))
+                throw new HubException("Unknown request.");
+            if (targetConnectionId == Context.ConnectionId)
+                throw new HubException("Choose another room member.");
+            if (!room.Members.TryGetValue(targetConnectionId, out var target))
+                throw new HubException("That member is no longer in the room.");
+            if (!target.Wizard)
+                throw new HubException($"{target.DisplayName} is on an older Synastry without the wizard.");
+            if (cleanKind == "swap" && !target.Controller)
+                throw new HubException($"{target.DisplayName} isn't choosing for the room.");
+            request = new WizardRequestDto(cleanKind, sender.ConnectionId, sender.DisplayName);
+        }
+        await Clients.Client(targetConnectionId).SendAsync("WizardRequest", request);
+    }
+
+    /// <summary>
+    /// The other members who don't have an animation, so the wizard can name them. Only answered for
+    /// an animation in the caller's own catalog, so nobody can probe what others have.
+    /// </summary>
+    public IReadOnlyList<string> GetMissingMembers(string fingerprint)
+    {
+        var room = GetCurrentRoom();
+        var clean = CleanFingerprint(fingerprint ?? "");
+        lock (room.Gate)
+        {
+            if (clean.Length != 64 || !room.Members[Context.ConnectionId].Catalog.Contains(clean)) return [];
+            return room.Members.Values
+                .Where(member => member.ConnectionId != Context.ConnectionId && !member.Catalog.Contains(clean))
+                .Select(member => member.ConnectionId)
+                .ToList();
+        }
+    }
+
     public async Task<RoomStateDto> RemoveMember(string connectionId)
     {
         var room = GetCurrentRoom();
@@ -680,7 +806,7 @@ public sealed class AnimationHub : Hub
             return new RoomStateDto(room.Code, room.Members.Values
                 .Select(member => new RoomMemberDto(member.ConnectionId, member.DisplayName, member.IsLeader,
                     member.Ready, member.ModKey, member.FreeUse,
-                    member.AssetPath, member.AssetsReady, member.WaitsForAssets)).ToList());
+                    member.AssetPath, member.AssetsReady, member.WaitsForAssets, member.Controller, member.Wizard)).ToList());
     }
 
     private static readonly Regex FreeUseTrigger = new(
@@ -788,6 +914,10 @@ public sealed class AnimationHub : Hub
         public bool AssetsReady { get; set; }
         // Set once the member's client takes part in preloading; older clients are never waited on.
         public bool WaitsForAssets { get; set; }
+        // Chooses the animation and everyone's role in the Synastry Wizard; one per room.
+        public bool Controller { get; set; }
+        // The member's client has the Synastry Wizard, so it understands picks and requests.
+        public bool Wizard { get; set; }
         public HashSet<string> Catalog { get; set; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, OptionSelectionDto> OptionSelections { get; } = new(StringComparer.OrdinalIgnoreCase);
         public Dictionary<string, RoleLabelDto> RoleLabels { get; } = new(StringComparer.OrdinalIgnoreCase);
@@ -808,7 +938,11 @@ public sealed record RoomMemberDto(
     bool FreeUse = false,
     string AssetPath = "",
     bool AssetsReady = false,
-    bool WaitsForAssets = false);
+    bool WaitsForAssets = false,
+    bool Controller = false,
+    bool Wizard = false);
+/// <summary>A Synastry Wizard request between members: Kind is "swap" or "lineup".</summary>
+public sealed record WizardRequestDto(string Kind, string FromConnectionId, string FromName);
 public sealed record FreeUseDirectionRequest(
     string Fingerprint,
     string ModKey,

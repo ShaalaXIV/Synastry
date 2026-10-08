@@ -42,6 +42,9 @@ public sealed class MiniPlayerWindow : Window
         // Header: name on the left, expand and close on the right.
         Theme.Label("Synastry");
         var button = 24f * s;
+        ImGui.SetCursorScreenPos(new Vector2(start.X + width - button * 3 - 8f * s, start.Y - 3f * s));
+        if (IconButton("##wizard", button, Theme.WandIcon)) plugin.OpenWizard();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Synastry Wizard");
         ImGui.SetCursorScreenPos(new Vector2(start.X + width - button * 2 - 4f * s, start.Y - 3f * s));
         if (IconButton("##expand", button, DrawExpandIcon)) plugin.ShowFullWindow();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Open the full window");

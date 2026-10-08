@@ -20,6 +20,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
     private int onlineUserCount = -1;
     private string? desiredRoomCode;
     private bool desiredFreeUse;
+    private bool desiredController;
     private string desiredDisplayName = "Player";
     private string desiredLocalScope = "";
     private uint desiredHomeWorldId;
@@ -37,6 +38,10 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public event Action<CommunityRoleLabelDto>? CommunityRoleLabelChanged;
     public event Action<AnimationSuggestionDeclinedDto>? AnimationSuggestionDeclined;
     public event Action<FreeUseDirectiveDto>? FreeUseDirected;
+    /// <summary>The Synastry Wizard controller's pick for you (animation and role); you ready it.</summary>
+    public event Action<FreeUseDirectiveDto>? WizardPlanReceived;
+    /// <summary>A Synastry Wizard request from another member ("swap" or "lineup").</summary>
+    public event Action<WizardRequestDto>? WizardRequestReceived;
     public string Status { get; private set; } = "Disconnected";
     public bool IsConnected => connection?.State == HubConnectionState.Connected;
     public int? OnlineUserCount => Volatile.Read(ref onlineUserCount) is var count && count >= 0 ? count : null;
@@ -56,6 +61,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public async Task ConnectAsync(string baseUrl)
     {
         await DisconnectAsync();
+        RelaySupportsWizard = true;
         Status = "Connecting...";
         relayBaseUrl = baseUrl.Trim().TrimEnd('/');
         Notify();
@@ -83,6 +89,8 @@ public sealed class AnimationSyncService : IAsyncDisposable
         hub.On<AnimationSuggestionDeclinedDto>("AnimationSuggestionDeclined",
             decline => AnimationSuggestionDeclined?.Invoke(decline));
         hub.On<FreeUseDirectiveDto>("FreeUseDirected", directive => FreeUseDirected?.Invoke(directive));
+        hub.On<FreeUseDirectiveDto>("WizardPlan", plan => WizardPlanReceived?.Invoke(plan));
+        hub.On<WizardRequestDto>("WizardRequest", request => WizardRequestReceived?.Invoke(request));
         hub.On<string>("RemovedFromRoom", reason =>
         {
             lock (gate)
@@ -90,6 +98,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
                 Volatile.Write(ref room, null);
                 desiredRoomCode = null;
                 desiredFreeUse = false;
+                desiredController = false;
                 Volatile.Write(ref matchCounts, EmptyMatchCounts);
             }
             Status = reason;
@@ -107,6 +116,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         hub.Reconnected += async connectionId =>
         {
             if (!ReferenceEquals(connection, hub)) return;
+            RelaySupportsWizard = true;   // a reconnect may reach an upgraded relay; check again
             Diagnostic?.Invoke($"Relay reconnected with connection ID {connectionId ?? "unknown"}.", null);
             await RefreshOnlineUserCountAsync(hub);
             await RecoverRoomAsync(hub);
@@ -146,8 +156,16 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public async Task<RoomStateDto> CreateRoomAsync(string displayName, IReadOnlyList<string> fingerprints)
     {
         var state = await RequireConnection().InvokeAsync<RoomStateDto>("CreateRoom", displayName);
-        lock (gate) { desiredRoomCode = state.RoomCode; desiredDisplayName = CleanDisplayName(displayName); }
+        lock (gate)
+        {
+            desiredRoomCode = state.RoomCode;
+            desiredDisplayName = CleanDisplayName(displayName);
+            // A new room starts you as neither controller nor in FREE USE.
+            desiredController = false;
+            desiredFreeUse = false;
+        }
         UpdateRoom(state);
+        await AnnounceWizardAsync(RequireConnection());
         await SetCatalogAsync(fingerprints);
         return state;
     }
@@ -155,8 +173,16 @@ public sealed class AnimationSyncService : IAsyncDisposable
     public async Task<RoomStateDto> JoinRoomAsync(string code, string displayName, IReadOnlyList<string> fingerprints)
     {
         var state = await RequireConnection().InvokeAsync<RoomStateDto>("JoinRoom", code, displayName);
-        lock (gate) { desiredRoomCode = state.RoomCode; desiredDisplayName = CleanDisplayName(displayName); }
+        lock (gate)
+        {
+            desiredRoomCode = state.RoomCode;
+            desiredDisplayName = CleanDisplayName(displayName);
+            // Joining another room starts you as neither controller nor in FREE USE there.
+            desiredController = false;
+            desiredFreeUse = false;
+        }
         UpdateRoom(state);
+        await AnnounceWizardAsync(RequireConnection());
         await SetCatalogAsync(fingerprints);
         return state;
     }
@@ -431,6 +457,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         {
             desiredRoomCode = null;
             desiredFreeUse = false;
+            desiredController = false;
         }
         if (connection?.State == HubConnectionState.Connected) await connection.InvokeAsync("LeaveRoom");
         Volatile.Write(ref room, null);
@@ -536,6 +563,108 @@ public sealed class AnimationSyncService : IAsyncDisposable
         }
     }
 
+    // ---- Synastry Wizard ---------------------------------------------------------------------
+
+    /// <summary>False once the relay turns out to predate the Synastry Wizard (controller, picks,
+    /// requests and naming who's missing an animation). Checked again on the next connection.</summary>
+    public bool RelaySupportsWizard { get; private set; } = true;
+
+    /// <summary>Whether this connection tells rooms it has the Synastry Wizard. Off for the test
+    /// partner's connection, which can't act on picks or requests.</summary>
+    public bool AnnouncesWizard { get; init; } = true;
+
+    /// <summary>Tells the room this client has the Synastry Wizard, so picks and requests reach it.</summary>
+    private async Task AnnounceWizardAsync(HubConnection hub)
+    {
+        if (!AnnouncesWizard || !RelaySupportsWizard) return;
+        try
+        {
+            UpdateRoom(await hub.InvokeAsync<RoomStateDto>("SetWizardSupport"));
+        }
+        catch (HubException exception) when (IsMissingHubMethod(exception))
+        {
+            RelaySupportsWizard = false;
+        }
+        catch (Exception exception)
+        {
+            Diagnostic?.Invoke("Could not tell the room this client has the Synastry Wizard.", exception);
+        }
+    }
+
+    public async Task SetControllerAsync(bool enabled)
+    {
+        RoomStateDto state;
+        try
+        {
+            state = await RequireConnection().InvokeAsync<RoomStateDto>("SetController", enabled);
+        }
+        catch (HubException exception) when (IsMissingHubMethod(exception))
+        {
+            RelaySupportsWizard = false;
+            throw new InvalidOperationException("The relay doesn't support choosing for the room yet.", exception);
+        }
+        catch (HubException exception)
+        {
+            throw new InvalidOperationException(RelayMessage(exception), exception);
+        }
+        lock (gate) desiredController = enabled;
+        UpdateRoom(state);
+    }
+
+    public async Task SendWizardPlanAsync(string targetConnectionId, FreeUseDirectionRequest request)
+    {
+        try
+        {
+            await RequireConnection().InvokeAsync("SendWizardPlan", targetConnectionId, request);
+        }
+        catch (HubException exception) when (IsMissingHubMethod(exception))
+        {
+            RelaySupportsWizard = false;
+            throw new InvalidOperationException("The relay doesn't support choosing for the room yet.", exception);
+        }
+        catch (HubException exception)
+        {
+            throw new InvalidOperationException(RelayMessage(exception), exception);
+        }
+    }
+
+    public async Task SendWizardRequestAsync(string targetConnectionId, string kind)
+    {
+        try
+        {
+            await RequireConnection().InvokeAsync("SendWizardRequest", targetConnectionId, kind);
+        }
+        catch (HubException exception) when (IsMissingHubMethod(exception))
+        {
+            RelaySupportsWizard = false;
+            throw new InvalidOperationException("The relay doesn't support wizard requests yet.", exception);
+        }
+        catch (HubException exception)
+        {
+            throw new InvalidOperationException(RelayMessage(exception), exception);
+        }
+    }
+
+    /// <summary>Connection ids of the other members missing an animation you have, or null when the
+    /// relay can't say (an older relay, or not connected).</summary>
+    public async Task<IReadOnlyList<string>?> GetMissingMembersAsync(string fingerprint)
+    {
+        if (!RelaySupportsWizard || !IsInRoom || connection?.State != HubConnectionState.Connected) return null;
+        try
+        {
+            return await connection.InvokeAsync<List<string>>("GetMissingMembers", CleanFingerprint(fingerprint));
+        }
+        catch (HubException exception) when (IsMissingHubMethod(exception))
+        {
+            RelaySupportsWizard = false;
+            return null;
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
     // SignalR wraps a relay refusal as "An unexpected error occurred invoking ... HubException: reason".
     private static string RelayMessage(HubException exception)
     {
@@ -570,6 +699,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         {
             desiredRoomCode = null;
             desiredFreeUse = false;
+            desiredController = false;
         }
         Volatile.Write(ref room, null);
         Volatile.Write(ref matchCounts, EmptyMatchCounts);
@@ -590,6 +720,10 @@ public sealed class AnimationSyncService : IAsyncDisposable
     private void UpdateRoom(RoomStateDto state)
     {
         Volatile.Write(ref room, state);
+        // Follow changes others make to your role (a host taking over), so a reconnect only resumes
+        // choosing for the room if you still were when the link dropped.
+        if (connection?.ConnectionId is { } me && state.Members.FirstOrDefault(member => member.ConnectionId == me) is { } self)
+            lock (gate) desiredController = self.Controller;
         Status = $"Room {state.RoomCode}";
         Notify();
     }
@@ -600,6 +734,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
         string displayName;
         IReadOnlyList<string> fingerprints;
         bool freeUse;
+        bool controller;
         lock (gate)
         {
             Volatile.Write(ref room, null);
@@ -608,6 +743,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
             displayName = desiredDisplayName;
             fingerprints = catalog;
             freeUse = desiredFreeUse;
+            controller = desiredController;
         }
 
         if (code is null)
@@ -624,8 +760,21 @@ public sealed class AnimationSyncService : IAsyncDisposable
             var state = await hub.InvokeAsync<RoomStateDto>("JoinRoom", code, displayName);
             if (!ReferenceEquals(connection, hub)) return;
             UpdateRoom(state);
+            await AnnounceWizardAsync(hub);
             await hub.InvokeAsync("SetCatalog", fingerprints);
+            // The relay only tells the others; fetch this side's counts again too.
+            await RefreshMatchCountsAsync();
             if (freeUse) UpdateRoom(await hub.InvokeAsync<RoomStateDto>("SetFreeUse", true));
+            if (controller)
+            {
+                // Choosing for the room again; someone may have taken over meanwhile, which is fine.
+                try { UpdateRoom(await hub.InvokeAsync<RoomStateDto>("SetController", true)); }
+                catch (Exception exception)
+                {
+                    lock (gate) desiredController = false;
+                    Diagnostic?.Invoke("Could not choose for the room again after reconnecting.", exception);
+                }
+            }
             Diagnostic?.Invoke($"Automatically rejoined room {code} after reconnecting.", null);
         }
         catch (Exception exception)
@@ -635,6 +784,7 @@ public sealed class AnimationSyncService : IAsyncDisposable
             {
                 desiredRoomCode = null;
                 desiredFreeUse = false;
+                desiredController = false;
             }
             Status = $"Reconnected, but room {code} could not be rejoined: {exception.GetBaseException().Message}";
             Diagnostic?.Invoke($"Could not automatically rejoin room {code}.", exception);
@@ -716,7 +866,11 @@ public sealed record RoomMemberDto(
     bool FreeUse = false,
     string AssetPath = "",
     bool AssetsReady = false,
-    bool WaitsForAssets = false);
+    bool WaitsForAssets = false,
+    bool Controller = false,
+    bool Wizard = false);
+/// <summary>A Synastry Wizard request between members: Kind is "swap" or "lineup".</summary>
+public sealed record WizardRequestDto(string Kind, string FromConnectionId, string FromName);
 public sealed record FreeUseDirectionRequest(
     string Fingerprint,
     string ModKey,

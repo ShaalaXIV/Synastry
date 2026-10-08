@@ -361,6 +361,16 @@ internal static class Theme
         }
     }
 
+    /// <summary>A small wand with a sparkle, for the Synastry Wizard buttons.</summary>
+    public static void WandIcon(ImDrawListPtr draw, Vector2 center, uint color)
+    {
+        var s = Scale;
+        draw.AddLine(center + new Vector2(-5.5f, 5.5f) * s, center + new Vector2(1.5f, -1.5f) * s, color, 1.6f * s);
+        var star = center + new Vector2(3.5f, -3.5f) * s;
+        draw.AddLine(star + new Vector2(0, -3f) * s, star + new Vector2(0, 3f) * s, color, 1.2f * s);
+        draw.AddLine(star + new Vector2(-3f, 0) * s, star + new Vector2(3f, 0) * s, color, 1.2f * s);
+    }
+
     public static void Dot(ImDrawListPtr draw, Vector2 center, Vector4 color, bool filled)
     {
         var radius = 4f * Scale;
