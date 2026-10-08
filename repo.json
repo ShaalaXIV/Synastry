@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.95.0",
+    "AssemblyVersion": "1.0.96.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -18,9 +18,9 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.95/Synastry-1.0.95.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.95/Synastry-1.0.95.zip",
-    "Changelog": "Rooms start together: seated and picking a standing animation, you stand up first and then get marked ready, so everyone starts on the same countdown. Going from a seat to a standing animation stands you up first everywhere.",
-    "LastUpdate": "1791434822"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.96/Synastry-1.0.96.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.96/Synastry-1.0.96.zip",
+    "Changelog": "New: the Synastry Wizard (button in the header, the menu, the mini player, or /syn wizard). Pick an animation everyone has (or send it), pick roles, line up, and ready together. One person can choose for the room; the others ready with one click or ask to swap.",
+    "LastUpdate": "1791439797"
   }
 ]
