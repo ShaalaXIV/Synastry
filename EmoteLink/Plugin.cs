@@ -3128,7 +3128,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             ScheduleCarrierPlayback(carrier, conversion.ChangedFiles ? 650 : 300);
             if (sync.IsConnected && modCatalogKeys.TryGetValue(directory, out var convertedFingerprint) &&
                 convertedFingerprint.Length == 64)
-                _ = BroadcastLocalPlaybackAsync(convertedFingerprint, playback, pendingCommandTime);
+                pendingNearbyBroadcast = (convertedFingerprint, playback);
             return true;
         }
 
@@ -3161,7 +3161,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (allowGroupPlay && PrepareForGroupPlay(directory, name, null, null, playback)) return true;
         ScheduleDirectPlayback(name, Objects.LocalPlayer?.Address ?? 0, playback, 300);
         if (sync.IsConnected && modCatalogKeys.TryGetValue(directory, out var fingerprint) && fingerprint.Length == 64)
-            _ = BroadcastLocalPlaybackAsync(fingerprint, playback, pendingCommandTime);
+            pendingNearbyBroadcast = (fingerprint, playback);
         return true;
     }
 
@@ -3208,6 +3208,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void SchedulePose(string modName, PoseTarget pose, int delayMs)
     {
         Status = $"Activated {modName}; switching to {PoseLabel(pose)}.";
+        NewStartScheduled();
         pendingPose = pose;
         pendingCommandTime = Environment.TickCount64 + delayMs;
     }
@@ -3215,6 +3216,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void ScheduleCommand(string modName, string command, int delayMs)
     {
         Status = $"Activated {modName}; starting {command}.";
+        NewStartScheduled();
         pendingCommand = command;
         pendingCommandTime = Environment.TickCount64 + delayMs;
     }
@@ -3222,6 +3224,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void ScheduleDirectPlayback(string modName, nint actorAddress, EmotePlayback playback, long delayMs)
     {
         Status = $"Activated {modName}; starting its native timeline.";
+        NewStartScheduled();
         pendingDirectPlayback = new PendingDirectPlayback(actorAddress, playback, modName);
         pendingCommandTime = Environment.TickCount64 + delayMs;
     }
@@ -3229,6 +3232,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private void ScheduleCarrierPlayback(CarrierPlayback playback, long delayMs)
     {
         var startAt = Environment.TickCount64 + delayMs;
+        NewStartScheduled();
         pendingCarrierPlayback = new PendingCarrierPlayback(playback, startAt, startAt + 600);
         pendingCommandTime = startAt;
         Status = $"Activated {playback.ModName}; starting its permanent carrier {playback.Command}.";
@@ -4120,6 +4124,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         pendingDirectPlayback = null;
         pendingCarrierPlayback = null;
         pendingPose = null;
+        pendingNearbyBroadcast = null;
         pendingSelectionModKey = null;
         lobbyEmoteRefreshTime = 0;
         cyclingPose = null;
@@ -4235,6 +4240,16 @@ public sealed unsafe class Plugin : IDalamudPlugin
         ProcessLocalAnimationSignals();
         UpdateRemotePlaybacks();
         var animationStarted = false;
+        var standingUp = StandUpFirst();
+        if (!standingUp && pendingNearbyBroadcast is { } nearby)
+        {
+            pendingNearbyBroadcast = null;
+            // Only announce a start that is still going to happen.
+            if (pendingDirectPlayback is not null || pendingCarrierPlayback is not null)
+                AnnounceToNearby(nearby.Fingerprint, nearby.Playback, pendingCarrierPlayback?.NextAttempt ?? pendingCommandTime);
+        }
+        if (!standingUp)
+        {
         if (pendingPose is not null && Environment.TickCount64 >= pendingCommandTime)
         {
             var pose = pendingPose;
@@ -4295,6 +4310,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
             {
                 Status = $"Could not start {pending.ModName}'s action timeline.";
             }
+        }
         }
         if (animationStarted)
         {
@@ -5041,9 +5057,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     Objects.LocalPlayer?.Address ?? 0,
                     preparedDirectPlayback,
                     "group animation");
+            NewStartScheduled();
             if (preparedDirectPlayback is not null &&
                 preparedCatalogFingerprint is { Length: 64 } fingerprint)
-                _ = BroadcastLocalPlaybackAsync(fingerprint, preparedDirectPlayback, pendingCommandTime);
+                pendingNearbyBroadcast = (fingerprint, preparedDirectPlayback);
             pendingSelectionModKey = signal.ModKey;
             lobbyEmoteRefreshTime = 0;
             Status = $"Group ready. Starting in {delay / 1000f:F1}s.";
@@ -5152,6 +5169,203 @@ public sealed unsafe class Plugin : IDalamudPlugin
             case PoseKind.Idle: BeginPoseCycling(pose, 150); break;
         }
         if (pose.Kind != PoseKind.Idle) BeginPoseCycling(pose, 500);
+    }
+
+    // ---- Standing up before a standing animation ------------------------------------------
+
+    private const int StandUpTimeoutMs = 6000;
+    private const int StandUpRetryMs = 2500;
+    private const int StandUpSettleMs = 250;
+    private long standUpStartedAt;
+    private long standUpCommandAt;
+    private long standUpSettledAt;
+    private PoseKind? standUpFrom;
+    /// <summary>Set when getting up timed out, so the same start doesn't keep trying.</summary>
+    private bool standUpGaveUp;
+    private (string Fingerprint, EmotePlayback Playback)? pendingNearbyBroadcast;
+
+    private void AnnounceToNearby(string fingerprint, EmotePlayback playback, long startAt) =>
+        _ = BroadcastLocalPlaybackAsync(fingerprint, playback, startAt);
+
+    /// <summary>A new start was scheduled: it gets its own try at standing up, and nearby players are
+    /// told about it, not a start it replaced.</summary>
+    private void NewStartScheduled()
+    {
+        standUpGaveUp = false;
+        pendingNearbyBroadcast = null;
+        needsToStandFor = null;
+    }
+
+    /// <summary>The answer for the current start in one seat, so waiting seated doesn't ask Penumbra every frame.</summary>
+    private (PoseKind Seat, bool Needs)? needsToStandFor;
+
+    /// <summary>
+    /// An emote or standing pose won't start from a seat, and a seat's own command (/sit, /groundsit,
+    /// /doze) stands you up from it. So when something standing is about to play while you're seated,
+    /// this stands you up first and holds the start until you're on your feet. A room start does the
+    /// same during its countdown. True while it is holding the start back.
+    /// </summary>
+    private bool StandUpFirst()
+    {
+        var now = Environment.TickCount64;
+        if (pendingCommand is null && pendingCarrierPlayback is null && pendingDirectPlayback is null && pendingPose is null)
+        {
+            standUpStartedAt = 0;
+            standUpGaveUp = false;
+            needsToStandFor = null;
+            return false;
+        }
+        var seat = poses.CurrentKind();
+        var seated = seat is PoseKind.Sit or PoseKind.GroundSit or PoseKind.Doze;
+        if (standUpStartedAt == 0)
+        {
+            if (standUpGaveUp || !seated) return false;
+            if (needsToStandFor is not { } known || known.Seat != seat)
+                needsToStandFor = known = (seat!.Value, NeedsToStand(seat!.Value));
+            if (!known.Needs) return false;
+            standUpStartedAt = now;
+            StandUpFrom(seat!.Value, now);
+            return true;
+        }
+
+        // Getting up moves you off the seat; that isn't walking away from the animation.
+        movementTrackingStart = Math.Max(movementTrackingStart, now + 1500);
+        hasMovementSample = false;
+        movementFrames = 0;
+        if (now - standUpStartedAt > StandUpTimeoutMs)
+        {
+            Status = "Couldn't stand up first; starting anyway.";
+            ReleaseStandUp(now);
+            standUpGaveUp = true;
+            return false;
+        }
+        if (seated)
+        {
+            // A chair doze gets up into the chair: stand up from that too. Same seat for a while
+            // means the command didn't take (it landed mid-transition), so try once more.
+            if (seat != standUpFrom || now - standUpCommandAt > StandUpRetryMs)
+            {
+                // A new pick can replace what started this (activation clears and reschedules in
+                // one call): only stand up again if what's pending now still needs it.
+                if (!NeedsToStand(seat!.Value))
+                {
+                    ReleaseStandUp(now);
+                    return false;
+                }
+                StandUpFrom(seat!.Value, now);
+            }
+            standUpSettledAt = 0;
+            return true;
+        }
+        var player = (Character*)(Objects.LocalPlayer?.Address ?? 0);
+        if (player is null || player->Mode != CharacterModes.Normal)
+        {
+            standUpSettledAt = 0;
+            return true;
+        }
+        if (standUpSettledAt == 0) standUpSettledAt = now;
+        if (now - standUpSettledAt < StandUpSettleMs) return true;
+        ReleaseStandUp(now);
+        return false;
+    }
+
+    private void StandUpFrom(PoseKind seat, long now)
+    {
+        ExecuteCommand(seat switch
+        {
+            PoseKind.GroundSit => "/groundsit",
+            PoseKind.Doze => "/doze",
+            _ => "/sit"
+        });
+        standUpFrom = seat;
+        standUpCommandAt = now;
+        standUpSettledAt = 0;
+        Status = "Standing up first...";
+    }
+
+    /// <summary>On your feet: a carrier's retry window restarts so the wait doesn't use it up.</summary>
+    private void ReleaseStandUp(long now)
+    {
+        standUpStartedAt = 0;
+        standUpFrom = null;
+        standUpSettledAt = 0;
+        if (pendingCarrierPlayback is { } carrier)
+            pendingCarrierPlayback = carrier with
+            {
+                NextAttempt = Math.Max(carrier.NextAttempt, now),
+                Deadline = Math.Max(carrier.Deadline, Math.Max(carrier.NextAttempt, now) + 600)
+            };
+    }
+
+    /// <summary>
+    /// Whether what's about to play needs you standing when you're in <paramref name="seat"/>. A
+    /// standing pose does; another seat doesn't. An emote does, unless it is a seat itself or the
+    /// animation replaces the version the game plays in this seat (slot 2 on the ground, slot 3 in a
+    /// chair): then it was made to be played seated.
+    /// </summary>
+    private bool NeedsToStand(PoseKind seat)
+    {
+        if (pendingPose is { } pose) return pose.Kind == PoseKind.Idle;
+        uint emoteId;
+        if (pendingCarrierPlayback is { } carrier) emoteId = carrier.Playback.EmoteId;
+        else if (pendingDirectPlayback is { } direct) emoteId = direct.Playback.EmoteId;
+        else if (pendingCommand is { } command && emotePlaybackByCommand.TryGetValue(command, out var info)) emoteId = info.EmoteId;
+        else return false;   // a command that isn't an emote: leave it to the game
+        if (emoteId == 0) return true;   // a bare standing timeline
+        if (DataManager.GetExcelSheet<Lumina.Excel.Sheets.Emote>()?.GetRowOrDefault(emoteId) is not { } emote) return false;
+        if (emote.EmoteMode.RowId is 1 or 2 or 3) return false;
+        var slot = seat switch { PoseKind.GroundSit => 2, PoseKind.Sit => 3, PoseKind.Doze => 5, _ => -1 };
+        if (slot < 0 || slot >= emote.ActionTimeline.Count) return true;
+        var seatedVersion = emote.ActionTimeline[slot];
+        if (seatedVersion.RowId == 0 || seatedVersion.ValueNullable is not { } timeline) return true;
+        // The game plays the same timeline in this seat as standing (every facial expression does).
+        if (seatedVersion.RowId == emote.ActionTimeline[0].RowId) return false;
+        // Direct playback plays its own main timeline whatever the seat, never the seated version.
+        if (pendingCarrierPlayback is null && pendingDirectPlayback is { } directPlay &&
+            directPlay.Playback.MainTimeline != seatedVersion.RowId)
+            return true;
+        return !IsReplacedForYou(timeline.Key.ExtractText());
+    }
+
+    /// <summary>
+    /// Whether the animation Synastry is playing for you replaces this timeline. Another mod's seated
+    /// version doesn't count: that isn't the animation you picked.
+    /// </summary>
+    private bool IsReplacedForYou(string timelineKey)
+    {
+        if (string.IsNullOrWhiteSpace(timelineKey)) return false;
+        var root = penumbra.GetModRoot();
+        var collection = penumbra.GetPlayerCollection();
+        if (string.IsNullOrWhiteSpace(root) || collection is null) return false;
+        var owners = configuration.ActiveAssignments
+            .Where(assignment => assignment.CollectionId == collection.Value.Id && !remoteAssignments.Contains(assignment))
+            .Select(assignment => Path.TrimEndingDirectorySeparator(Path.GetFullPath(Path.Combine(root, assignment.ModDirectory))) +
+                                  Path.DirectorySeparatorChar)
+            .ToList();
+        if (owners.Count == 0) return false;
+        var character = (Character*)(Objects.LocalPlayer?.Address ?? 0);
+        ushort race = 101;
+        if (character is not null && character->DrawObject is not null &&
+            character->DrawObject->GetObjectType() == ObjectType.CharacterBase &&
+            ((CharacterBase*)character->DrawObject)->GetModelType() == CharacterBase.ModelType.Human)
+            race = ((Human*)character->DrawObject)->RaceSexId;
+        // The game falls back to the base race's file when a race has none of its own.
+        var races = new List<ushort> { race };
+        if (race / 100 % 2 == 0 && race != 201) races.Add(201);
+        if (race != 101) races.Add(101);
+        foreach (var candidate in races)
+        {
+            var gamePath = $"chara/human/c{candidate:D4}/animation/a0001/bt_common/{timelineKey}.pap";
+            bool exists;
+            try { exists = DataManager.FileExists(gamePath); }
+            catch { exists = false; }
+            if (!exists) continue;   // the game skips a race with no file of its own; a redirect there never loads
+            var file = penumbra.ResolvePlayerPath(gamePath);
+            if (string.IsNullOrWhiteSpace(file) || !Path.IsPathRooted(file)) return false;
+            var full = Path.GetFullPath(file);
+            return owners.Any(owner => full.StartsWith(owner, StringComparison.OrdinalIgnoreCase));
+        }
+        return false;
     }
 
     private void BeginPoseCycling(PoseTarget pose, int delayMs)
