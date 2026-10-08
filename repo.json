@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.93.0",
+    "AssemblyVersion": "1.0.94.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -18,9 +18,9 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.93/Synastry-1.0.93.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.93/Synastry-1.0.93.zip",
-    "Changelog": "Test partner now takes the character file's race, face, hair and body instead of yours. Switch your role and the test partner switches to the other one, no release needed.",
-    "LastUpdate": "1791142030"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.94/Synastry-1.0.94.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.94/Synastry-1.0.94.zip",
+    "Changelog": "Going from a sit, ground sit or doze to a standing animation now stands you up first, then starts it, everywhere. Animations made to be played seated, and facial expressions, still play in your seat.",
+    "LastUpdate": "1791432970"
   }
 ]
