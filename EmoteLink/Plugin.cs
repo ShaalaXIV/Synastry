@@ -3174,12 +3174,38 @@ public sealed unsafe class Plugin : IDalamudPlugin
         CarrierPlayback? carrierPlayback = null)
     {
         if (!sync.IsInRoom) return false;
+        readyStandUpGaveUp = false;
         preparedModKey = modSyncKeys.TryGetValue(directory, out var key) ? key : NormalizeModKey(modName);
         preparedCatalogFingerprint = modCatalogKeys.GetValueOrDefault(directory);
         preparedCommand = command;
         preparedPose = pose;
         preparedDirectPlayback = directPlayback;
         preparedCarrierPlayback = carrierPlayback;
+
+        // Seated and readying something standing: get up first and only then tell the room, so the
+        // room's start finds everyone on their feet and you all start together.
+        var seat = poses.CurrentKind();
+        var seated = seat is PoseKind.Sit or PoseKind.GroundSit or PoseKind.Doze;
+        if (standUpStartedAt != 0 || (seated && PreparedStart() is { } prepared && NeedsToStand(seat!.Value, prepared)))
+        {
+            readyAfterStandUp = true;
+            readyAfterStandUpModName = modName;
+            // Withdraw an earlier Ready so the room can't start on that pick while you get up.
+            _ = sync.CancelReadyAsync().ContinueWith(task =>
+                    Log.Warning(task.Exception!.GetBaseException(), "Could not withdraw readiness before standing up."),
+                TaskContinuationOptions.OnlyOnFaulted);
+            if (standUpStartedAt == 0)
+            {
+                var now = Environment.TickCount64;
+                standUpStartedAt = now;
+                standUpGaveUp = false;
+                StandUpFrom(seat!.Value, now);
+            }
+            Status = $"Standing up, then readying {modName}...";
+            return true;
+        }
+        readyAfterStandUp = false;
+
         Status = $"Prepared {modName}; waiting for everyone in room {sync.Room!.RoomCode}.";
         var assetPath = WarmUpPreparedAnimation(command, directPlayback, carrierPlayback);
         RunSync(sync.ReadyWithAssetAsync(preparedModKey, assetPath), $"Ready with {modName}; waiting for the group.");
@@ -5058,6 +5084,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
                     preparedDirectPlayback,
                     "group animation");
             NewStartScheduled();
+            standUpGaveUp = readyStandUpGaveUp;   // already tried before the Ready: start on the countdown
+            readyStandUpGaveUp = false;
             if (preparedDirectPlayback is not null &&
                 preparedCatalogFingerprint is { Length: 64 } fingerprint)
                 pendingNearbyBroadcast = (fingerprint, preparedDirectPlayback);
@@ -5182,6 +5210,38 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private PoseKind? standUpFrom;
     /// <summary>Set when getting up timed out, so the same start doesn't keep trying.</summary>
     private bool standUpGaveUp;
+    /// <summary>A room Ready waiting on the stand-up: sent once you're on your feet.</summary>
+    private bool readyAfterStandUp;
+    private string readyAfterStandUpModName = "";
+    /// <summary>The stand-up before Ready timed out: the room start of that same pick doesn't try again.</summary>
+    private bool readyStandUpGaveUp;
+
+    /// <summary>Something about to play: a pose, an emote command, a carrier emote or a direct timeline.</summary>
+    private sealed record StartItem(PoseTarget? Pose, string? Command, CarrierPlayback? Carrier, EmotePlayback? Direct);
+
+    private StartItem? PendingStart() =>
+        pendingCommand is null && pendingCarrierPlayback is null && pendingDirectPlayback is null && pendingPose is null
+            ? null
+            : new StartItem(pendingPose, pendingCommand, pendingCarrierPlayback?.Playback,
+                pendingCarrierPlayback is null ? pendingDirectPlayback?.Playback : null);
+
+    /// <summary>What the room start will play (the same pick ProcessSyncPlaySignals makes).</summary>
+    private StartItem? PreparedStart() =>
+        preparedModKey is null
+            ? null
+            : new StartItem(preparedPose, preparedCommand, preparedCarrierPlayback,
+                preparedCarrierPlayback is null ? preparedDirectPlayback : null);
+
+    /// <summary>On your feet (or given up): send the Ready that was waiting for it.</summary>
+    private void FinishReadyAfterStandUp()
+    {
+        if (!readyAfterStandUp) return;
+        readyAfterStandUp = false;
+        if (preparedModKey is not { } modKey || !sync.IsInRoom) return;
+        Status = $"Prepared {readyAfterStandUpModName}; waiting for everyone in room {sync.Room?.RoomCode}.";
+        var assetPath = WarmUpPreparedAnimation(preparedCommand, preparedDirectPlayback, preparedCarrierPlayback);
+        RunSync(sync.ReadyWithAssetAsync(modKey, assetPath), $"Ready with {readyAfterStandUpModName}; waiting for the group.");
+    }
     private (string Fingerprint, EmotePlayback Playback)? pendingNearbyBroadcast;
 
     private void AnnounceToNearby(string fingerprint, EmotePlayback playback, long startAt) =>
@@ -5208,7 +5268,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
     private bool StandUpFirst()
     {
         var now = Environment.TickCount64;
-        if (pendingCommand is null && pendingCarrierPlayback is null && pendingDirectPlayback is null && pendingPose is null)
+        if (readyAfterStandUp && preparedModKey is null) readyAfterStandUp = false;   // that Ready was cancelled
+        var start = PendingStart();
+        var target = start ?? (readyAfterStandUp ? PreparedStart() : null);
+        if (target is null)
         {
             standUpStartedAt = 0;
             standUpGaveUp = false;
@@ -5219,9 +5282,15 @@ public sealed unsafe class Plugin : IDalamudPlugin
         var seated = seat is PoseKind.Sit or PoseKind.GroundSit or PoseKind.Doze;
         if (standUpStartedAt == 0)
         {
+            if (start is null)
+            {
+                // A Ready only waits on a stand-up it started; nothing to wait for.
+                FinishReadyAfterStandUp();
+                return false;
+            }
             if (standUpGaveUp || !seated) return false;
             if (needsToStandFor is not { } known || known.Seat != seat)
-                needsToStandFor = known = (seat!.Value, NeedsToStand(seat!.Value));
+                needsToStandFor = known = (seat!.Value, NeedsToStand(seat!.Value, start));
             if (!known.Needs) return false;
             standUpStartedAt = now;
             StandUpFrom(seat!.Value, now);
@@ -5237,6 +5306,8 @@ public sealed unsafe class Plugin : IDalamudPlugin
             Status = "Couldn't stand up first; starting anyway.";
             ReleaseStandUp(now);
             standUpGaveUp = true;
+            if (start is null && readyAfterStandUp) readyStandUpGaveUp = true;
+            FinishReadyAfterStandUp();
             return false;
         }
         if (seated)
@@ -5247,9 +5318,10 @@ public sealed unsafe class Plugin : IDalamudPlugin
             {
                 // A new pick can replace what started this (activation clears and reschedules in
                 // one call): only stand up again if what's pending now still needs it.
-                if (!NeedsToStand(seat!.Value))
+                if (!NeedsToStand(seat!.Value, target))
                 {
                     ReleaseStandUp(now);
+                    FinishReadyAfterStandUp();
                     return false;
                 }
                 StandUpFrom(seat!.Value, now);
@@ -5266,6 +5338,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         if (standUpSettledAt == 0) standUpSettledAt = now;
         if (now - standUpSettledAt < StandUpSettleMs) return true;
         ReleaseStandUp(now);
+        FinishReadyAfterStandUp();
         return false;
     }
 
@@ -5303,13 +5376,13 @@ public sealed unsafe class Plugin : IDalamudPlugin
     /// animation replaces the version the game plays in this seat (slot 2 on the ground, slot 3 in a
     /// chair): then it was made to be played seated.
     /// </summary>
-    private bool NeedsToStand(PoseKind seat)
+    private bool NeedsToStand(PoseKind seat, StartItem item)
     {
-        if (pendingPose is { } pose) return pose.Kind == PoseKind.Idle;
+        if (item.Pose is { } pose) return pose.Kind == PoseKind.Idle;
         uint emoteId;
-        if (pendingCarrierPlayback is { } carrier) emoteId = carrier.Playback.EmoteId;
-        else if (pendingDirectPlayback is { } direct) emoteId = direct.Playback.EmoteId;
-        else if (pendingCommand is { } command && emotePlaybackByCommand.TryGetValue(command, out var info)) emoteId = info.EmoteId;
+        if (item.Carrier is { } carrier) emoteId = carrier.EmoteId;
+        else if (item.Direct is { } direct) emoteId = direct.EmoteId;
+        else if (item.Command is { } command && emotePlaybackByCommand.TryGetValue(command, out var info)) emoteId = info.EmoteId;
         else return false;   // a command that isn't an emote: leave it to the game
         if (emoteId == 0) return true;   // a bare standing timeline
         if (DataManager.GetExcelSheet<Lumina.Excel.Sheets.Emote>()?.GetRowOrDefault(emoteId) is not { } emote) return false;
@@ -5321,8 +5394,7 @@ public sealed unsafe class Plugin : IDalamudPlugin
         // The game plays the same timeline in this seat as standing (every facial expression does).
         if (seatedVersion.RowId == emote.ActionTimeline[0].RowId) return false;
         // Direct playback plays its own main timeline whatever the seat, never the seated version.
-        if (pendingCarrierPlayback is null && pendingDirectPlayback is { } directPlay &&
-            directPlay.Playback.MainTimeline != seatedVersion.RowId)
+        if (item.Carrier is null && item.Direct is { } directPlay && directPlay.MainTimeline != seatedVersion.RowId)
             return true;
         return !IsReplacedForYou(timeline.Key.ExtractText());
     }
