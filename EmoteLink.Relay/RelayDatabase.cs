@@ -9,7 +9,7 @@ namespace EmoteLink.Relay;
 /// </summary>
 public sealed class RelayDatabase
 {
-    public const int CurrentSchemaVersion = 9;
+    public const int CurrentSchemaVersion = 10;
     private const int BusyTimeoutMilliseconds = 5_000;
     private readonly string connectionString;
     private readonly ILogger<RelayDatabase> logger;
@@ -542,6 +542,39 @@ public sealed class RelayDatabase
                 updated_utc TEXT NOT NULL
             );
             CREATE INDEX ix_animation_contact_maps_scene ON animation_contact_maps(scene COLLATE NOCASE);
+            """),
+        new(10, "retained transfer packages", """
+            -- Uploaded transfer packages are now kept on disk for 24 hours (in the transfer-packages
+            -- folder beside this database) so moderators can review them and a repeat send of the same
+            -- package is offered from the stored copy. One row per send; the row is deleted with the
+            -- send at the end of its retention. Package bytes are still never copied into SQLite, and
+            -- no connection id, capability token or recipient identity is stored.
+            CREATE TABLE retained_transfers (
+                transfer_id TEXT PRIMARY KEY,
+                package_sha256 TEXT NOT NULL COLLATE NOCASE CHECK (length(package_sha256) = 64),
+                package_file TEXT NOT NULL,
+                size INTEGER NOT NULL CHECK (size > 0),
+                mod_name TEXT NOT NULL,
+                mod_name_hash TEXT NOT NULL COLLATE NOCASE,
+                catalog_fingerprint TEXT NOT NULL DEFAULT '' COLLATE NOCASE,
+                room_code TEXT NOT NULL,
+                sender_name TEXT NOT NULL,
+                created_utc TEXT NOT NULL,
+                uploaded_utc TEXT NOT NULL,
+                retained_until_utc TEXT NOT NULL,
+                from_stored_copy INTEGER NOT NULL DEFAULT 0,
+                room_detached_utc TEXT NOT NULL DEFAULT '',
+                access_blocked_utc TEXT NOT NULL DEFAULT '',
+                access_block_reason TEXT NOT NULL DEFAULT '',
+                recipients_downloaded INTEGER NOT NULL DEFAULT 0,
+                recipients_declined INTEGER NOT NULL DEFAULT 0,
+                recipients_closed INTEGER NOT NULL DEFAULT 0,
+                recipients_blocked INTEGER NOT NULL DEFAULT 0,
+                recipients_failed INTEGER NOT NULL DEFAULT 0,
+                recipients_expired INTEGER NOT NULL DEFAULT 0,
+                updated_utc TEXT NOT NULL
+            );
+            CREATE INDEX ix_retained_transfers_package ON retained_transfers(package_sha256);
             """)
     ];
 

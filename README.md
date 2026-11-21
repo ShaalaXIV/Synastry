@@ -35,13 +35,14 @@ This makes coordinated animation sessions much easier: find an animation, share 
 When Penumbra finishes an accepted install, Synastry indexes only that mod and updates its room fingerprint. The row changes to orange or green as appropriate without a full library refresh.
 
 - Transfers are limited to 75 MB.
-- Transfer packages remain reviewable on the relay until their original 10-minute expiry, even after every recipient downloads or declines them. Recipient access is revoked as soon as an item leaves their queue.
-- Authorized relay moderators may inspect a retained package during that window to investigate safety, policy, or creator opt-out reports. Packages can disappear sooner after a relay restart, storage pressure, or an administrative deletion.
+- Recipients have 10 minutes to accept an offer. The package itself stays on the relay for 24 hours after it was sent, even after every recipient downloads or declines it, and it survives relay restarts. Recipient access is revoked as soon as an item leaves their queue.
+- Sending byte-identical files again (same SHA-256) while the relay still holds them offers the stored copy, so nothing is uploaded again, and that send keeps the package for another 24 hours. In practice this is mostly the same sender re-sending, because packages made on different installs rarely match byte for byte.
+- Authorized relay moderators may inspect a retained package during those 24 hours to investigate safety, policy, or creator opt-out reports. Packages can disappear sooner when relay storage is full or a moderator deletes them; deleting a package ends every send that shares it. A stored copy is not reused once a moderator blocks a send of it.
 - One-time upload and download capabilities are sent in a dedicated HTTP header, never placed in URLs, and transfer responses are marked not to be cached.
 - Private mods cannot be advertised or sent.
 - Mods are never transferred without the recipient accepting the offer.
 
-Synastry is not intended for exchanging paid or otherwise restricted animations. Please support community creators and only share files you are permitted to share. A creator can ask the relay moderation team to block an exact package, animation fingerprint, or mod family from future sharing.
+Synastry is not intended for exchanging paid or otherwise restricted animations. Please support community creators and only share files you are permitted to share. A creator can ask the relay moderation team to block an exact package, animation fingerprint, or mod family from future sharing. The block is checked before a stored copy is reused, so it also stops the relay offering a copy it already holds.
 
 ## FREE USE mode
 
@@ -93,13 +94,13 @@ Room matching uses animation fingerprints instead of local file paths. Community
 
 Private mods are excluded from room catalogs, transfers, and community-label submissions.
 
-Your library is scanned on your own computer. Since 1.0.78 the plugin no longer reports installed mods to the relay; the relay only sees a room's animation fingerprints while you are in it, plus the community tags you submit.
+Your library is scanned on your own computer. Since 1.0.78 the plugin no longer reports installed mods to the relay; the relay only sees a room's animation fingerprints while you are in it, plus the community tags you submit and any mod you choose to send (see Transfer moderation below).
 
 Moderators can correct a community tag. A correction replaces that tag for every player once, including a tag you typed yourself; after that you can change it again, and player votes can't overturn a moderated tag.
 
-Transfer moderation: while a package is retained for up to 10 minutes, authorized moderators can see its transient sender/room metadata and obtain a review copy. Persistent sharing bans retain content hashes, a searchable display name, and the moderation reason; they do not retain the package. Blocks are transfer-ban records keyed by an exact package SHA-256, animation fingerprint, or normalized mod-family-name SHA-256.
+Transfer moderation: a sent package is kept on the relay's disk for 24 hours after it was sent (a later send of the same package keeps it 24 hours from that send), and it survives relay restarts. During that time authorized moderators can see who sent it and in which room, and obtain a review copy. For each retained send the relay database keeps the mod name, mod-name hash, animation fingerprint, package SHA-256, size, room code, the sender's display name, timestamps, and how many recipients downloaded, declined, or otherwise did not take it. It keeps no connection ids, capability tokens, or recipient identities, and the record is deleted with the send. Persistent sharing bans retain content hashes, a searchable display name, and the moderation reason; they do not retain the package. Blocks are transfer-ban records keyed by an exact package SHA-256, animation fingerprint, or normalized mod-family-name SHA-256.
 
-The moderation audit is bounded to the newest 100,000 events by count, not by age. An event may retain its transfer ID, event name and timestamp, exact package SHA-256, animation catalog fingerprint, normalized mod-name SHA-256, and a bounded moderation note. It excludes package bytes, transfer capability tokens, sender identity/display name, and room code. Administrator labels are hashed before storage. Audit metadata may therefore outlive the ten-minute review package.
+The moderation audit is bounded to the newest 100,000 events by count, not by age. An event may retain its transfer ID, event name and timestamp, exact package SHA-256, animation catalog fingerprint, normalized mod-name SHA-256, and a bounded moderation note. It excludes package bytes, transfer capability tokens, sender identity/display name, and room code. Administrator labels are hashed before storage. Audit metadata may therefore outlive the 24-hour review package.
 
 ## Build
 

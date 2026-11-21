@@ -20,14 +20,19 @@ public sealed class AnimationHub : Hub
     private readonly CommunityRoleLabelStore communityRoles;
     private readonly ContactMapStore contactMaps;
     private readonly RelayStatisticsStore statistics;
+    private readonly IHubContext<AnimationHub> hubContext;
+    private readonly ILogger<AnimationHub> logger;
 
     public AnimationHub(TransferStore transfers, CommunityRoleLabelStore communityRoles,
-        RelayStatisticsStore statistics, ContactMapStore contactMaps)
+        RelayStatisticsStore statistics, ContactMapStore contactMaps, IHubContext<AnimationHub> hubContext,
+        ILogger<AnimationHub> logger)
     {
         this.contactMaps = contactMaps;
         this.transfers = transfers;
         this.communityRoles = communityRoles;
         this.statistics = statistics;
+        this.hubContext = hubContext;
+        this.logger = logger;
     }
 
     public int GetOnlineUserCount() => statistics.GetSnapshot().ActiveUsers;
@@ -137,8 +142,9 @@ public sealed class AnimationHub : Hub
             {
                 var sender = room.Members[Context.ConnectionId];
                 var recipients = room.Members.Keys.Where(id => id != Context.ConnectionId).ToList();
+                // Plugins this old always upload, so they are never offered the stored copy.
                 return transfers.Begin(room.Code, Context.ConnectionId, sender.DisplayName, modName, size, sha256,
-                    recipients);
+                    recipients).Upload;
             }
         }
         catch (TransferSharingBlockedException exception)
@@ -147,12 +153,17 @@ public sealed class AnimationHub : Hub
         }
     }
 
-    public TransferUploadDto BeginModTransferV2(
+    /// <summary>
+    /// When the relay already stores these exact bytes, the offers go out from that copy right away and
+    /// the reply carries no upload token, which every plugin with this method reads as "nothing to upload".
+    /// </summary>
+    public async Task<TransferUploadDto> BeginModTransferV2(
         string modName,
         long size,
         string sha256,
         string catalogFingerprint)
     {
+        TransferBeginResult result;
         try
         {
             var room = GetCurrentRoom();
@@ -170,16 +181,18 @@ public sealed class AnimationHub : Hub
                     .Select(member => member.ConnectionId)
                     .ToList();
                 var alreadyReceived = recipients.Count - pending.Count;
-                return pending.Count == 0
-                    ? new TransferUploadDto("", "", 0, alreadyReceived)
-                    : transfers.Begin(room.Code, Context.ConnectionId, sender.DisplayName, modName, size, sha256,
-                        pending, fingerprint, alreadyReceived);
+                if (pending.Count == 0) return new TransferUploadDto("", "", 0, alreadyReceived);
+                result = transfers.Begin(room.Code, Context.ConnectionId, sender.DisplayName, modName, size, sha256,
+                    pending, fingerprint, alreadyReceived, allowStoredCopy: true);
             }
         }
         catch (TransferSharingBlockedException exception)
         {
             throw new HubException(exception.Message);
         }
+        if (result.Offers.Count > 0)
+            await TransferOfferDelivery.DeliverAsync(hubContext, transfers, result.Offers, logger);
+        return result.Upload;
     }
 
     public Task CompleteModTransfer(string transferId)

@@ -21,6 +21,7 @@ builder.WebHost.ConfigureKestrel(options => options.Limits.MaxRequestBodySize = 
 builder.Services.AddSingleton<RelayDatabase>();
 builder.Services.AddSingleton<RelayStatisticsStore>();
 builder.Services.AddSingleton<ITransferModerationRepository, SqliteTransferModerationRepository>();
+builder.Services.AddSingleton<ITransferRetentionRepository, SqliteTransferRetentionRepository>();
 builder.Services.AddSingleton<CatalogSearchService>();
 builder.Services.AddSingleton<AdminTransferEventBroker>();
 builder.Services.AddSingleton<TransferStore>();
@@ -281,7 +282,7 @@ app.MapPut("/transfers/{id}", async (string id, HttpRequest request, HttpRespons
     {
         long written = 0;
         string actualHash;
-        await using (var output = new FileStream(transfer.Path, FileMode.CreateNew, FileAccess.Write, FileShare.None,
+        await using (var output = new FileStream(transfer.UploadPath, FileMode.CreateNew, FileAccess.Write, FileShare.None,
             1024 * 1024, FileOptions.Asynchronous | FileOptions.SequentialScan))
         {
             using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
@@ -296,6 +297,8 @@ app.MapPut("/transfers/{id}", async (string id, HttpRequest request, HttpRespons
                 await output.WriteAsync(buffer.AsMemory(0, read), uploadToken);
             }
             await output.FlushAsync(uploadToken);
+            // The package is kept for the whole retention, across restarts, so make it durable first.
+            output.Flush(flushToDisk: true);
             actualHash = Convert.ToHexString(hash.GetHashAndReset());
         }
         if (written != transfer.Size || !actualHash.Equals(transfer.Sha256, StringComparison.OrdinalIgnoreCase))
@@ -306,7 +309,7 @@ app.MapPut("/transfers/{id}", async (string id, HttpRequest request, HttpRespons
     catch (Exception exception)
     {
         store.AbortUpload(transfer, exception.Message);
-        if (exception is OperationCanceledException && transfer.ExpiresAt <= DateTimeOffset.UtcNow)
+        if (exception is OperationCanceledException && transfer.OfferExpiresAt <= DateTimeOffset.UtcNow)
             return Results.StatusCode(StatusCodes.Status410Gone);
         throw;
     }
