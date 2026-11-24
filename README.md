@@ -63,7 +63,7 @@ A room member can turn on **FREE USE mode** in the room panel to hand their role
 - The full-width color legend explains room availability, suggestions, privacy, and unmatched animations.
 - Temporarily activate animations without disturbing unrelated Penumbra settings.
 - Ready a room for synchronized playback or play an animation locally with **Solo**. Each member keeps their own prepared actor role, even when the roles come from different mod entries. Group playback sends the normal animation trigger once. **Auto EmoteSync** can be disabled in the room controls; when enabled, Synastry runs its lobby-only EmoteSync six seconds later.
-- Room members receive an actionable animation-activation popup showing the complete local mod, with the sender's selected animation highlighted in purple. They can choose their own role or ignore the request.
+- Room members receive an actionable animation-activation popup, even while Synastry is closed, showing the complete local mod, with the sender's selected animation highlighted in purple. They can choose their own role or ignore the request.
 - Use the footer to run lobby-only **EmoteSync** manually. When Simple Heels is loaded, **Temp Offset** opens `/heels temp` and **Livepose** opens `/heels livepose`.
 - Right-click another player to send a room invitation they can accept or decline immediately.
 - Align your character with a nearby target before playback.
