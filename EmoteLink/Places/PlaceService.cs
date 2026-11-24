@@ -55,6 +55,7 @@ internal sealed class PlaceService(
     private string problem = "";
     private long loopSeenAt;
     private int generation;
+    private (byte Mode, byte Param) loop;
     private Target target;
     private Vector3 basePosition;
     private float baseYaw;
@@ -71,7 +72,7 @@ internal sealed class PlaceService(
     public void Begin(SavedPlace chosen)
     {
         Forget();
-        place = chosen;
+        place = chosen.Copy();   // so "Update to here" doesn't move the place that is holding you
         phase = Phase.Waiting;
         territory = currentTerritory();
     }
@@ -119,7 +120,8 @@ internal sealed class PlaceService(
             Forget();   // someone else already let go of the offset
             return;
         }
-        if (local is null)
+        // Another loop ends it too: Simple Heels has already dropped an offset set for this one.
+        if (local is null || PoseSignature.Loop(local) != loop)
         {
             if (now - loopSeenAt > LoopLostMs) Drop();
             return;
@@ -191,7 +193,7 @@ internal sealed class PlaceService(
             stableSince = 0;
             return;
         }
-        var playing = ContactAlignService.Signature(local);
+        var playing = PoseSignature.Of(local);
         if (stableSince == 0 || playing != signature ||
             Vector3.Distance(local.Position, stablePosition) > PartnerTracker.PositionThreshold ||
             MathF.Abs(DrawnModel.Wrap(local.Rotation - stableYaw)) > PartnerTracker.RotationThreshold)
@@ -241,6 +243,7 @@ internal sealed class PlaceService(
             tracker.Remember(partner, local, now);
         heels.SetPlace(LayerFor(local));
         generation = heels.Generation;
+        loop = PoseSignature.Loop(local);
         loopSeenAt = now;
         phase = Phase.Adjusting;
     }

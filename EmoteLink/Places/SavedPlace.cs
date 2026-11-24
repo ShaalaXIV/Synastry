@@ -52,6 +52,8 @@ public sealed class SavedPlace
 
     /// <summary>Which way you faced, in radians: in the world, or relative to the furniture or partner.</summary>
     public float Rotation { get; set; }
+
+    internal SavedPlace Copy() => (SavedPlace)MemberwiseClone();
 }
 
 /// <summary>Someone nearby a place can be saved next to.</summary>

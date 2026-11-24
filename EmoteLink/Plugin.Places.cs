@@ -23,7 +23,7 @@ public sealed unsafe partial class Plugin
     {
         configuration.SavedPlaces ??= [];
         furnitureScanner = new FurnitureScanner(DataManager);
-        places = new PlaceService(Objects, heels, furnitureScanner, () => ClientState.TerritoryType,
+        places = new PlaceService(Objects, heels, furnitureScanner, () => ClientState.IsLoggedIn ? ClientState.TerritoryType : 0,
             () => cyclingPose is not null, () => IsBoneAligning, message => Status = message);
     }
 
