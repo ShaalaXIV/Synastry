@@ -35,6 +35,9 @@ public sealed class HeelsOffset(
     private OffsetLayer bone;
     private Vector3 basePosition;
     private float baseYaw;
+    // What the game adds under a temporary offset, found by measuring. Kept apart from the base so a
+    // later change doesn't find and subtract it a second time.
+    private OffsetLayer gameOffset;
     private bool pending;
     private bool corrected;
     private long sentAt;
@@ -83,6 +86,7 @@ public sealed class HeelsOffset(
         Generation++;
         place = OffsetLayer.None;
         bone = OffsetLayer.None;
+        gameOffset = OffsetLayer.None;
         pending = false;
         corrected = false;
         verifyAt = 0;
@@ -128,8 +132,8 @@ public sealed class HeelsOffset(
     private void Send(long now)
     {
         pending = false;
-        var total = ExpectedOffset;
-        var yaw = DrawnModel.Wrap(baseYaw + place.Rotation + bone.Rotation);
+        var total = ExpectedOffset - gameOffset.Position;
+        var yaw = DrawnModel.Wrap(baseYaw + place.Rotation + bone.Rotation - gameOffset.Rotation);
         if (!float.IsFinite(yaw) || !float.IsFinite(total.LengthSquared()) || total.Length() > MaximumOffset)
         {
             log.Warning("Ignored an offset that was out of range ({Offset}).", total);
@@ -156,8 +160,7 @@ public sealed class HeelsOffset(
         if (offset.Length() > 2f) return;
         if (offset.Length() <= PositionTolerance && MathF.Abs(yaw) <= YawTolerance) return;
         corrected = true;
-        basePosition -= offset;
-        baseYaw = DrawnModel.Wrap(baseYaw - yaw);
+        gameOffset = new OffsetLayer(gameOffset.Position + offset, DrawnModel.Wrap(gameOffset.Rotation + yaw));
         Send(now);
     }
 }
