@@ -160,14 +160,9 @@ internal sealed class LibraryPanel(Plugin plugin, MainWindow window)
         var rest = library.Lists.Where(list => !ReferenceEquals(list, theirList)).ToList();
         // A mod that is one scene can keep each role in a list of its own, so the lists that play
         // something else are likely yours. In a pack every list is its own animations.
-        if (rest.Count <= 2)
-            foreach (var list in rest.Where(list => list.Rows.Any(row => row.Triggers.Any(trigger =>
-                         theirs.Triggers.All(other => other.Trigger != trigger.Trigger)))).ToList())
-            {
-                rest.Remove(list);
-                Theme.Wrapped(list.Title, Theme.Ash);
-                foreach (var row in list.Rows) activated |= DrawCard(row, Place.Suggestion);
-            }
+        var yours = rest.Count > 2 ? [] : rest.Where(list => list.Rows.Any(row => row.Triggers.Any(trigger =>
+            theirs.Triggers.All(other => other.Trigger != trigger.Trigger)))).ToList();
+        rest.RemoveAll(yours.Contains);
 
         // One option with several triggers already covers both roles; otherwise the options beside it
         // may hold the other one.
@@ -179,6 +174,12 @@ internal sealed class LibraryPanel(Plugin plugin, MainWindow window)
             foreach (var row in siblings) activated |= DrawCard(row, Place.Suggestion);
         else if (siblings.Count > 0)
             rest.Insert(0, theirList with { Rows = siblings, Off = [] });
+
+        foreach (var list in yours)
+        {
+            Theme.Wrapped(list.Title, Theme.Ash);
+            foreach (var row in list.Rows) activated |= DrawCard(row, Place.Suggestion);
+        }
 
         DrawSettings(library, Place.Suggestion);
         if (rest.Count > 0 && DrawHeader("##others", "Other animations", rest.Sum(list => list.Rows.Count), Place.Suggestion,
