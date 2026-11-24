@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.96.0",
+    "AssemblyVersion": "1.0.97.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -18,9 +18,9 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.96/Synastry-1.0.96.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.96/Synastry-1.0.96.zip",
-    "Changelog": "New: the Synastry Wizard (button in the header, the menu, the mini player, or /syn wizard). Pick an animation everyone has (or send it), pick roles, line up, and ready together. One person can choose for the room; the others ready with one click or ask to swap.",
-    "LastUpdate": "1791439797"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.97/Synastry-1.0.97.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.97/Synastry-1.0.97.zip",
+    "Changelog": "New: big packs open as lists with every animation on its own row, plus Favorites, Recent and a search that reaches every option. Bone align (with memory) replaces Line up, saved places put you back where an animation landed, a free cam (Cammy's when it is on), and an animation lock so a stray key can't end a pose (/syn unlock). Offers, suggestions and invites now pop up even while Synastry is closed. Listings, bone align, places, free cam and lock are adapted from PoseKit by RaylaPetal, with permission.",
+    "LastUpdate": "1795487514"
   }
 ]
