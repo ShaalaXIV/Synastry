@@ -1,3 +1,5 @@
+using EmoteLink.Library;
+
 namespace EmoteLink;
 
 internal sealed record ModRefreshWorkItem(
@@ -30,6 +32,7 @@ internal sealed record ModRefreshResult(
     long ManifestBytes = 0,
     CachedAnimationMod? Cached = null,
     PortableAnimationIndexPayload? Payload = null,
+    OptionManifest? Manifest = null,
     string PortablePayloadJson = "",
     bool CacheHit = false,
     string Error = "");
@@ -61,7 +64,8 @@ internal sealed class AnimationCatalogRefreshWorker(
                     var cacheValid = item.Cached is not null &&
                         item.Cached.SourceStamp.Equals(fileSet.SourceStamp, StringComparison.Ordinal) &&
                         item.Cached.IsAnimationMod == fileSet.ContainsPapFiles &&
-                        HasPortableSignature(item.Cached);
+                        HasPortableSignature(item.Cached) &&
+                        (!item.Cached.IsAnimationMod || item.Cached.Manifest?.Version == OptionManifest.CurrentVersion);
                     var snapshot = cacheValid
                         ? null
                         : AnimationManifestScanner.Capture(fileSet, cancellationToken);
@@ -115,8 +119,9 @@ internal sealed class AnimationCatalogRefreshWorker(
 
         var snapshot = prepared.Snapshot ??
             AnimationManifestScanner.Capture(prepared.FileSet, CancellationToken.None);
+        var payload = AnimationManifestScanner.Extract(snapshot, out var manifest);
         return new ModRefreshResult(generation, ModRefreshResultKind.PortableAnimation, prepared.Work.Mod,
-            prepared.FileSet.SourceStamp, signature, count, bytes, Payload: AnimationManifestScanner.Extract(snapshot));
+            prepared.FileSet.SourceStamp, signature, count, bytes, Payload: payload, Manifest: manifest);
     }
 
     private static bool HasPortableSignature(CachedAnimationMod cached) =>

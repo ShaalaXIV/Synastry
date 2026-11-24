@@ -237,7 +237,7 @@ internal static class Theme
     }
 
     /// <summary>A role button: rose when it's yours, azure when someone else picked it.</summary>
-    public static bool Chip(string label, ChipState state)
+    public static bool Chip(string label, ChipState state, bool compact = false)
     {
         var (fill, border, text) = state switch
         {
@@ -251,7 +251,7 @@ internal static class Theme
         ImGui.PushStyleColor(ImGuiCol.ButtonActive, state == ChipState.Mine ? RoseActive : Hairline);
         ImGui.PushStyleColor(ImGuiCol.Border, border);
         ImGui.PushStyleColor(ImGuiCol.Text, text);
-        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, new Vector2(14f, 6f) * Scale);
+        ImGui.PushStyleVar(ImGuiStyleVar.FramePadding, (compact ? new Vector2(10f, 4f) : new Vector2(14f, 6f)) * Scale);
         var clicked = ImGui.Button(label);
         ImGui.PopStyleVar();
         ImGui.PopStyleColor(5);

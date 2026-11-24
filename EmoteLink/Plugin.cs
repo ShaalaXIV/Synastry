@@ -756,8 +756,12 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
 
         if (result.Kind == ModRefreshResultKind.PortableAnimation && result.Payload is not null)
         {
-            ApplyPortableAnimationMod(result.Mod, result.Payload);
+            // Scanned again only because the index grew: the mod is unchanged, so its emotes are too.
+            if (animationIndexCache.TryGet(result.Mod.Directory, result.SourceStamp, out var previous) && previous.EmotesIndexed)
+                modEmotes[result.Mod.Directory] = previous.Emotes;
+            ApplyPortableAnimationMod(result.Mod, result.Payload, result.Manifest);
             var cached = CaptureAnimationMod(result.Mod, result.SourceStamp, true);
+            cached.Manifest = result.Manifest;
             cached.ManifestSignature = result.Signature;
             cached.SignatureAlgorithm = AnimationManifestScanner.SignatureAlgorithm;
             cached.ManifestFileCount = result.ManifestFileCount;
@@ -785,7 +789,8 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
 
     private void ApplyPortableAnimationMod(
         (string Directory, string Name) mod,
-        PortableAnimationIndexPayload payload)
+        PortableAnimationIndexPayload payload,
+        Library.OptionManifest? manifest)
     {
         var computedSyncKey = BuildModSyncKey(mod.Name, payload.PapGamePaths);
         var identity = ResolveCatalogIdentity(mod.Directory, computedSyncKey);
@@ -795,9 +800,12 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             optionPoses[OptionPoseKey(mod.Directory, optionPose.Group, optionPose.Option)] =
                 new PoseTarget(optionPose.Kind, optionPose.Index);
         modPoses[mod.Directory] = payload.Poses;
-        var groups = payload.OptionGroups
-            .Select(group => new ModOptionGroup(group.Name, group.Options, group.IsMultiSelect))
-            .ToList();
+        var groups = manifest is not null
+            ? OptionGroupsOf(manifest)
+            : payload.OptionGroups
+                .Select(group => new ModOptionGroup(group.Name, group.Options, group.IsMultiSelect))
+                .ToList();
+        IndexLibrary(mod, manifest);
         optionGroups[mod.Directory] = groups;
         NormalizeSelections(mod.Directory, groups);
     }
@@ -863,6 +871,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         var groups = cached.OptionGroups
             .Select(group => new ModOptionGroup(group.Name, group.Options, group.IsMultiSelect))
             .ToList();
+        IndexLibrary(mod, cached.Manifest);
         optionGroups[mod.Directory] = groups;
         NormalizeSelections(mod.Directory, groups);
         return true;
@@ -999,6 +1008,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
 
     private void RemoveModIndex(string directory)
     {
+        modLibraries.Remove(directory);
         var hasIndexedState = optionGroups.ContainsKey(directory) || modPoses.ContainsKey(directory) ||
             modEmotes.ContainsKey(directory) || modSyncKeys.ContainsKey(directory) ||
             modCatalogKeys.ContainsKey(directory);
@@ -1069,7 +1079,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         {
             selections.RemoveAll(item => item.Equals(option, StringComparison.OrdinalIgnoreCase));
         }
-        SaveOrganization();
+        configuration.Save(PluginInterface);
         if (broadcastSelection && selected && sync.IsInRoom && modSyncKeys.TryGetValue(directory, out var modKey))
             RunSync(sync.SetOptionSelectionAsync(modKey, group, option), $"Selected {option} for the room.");
     }
@@ -2725,9 +2735,10 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     {
         lastSharedRole = (directory, trigger);
         roleJustShared = true;
-        if (sync.IsInRoom && modSyncKeys.TryGetValue(directory, out var modKey))
-            RunSync(sync.SetOptionSelectionAsync(modKey, "$detected-trigger", trigger),
-                "Shared your selected animation role with the room.");
+        if (!sync.IsInRoom || !modSyncKeys.TryGetValue(directory, out var modKey)) return;
+        SharePickedOption(directory, modKey);
+        RunSync(sync.SetOptionSelectionAsync(modKey, "$detected-trigger", trigger),
+            "Shared your selected animation role with the room.");
     }
 
     private void NormalizeSelections(string directory, IReadOnlyList<ModOptionGroup> groups)
@@ -3759,6 +3770,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
                 emotePlaybackById.TryAdd(row.RowId, playback);
             }
         }
+        BuildTimelineLookup();
         Log.Information("Loaded {Count} emote names for automatic playback.", emoteCommandsByName.Count);
     }
 

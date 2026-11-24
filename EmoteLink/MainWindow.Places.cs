@@ -185,7 +185,7 @@ public sealed partial class MainWindow
         // The role chip in the library shows you as ready with it too.
         var split = place.Trigger.IndexOf(':');
         if (!solo && split > 0)
-            RememberReady(place.ModDirectory, $"$detected-{place.Trigger[..split]}", place.Trigger[(split + 1)..]);
+            library.RememberReady(place.ModDirectory, $"$detected-{place.Trigger[..split]}", place.Trigger[(split + 1)..]);
     }
 
     private void DrawPlaceMenu(SavedPlace place)

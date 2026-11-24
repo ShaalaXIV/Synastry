@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
+using EmoteLink.Library;
 
 namespace EmoteLink;
 
@@ -96,8 +97,10 @@ internal static class AnimationManifestScanner
             manifestBytes);
     }
 
-    public static PortableAnimationIndexPayload Extract(AnimationManifestSnapshot snapshot)
+    /// <summary>Reads the portable index and, for this computer only, every option's animations.</summary>
+    public static PortableAnimationIndexPayload Extract(AnimationManifestSnapshot snapshot, out OptionManifest manifest)
     {
+        var options = new OptionManifestBuilder();
         var papGamePaths = new SortedSet<string>(StringComparer.OrdinalIgnoreCase);
         var optionPoses = new List<PortableOptionPose>();
         var optionGroups = new List<PortableOptionGroup>();
@@ -109,16 +112,25 @@ internal static class AnimationManifestScanner
                 using var document = ParseManifest(file.Bytes);
                 var root = document.RootElement;
                 CollectPapGamePaths(root, papGamePaths);
-                if (file.NormalizedName.Equals("default_mod.json", StringComparison.OrdinalIgnoreCase)) continue;
+                if (file.NormalizedName.Equals("default_mod.json", StringComparison.OrdinalIgnoreCase))
+                {
+                    options.AddDefaults(root);
+                    continue;
+                }
                 if (file.NormalizedName.Equals("meta.json", StringComparison.OrdinalIgnoreCase))
                 {
+                    if (root.TryGetProperty("DefaultData", out var defaults)) options.AddDefaults(defaults);
                     if (root.TryGetProperty("Groups", out var groups) && groups.ValueKind == JsonValueKind.Array)
                         foreach (var group in groups.EnumerateArray())
+                        {
                             IndexOptionGroup(group, optionGroups, optionPoses, multiGroups);
+                            options.AddGroup(group, fromMeta: true);
+                        }
                     continue;
                 }
 
                 IndexOptionGroup(root, optionGroups, optionPoses, multiGroups);
+                options.AddGroup(root, fromMeta: false);
             }
             catch (JsonException)
             {
@@ -127,6 +139,7 @@ internal static class AnimationManifestScanner
             }
         }
 
+        manifest = options.Build();
         return new PortableAnimationIndexPayload
         {
             SchemaVersion = PayloadSchemaVersion,
