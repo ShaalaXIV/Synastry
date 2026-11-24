@@ -73,7 +73,7 @@ public abstract class PromptWindow : Window
 public sealed class TransferOffersWindow : PromptWindow
 {
     private readonly List<ModTransferOfferDto> pending = [];
-    private bool wasInRoom;
+    private string? lastRoom;
 
     public TransferOffersWindow(Plugin plugin)
         : base(plugin, "Offered to you###SynastryOffers", new Vector2(0.76f, 0.08f), ImGuiWindowFlags.None)
@@ -98,15 +98,15 @@ public sealed class TransferOffersWindow : PromptWindow
     // Opens for a new offer but otherwise stays as the player left it, so it can be closed for later.
     public override void PreOpenCheck()
     {
-        var inRoom = plugin.Sync.IsInRoom;
-        if (wasInRoom && !inRoom)
+        var room = plugin.Sync.Room?.RoomCode;
+        if (lastRoom is not null && room != lastRoom)
         {
-            // The relay voids a member's offers when they leave. Only on leaving: the first offer can
-            // arrive just before the room itself does.
+            // The relay voids a member's offers when they leave, also when they go straight to another
+            // room. Only on leaving: the first offer can arrive just before the room itself does.
             pending.Clear();
             while (plugin.TryTakeTransferOffer(out _)) { }
         }
-        wasInRoom = inRoom;
+        lastRoom = room;
         if (Collect()) IsOpen = true;
         if (!HasPrompt()) IsOpen = false;
     }
@@ -464,10 +464,15 @@ public sealed class WizardPickWindow : PromptWindow
     {
     }
 
-    // In Free Use Mode the pick readies you by itself.
-    protected override bool HasPrompt() =>
-        plugin.WizardPlan is { } plan && !plugin.IsWizardOpen && !plugin.IsFreeUseEnabled &&
-        !ReferenceEquals(plan, answered) && !IsReadied(plan);
+    protected override bool HasPrompt()
+    {
+        if (plugin.WizardPlan is not { } plan) return false;
+        // Readying it from anywhere answers it: the countdown clears that Ready before the pick is done.
+        if (IsReadied(plan)) answered = plan;
+        // In Free Use Mode the pick readies you by itself.
+        return !plugin.IsWizardOpen && !plugin.IsFreeUseEnabled && !ReferenceEquals(plan, answered) &&
+               !plugin.IsRoundStarting(plan.ModKey);
+    }
 
     private bool IsReadied(FreeUseDirectiveDto plan) =>
         plugin.WizardReadiedTrigger is { } readied &&
@@ -488,6 +493,7 @@ public sealed class WizardPickWindow : PromptWindow
         using (Theme.TitleFont()) ImGui.TextUnformatted(Theme.Truncate(plan.ModName, width));
         ImGui.PushTextWrapPos(ImGui.GetCursorPosX() + width);
         var directory = plugin.DirectoryForFingerprint(plan.Fingerprint);
+        if (directory is not null) plugin.EnsureDetectedEmotes(directory, plan.ModName);
         Theme.Wrapped(directory is null
             ? "You don't have this animation yet. Ask them to send it."
             : $"Your role is {plugin.RoleName(directory, plan.Trigger)}.", Theme.Soft);

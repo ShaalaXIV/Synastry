@@ -19,6 +19,9 @@ public sealed partial class Plugin
     public int PendingOfferCount => transferOffersWindow.Count;
     public void ReviewOffers() => transferOffersWindow.Review();
     public bool IsWizardOpen => wizardWindow.IsOpen;
+    /// <summary>The room's round with this animation is counting down for you.</summary>
+    public bool IsRoundStarting(string modKey) =>
+        modKey.Equals(pendingSelectionModKey, StringComparison.OrdinalIgnoreCase);
 
     private void ShowAnimationSuggestion(AnimationSuggestion suggestion) => suggestionWindow.Show(suggestion);
     private void ShowFreeUsePrompt(FreeUsePrompt prompt) => freeUseWindow.Show(prompt);
