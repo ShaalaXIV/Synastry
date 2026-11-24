@@ -4,14 +4,16 @@ using Dalamud.Hooking;
 using Dalamud.Plugin.Services;
 using FFXIVClientStructs.FFXIV.Client.Game.Control;
 using FFXIVClientStructs.FFXIV.Client.System.Input;
+using GameFramework = FFXIVClientStructs.FFXIV.Client.System.Framework.Framework;
 
 namespace EmoteLink.Camera;
 
 /// <summary>
-/// Keeps your character still while the movement keys fly the camera: movement inputs are blocked, the
+/// Keeps your character still for the free cam and the animation lock: movement inputs are blocked, the
 /// game's ForceDisableMovement counter is held, and its "cancel your emote?" check answers no. All
 /// three are needed: the counter is what stops movement, and without the emote check a key press
 /// half-cancels the emote under the counter and leaves the character sunk and circling afterwards.
+/// One shared set and one counter contribution, so the two can't let go of each other's hold.
 /// </summary>
 /// <remarks>Adapted from PoseKit by RaylaPetal (AGPL-3.0), https://github.com/RaylaPetal/PoseKit</remarks>
 public sealed unsafe class MovementSuppression : IDisposable
@@ -25,6 +27,9 @@ public sealed unsafe class MovementSuppression : IDisposable
     private readonly IGameInteropProvider interop;
     private readonly IPluginLog log;
     private readonly List<Hook<InputQuery>> queries = [];
+    // Who blocks the movement keys, and who of them also holds the character and its emote.
+    private readonly HashSet<string> blockers = [];
+    private readonly HashSet<string> holders = [];
     private Hook<AxisQuery>? axisHook;
     private Hook<InputManager.Delegates.GetInputStatus>? statusHook;
     private Hook<InputQuery>? downHook;
@@ -33,7 +38,8 @@ public sealed unsafe class MovementSuppression : IDisposable
     private bool blocking;
     private bool ownsCounter;
 
-    /// <summary>False when a signature didn't resolve; free cam then can't hold the character.</summary>
+    /// <summary>False when a signature didn't resolve; free cam and the animation lock then can't hold
+    /// the character.</summary>
     public bool Available { get; }
 
     public MovementSuppression(ISigScanner scanner, IGameInteropProvider interop, IPluginLog log)
@@ -67,7 +73,7 @@ public sealed unsafe class MovementSuppression : IDisposable
         }
         catch (Exception ex)
         {
-            log.Warning(ex, "Free cam can't hold the character still on this game version.");
+            log.Warning(ex, "The character can't be held still on this game version.");
             DisposeHooks();
         }
     }
@@ -95,11 +101,24 @@ public sealed unsafe class MovementSuppression : IDisposable
     /// which starts late and pulses.</summary>
     public bool IsDown(InputData* data, InputId id) => downHook is not null && downHook.Original(data, id);
 
+    /// <summary>Whether any movement, strafe, jump or descend key is physically down, past the block.</summary>
+    public bool IsMovementKeyDown()
+    {
+        var framework = GameFramework.Instance();
+        if (framework is null || framework->UIModule is null) return false;
+        var data = (InputData*)framework->UIModule->GetUIInputData();
+        return data is not null && (
+            IsDown(data, InputId.MOVE_FORE) || IsDown(data, InputId.MOVE_BACK) ||
+            IsDown(data, InputId.MOVE_LEFT) || IsDown(data, InputId.MOVE_RIGHT) ||
+            IsDown(data, InputId.MOVE_STRIFE_L) || IsDown(data, InputId.MOVE_STRIFE_R) ||
+            IsDown(data, InputId.JUMP) || IsDown(data, InputId.MOVE_DESCENT));
+    }
+
     /// <summary>
     /// Holds the character. Only call it while they stand still: taking the counter mid-movement can
     /// leave the game's movement out of step. False when unavailable or the counter looks wrong.
     /// </summary>
-    public bool Hold()
+    public bool Hold(string owner)
     {
         if (!Available || movementCounter is null) return false;
         if (!ownsCounter)
@@ -109,6 +128,8 @@ public sealed unsafe class MovementSuppression : IDisposable
             ownsCounter = true;
             cancelEmoteHook!.Enable();
         }
+        holders.Add(owner);
+        blockers.Add(owner);
         if (blocking) return true;
         blocking = true;
         foreach (var hook in queries) hook.Enable();
@@ -117,21 +138,24 @@ public sealed unsafe class MovementSuppression : IDisposable
         return true;
     }
 
-    /// <summary>Lets the character stand up or change emote; the movement keys stay blocked.</summary>
-    public void LetGo()
+    /// <summary>Lets the character stand up or change emote once nobody holds it; the movement keys stay
+    /// blocked.</summary>
+    public void LetGo(string owner)
     {
-        if (!ownsCounter) return;
+        holders.Remove(owner);
+        if (!ownsCounter || holders.Count > 0) return;
         ownsCounter = false;
         // Take back only our own part: the counter is shared, so it is never reset to zero.
         if (movementCounter is not null && *movementCounter > 0) --*movementCounter;
         if (cancelEmoteHook is not null) TryCleanup(cancelEmoteHook.Disable, log);
     }
 
-    /// <summary>Gives everything back.</summary>
-    public void Release()
+    /// <summary>Gives back everything this owner held; the character is free once nobody holds it.</summary>
+    public void Release(string owner)
     {
-        LetGo();
-        if (!blocking) return;
+        LetGo(owner);
+        blockers.Remove(owner);
+        if (!blocking || blockers.Count > 0) return;
         blocking = false;
         foreach (var hook in queries) TryCleanup(hook.Disable, log);
         if (axisHook is not null) TryCleanup(axisHook.Disable, log);
@@ -140,7 +164,7 @@ public sealed unsafe class MovementSuppression : IDisposable
 
     public void Dispose()
     {
-        Release();
+        foreach (var owner in blockers.Union(holders).ToList()) Release(owner);
         DisposeHooks();
     }
 
@@ -161,6 +185,6 @@ public sealed unsafe class MovementSuppression : IDisposable
     internal static void TryCleanup(Action action, IPluginLog log)
     {
         try { action(); }
-        catch (Exception ex) { log.Warning(ex, "A free cam hook could not be cleaned up."); }
+        catch (Exception ex) { log.Warning(ex, "A movement hook could not be cleaned up."); }
     }
 }

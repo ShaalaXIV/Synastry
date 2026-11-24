@@ -39,6 +39,8 @@ public sealed class Configuration : IPluginConfiguration
     public bool DozeAnywhereOnly { get; set; }
     // Open Synastry as the small mini player instead of the full window.
     public bool UseMiniPlayer { get; set; }
+    // Movement keys do nothing while a Synastry animation plays, until you unlock.
+    public bool LockMovementWhilePlaying { get; set; } = true;
     // How fast Synastry's free cam flies, where 1 is normal. Set with the mouse wheel while flying.
     public float FreeCamSpeed { get; set; } = 1f;
     // Was the automatic line-up before bone align. Nothing reads it any more; it stays so older

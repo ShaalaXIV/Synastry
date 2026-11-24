@@ -69,7 +69,7 @@ internal sealed unsafe class FreeCamInput : IDisposable
     /// <summary>Takes the movement keys. Only call it while the character stands still.</summary>
     public void Enable()
     {
-        if (!suppression.Hold()) throw new InvalidOperationException("Movement can't be held.");
+        if (!suppression.Hold(FreeCamService.Owner)) throw new InvalidOperationException("Movement can't be held.");
         active = true;
         deviceHook!.Enable();
     }
@@ -78,7 +78,7 @@ internal sealed unsafe class FreeCamInput : IDisposable
     {
         active = false;
         Up = Down = Faster = false;
-        suppression.Release();
+        suppression.Release(FreeCamService.Owner);
         if (deviceHook is null) return;
         MovementSuppression.TryCleanup(deviceHook.Disable, log);
         MovementSuppression.TryCleanup(deviceHook.Dispose, log);

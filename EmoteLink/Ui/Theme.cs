@@ -371,6 +371,17 @@ internal static class Theme
         draw.AddLine(star + new Vector2(-3f, 0) * s, star + new Vector2(3f, 0) * s, color, 1.2f * s);
     }
 
+    /// <summary>A closed padlock, for the animation lock.</summary>
+    public static void LockIcon(ImDrawListPtr draw, Vector2 center, uint color)
+    {
+        var s = Scale;
+        draw.AddRectFilled(center + new Vector2(-5f, -0.5f) * s, center + new Vector2(5f, 6f) * s, color, 1.2f * s);
+        draw.AddLine(center + new Vector2(-3f, -0.5f) * s, center + new Vector2(-3f, -3f) * s, color, 1.5f * s);
+        draw.AddLine(center + new Vector2(3f, -0.5f) * s, center + new Vector2(3f, -3f) * s, color, 1.5f * s);
+        draw.AddBezierCubic(center + new Vector2(-3f, -3f) * s, center + new Vector2(-3f, -7f) * s,
+            center + new Vector2(3f, -7f) * s, center + new Vector2(3f, -3f) * s, color, 1.5f * s);
+    }
+
     /// <summary>A small camera, for the free cam buttons.</summary>
     public static void CameraIcon(ImDrawListPtr draw, Vector2 center, uint color)
     {

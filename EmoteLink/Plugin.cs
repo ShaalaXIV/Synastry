@@ -435,7 +435,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         Chat.ChatMessage += OnChatMessage;
         Commands.AddHandler(PrimaryCommand, new CommandInfo(HandleCommand)
         {
-            HelpMessage = "Open Synastry, start the guide with /syn tutorial, turn the free camera on or off with /syn freecam (or /syn cam), join with /syn join ROOMCODE, or select a localhost dev relay with /syn relay URL."
+            HelpMessage = "Open Synastry, start the guide with /syn tutorial, turn the free camera on or off with /syn freecam (or /syn cam), unlock movement with /syn unlock, join with /syn join ROOMCODE, or select a localhost dev relay with /syn relay URL."
         });
         Commands.AddHandler(FallbackCommand, new CommandInfo(HandleCommand)
         {
@@ -4177,6 +4177,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     {
         NowPlaying = null;
         CurrentPlay = null;
+        animationLock?.Release();
         OnPlayCleared();
         heels.Reset();
         if (activeDirectPlayback is { } direct)
@@ -4302,6 +4303,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     private void OnUpdate(IFramework framework)
     {
         TickFreeCam((float)framework.UpdateDelta.TotalSeconds);
+        TickAnimationLock((float)framework.UpdateDelta.TotalSeconds);
         ProcessTypedEmoteRequest();
         ProcessAnimationSuggestionNotifications();
         UpdateLocalPresence();
@@ -5423,7 +5425,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
 
     private void StandUpFrom(PoseKind seat, long now)
     {
-        freeCam?.LetGoOfCharacter();
+        LetGoOfCharacter();
         ExecuteCommand(seat switch
         {
             PoseKind.GroundSit => "/groundsit",

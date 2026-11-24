@@ -23,6 +23,7 @@ namespace EmoteLink.Camera;
 /// <remarks>Adapted from PoseKit by RaylaPetal (AGPL-3.0), https://github.com/RaylaPetal/PoseKit</remarks>
 public sealed unsafe class FreeCamService : IDisposable
 {
+    internal const string Owner = "freecam";
     public const float MinimumSpeed = 0.1f;
     public const float MaximumSpeed = 5f;
     private const float FasterScale = 3f;
@@ -236,7 +237,7 @@ public sealed unsafe class FreeCamService : IDisposable
                 End(reason);
                 return;
             }
-            if (letGo && Environment.TickCount64 >= holdAgainAt && CharacterStill) letGo = !suppression.Hold();
+            if (letGo && Environment.TickCount64 >= holdAgainAt && CharacterStill) letGo = !suppression.Hold(Owner);
             SampleInput();
         }
         catch (Exception ex)
@@ -254,11 +255,11 @@ public sealed unsafe class FreeCamService : IDisposable
         if (!Enabled) return;
         letGo = true;
         holdAgainAt = Environment.TickCount64 + LetGoMs;
-        suppression.LetGo();
+        suppression.LetGo(Owner);
     }
 
     // Typing and other programs keep the keys to themselves.
-    private static bool NavigationPaused()
+    internal static bool NavigationPaused()
     {
         var framework = GameFramework.Instance();
         var atk = RaptureAtkModule.Instance();

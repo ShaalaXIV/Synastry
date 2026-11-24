@@ -28,6 +28,7 @@ public sealed unsafe partial class Plugin
         {
             movementSuppression = new Camera.MovementSuppression(SigScanner, Interop, Log);
             if (!movementSuppression.Available) return;
+            animationLock = new AnimationLock(movementSuppression);
             freeCam = new Camera.FreeCamService(movementSuppression, configuration.FreeCamSpeed, SigScanner, Interop,
                 ClientState, Objects, Conditions, Log);
         }
@@ -65,6 +66,13 @@ public sealed unsafe partial class Plugin
 
     partial void HandleFreeCamCommand(string arguments, ref bool handled)
     {
+        if (Regex.IsMatch(arguments, @"^\s*unlock\s*$", RegexOptions.IgnoreCase))
+        {
+            handled = true;
+            if (MovementLocked) UnlockMovement();
+            else Chat.Print("[Synastry] Your movement isn't locked.");
+            return;
+        }
         if (!Regex.IsMatch(arguments, @"^\s*(?:freecam|cam)\s*$", RegexOptions.IgnoreCase)) return;
         handled = true;
         ToggleFreeCam();
@@ -126,13 +134,16 @@ public sealed unsafe partial class Plugin
     {
         var cam = freeCam;
         var suppression = movementSuppression;
+        var lockHold = animationLock;
         freeCam = null;
+        animationLock = null;
         movementSuppression = null;
 
         // Synastry can unload off the main thread; the camera and movement go back on it.
         void Restore()
         {
             cam?.Dispose();
+            lockHold?.Release();
             suppression?.Dispose();
             movement.IgnoreKeys = false;
             if (cam is not null) SaveFreeCamSpeed(cam);

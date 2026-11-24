@@ -42,6 +42,12 @@ public sealed partial class MiniPlayerWindow : Window
         // Header: name on the left; free cam, wizard, expand and close on the right.
         Theme.Label("Synastry");
         var button = 24f * s;
+        if (plugin.MovementLocked)
+        {
+            ImGui.SetCursorScreenPos(new Vector2(start.X + width - button * 5 - 16f * s, start.Y - 3f * s));
+            if (IconButton("##unlock", button, Theme.LockIcon, true)) plugin.UnlockMovement();
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Movement is locked. Click to unlock, then move to end the animation.");
+        }
         ImGui.SetCursorScreenPos(new Vector2(start.X + width - button * 4 - 12f * s, start.Y - 3f * s));
         if (IconButton("##freecam", button, Theme.CameraIcon, plugin.FreeCamOn)) plugin.ToggleFreeCam();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip(plugin.FreeCamTooltip);

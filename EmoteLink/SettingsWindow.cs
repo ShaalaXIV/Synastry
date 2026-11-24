@@ -54,6 +54,16 @@ public sealed class SettingsWindow : Window
         if (Theme.Toggle("##auto-sync", "Sync emotes six seconds after a room starts", ref automaticSync))
             plugin.SetAutomaticEmoteSync(automaticSync);
 
+        var lockMovement = plugin.LockMovementEnabled;
+        if (!plugin.LockMovementAvailable) ImGui.BeginDisabled();
+        if (Theme.Toggle("##lock-movement", "Stay still while an animation plays", ref lockMovement))
+            plugin.SetLockMovement(lockMovement);
+        if (!plugin.LockMovementAvailable) ImGui.EndDisabled();
+        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
+            ImGui.SetTooltip(plugin.LockMovementAvailable
+                ? "Movement keys do nothing until the animation ends or you unlock, so a stray key can't stop it.\n" +
+                  "Unlock with the lock button or /syn unlock."
+                : "Unavailable: its game hooks couldn't be set up.");
 
         var anywhere = plugin.SitDozeAnywhereEnabled;
         if (!plugin.SitDozeAnywhereAvailable) ImGui.BeginDisabled();

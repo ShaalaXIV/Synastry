@@ -176,7 +176,8 @@ public sealed partial class MainWindow : Window
         var searchWidth = MathF.Min(270f * s, width * 0.28f);
         const string wizardLabel = "Synastry Wizard";
         var wizardWidth = ImGui.CalcTextSize(wizardLabel).X + 34f * s;
-        var wizardX = right - button * 4 - 18f * s - wizardWidth;
+        var lockWidth = plugin.MovementLocked ? button + 4f * s : 0f;
+        var wizardX = right - button * 4 - 18f * s - lockWidth - wizardWidth;
         ImGui.SetCursorScreenPos(new Vector2(wizardX - 10f * s - searchWidth,
             start.Y + (height - ImGui.GetFrameHeight()) * 0.5f));
         ImGui.SetNextItemWidth(searchWidth);
@@ -186,6 +187,13 @@ public sealed partial class MainWindow : Window
         if (IconTextButton("##wizard", wizardLabel, Theme.WandIcon)) plugin.OpenWizard();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Ready an animation with your room, step by step");
 
+        if (plugin.MovementLocked)
+        {
+            ImGui.SetCursorScreenPos(new Vector2(right - button * 5 - 16f * s, start.Y + (height - button) * 0.5f));
+            if (IconButton("##unlock", button, Theme.LockIcon, true)) plugin.UnlockMovement();
+            if (ImGui.IsItemHovered())
+                ImGui.SetTooltip("Your movement is locked so the animation doesn't end. Click to unlock, then move to end it.");
+        }
         ImGui.SetCursorScreenPos(new Vector2(right - button * 4 - 12f * s, start.Y + (height - button) * 0.5f));
         if (IconButton("##freecam", button, Theme.CameraIcon, plugin.FreeCamOn)) plugin.ToggleFreeCam();
         Tooltip(plugin.FreeCamTooltip);
@@ -1134,6 +1142,7 @@ public sealed partial class MainWindow : Window
         Tooltip("Ready an animation with your room, step by step.");
         if (ImGui.MenuItem("Free cam", "", plugin.FreeCamOn)) plugin.ToggleFreeCam();
         Tooltip(plugin.FreeCamTooltip);
+        if (plugin.MovementLocked && ImGui.MenuItem("Unlock movement")) plugin.UnlockMovement();
         ImGui.Separator();
         Disabled(plugin.IsRefreshingMods, () =>
         {
