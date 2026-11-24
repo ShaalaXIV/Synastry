@@ -33,7 +33,7 @@ public sealed unsafe class AnimationLock(MovementSuppression suppression)
     {
         Release();
         armedAt = Environment.TickCount64;
-        notPlayingSince = 0;
+        hinted = false;
     }
 
     /// <summary>Synastry is about to stand you up or change your pose. The lock comes back by itself.</summary>
@@ -97,7 +97,6 @@ public sealed unsafe class AnimationLock(MovementSuppression suppression)
         {
             if (stillFor < StillSeconds || InputManager.IsAutoRunning() || !suppression.Hold(Owner)) return;
             Locked = true;
-            hinted = false;
             signature = currentSignature;
             return;
         }
@@ -106,11 +105,11 @@ public sealed unsafe class AnimationLock(MovementSuppression suppression)
         else Release();   // You started a pose of your own over Synastry's.
     }
 
-    /// <summary>True once, when a movement key is pressed while locked, so the player can be told how to
-    /// get free.</summary>
+    /// <summary>True once a play, when a movement key is pressed while locked, so the player can be told
+    /// how to get free.</summary>
     public bool TakeHint(bool keysInUse)
     {
-        if (!Locked || hinted || keysInUse || !suppression.IsMovementKeyDown()) return false;
+        if (!Locked || hinted || keysInUse || suppression.HeldByOthers || !suppression.IsMovementKeyDown()) return false;
         hinted = true;
         return true;
     }

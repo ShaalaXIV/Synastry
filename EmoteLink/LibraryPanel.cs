@@ -386,7 +386,7 @@ internal sealed class LibraryPanel(Plugin plugin, MainWindow window)
         {
             ImGui.PushID(trigger.Trigger);
             var role = RoleOf(row, trigger);
-            var key = $"{row.Id}\n{trigger.Trigger}";
+            var key = ReadyKey(row, trigger.Trigger);
             var chip = new RoleChipText(directory, trigger.NoteGroup, trigger.NoteOption, trigger.Name, role ?? trigger.Name,
                 role is null ? trigger.Name : $"{role} · {trigger.Name}", PickedBy(row, trigger), key);
             var chosen = RoleChip(chip, suggestionMode, true, ref flow, out var solo);
@@ -691,9 +691,14 @@ internal sealed class LibraryPanel(Plugin plugin, MainWindow window)
         if (plugin.Sync.IsInRoom) readyRoleKey = key;
     }
 
-    /// <summary>Shows you as ready with a mod's role that was readied from elsewhere, like a saved place.</summary>
-    internal void RememberReady(string directory, string group, string option) =>
-        RememberReady(NoteKey(directory, group, option));
+    /// <summary>Shows you as ready with a role that was readied from elsewhere, like a saved place: on its
+    /// row's chip when the mod is listed by option, else on the mod's.</summary>
+    internal void RememberReady(string directory, string trigger, LibraryRow? row)
+    {
+        var split = trigger.IndexOf(':');
+        if (row is not null) RememberReady(ReadyKey(row, trigger));
+        else if (split > 0) RememberReady(NoteKey(directory, $"$detected-{trigger[..split]}", trigger[(split + 1)..]));
+    }
 
     private bool IsLocallyReady()
     {
@@ -710,6 +715,8 @@ internal sealed class LibraryPanel(Plugin plugin, MainWindow window)
 
     private static string NoteKey(string directory, string group, string option) =>
         directory + "\n" + group + "\n" + option;
+
+    private static string ReadyKey(LibraryRow row, string trigger) => $"{row.Id}\n{trigger}";
 
     private static void DescriptionTooltip(string description)
     {

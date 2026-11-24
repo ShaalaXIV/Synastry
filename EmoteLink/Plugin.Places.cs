@@ -1,4 +1,5 @@
 using Dalamud.Game.ClientState.Objects.SubKinds;
+using EmoteLink.Library;
 using EmoteLink.Places;
 
 namespace EmoteLink;
@@ -222,6 +223,17 @@ public sealed unsafe partial class Plugin
 
     // ---- Playing --------------------------------------------------------------------------------
 
+    /// <summary>The library row a place plays, when its mod is listed by option and only one fits.</summary>
+    internal LibraryRow? RowOf(SavedPlace place)
+    {
+        if (LibraryOf(place.ModDirectory) is not { UsesRows: true } library) return null;
+        var rows = library.Lists.SelectMany(list => list.Rows).Where(row =>
+            row.Option.Triggers.Contains(place.Trigger, StringComparer.OrdinalIgnoreCase) &&
+            (row.Group.IsImplicit || place.Selections.GetValueOrDefault(row.Group.Name)?
+                .Contains(row.Option.Name, StringComparer.OrdinalIgnoreCase) == true)).Take(2).ToList();
+        return rows.Count == 1 ? rows[0] : null;
+    }
+
     /// <summary>Plays a place's animation as usual (readying it in a room) and puts you there once it loops.</summary>
     internal void PlayPlace(SavedPlace place, bool solo)
     {
@@ -240,8 +252,10 @@ public sealed unsafe partial class Plugin
             pair => pair.Key, pair => pair.Value.ToList(), StringComparer.OrdinalIgnoreCase);
         foreach (var (group, options) in place.Selections) selections[group] = options.ToList();
 
+        pickToShare = solo ? null : RowOf(place);
         if (solo) CancelGroupReadinessForSolo();
         else PublishDetectedTriggerSelection(mod.Directory, place.Trigger);
+        pickToShare = null;
         if (!ActivateInternal(mod.Directory, mod.Name, pose, !solo, command, selections)) return;
         places.Begin(place);   // after activating, which lets go of any earlier place
         UpdatePlaceFlags();

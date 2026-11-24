@@ -40,7 +40,7 @@ public sealed unsafe class MovementSuppression : IDisposable
 
     /// <summary>False when a signature didn't resolve; free cam and the animation lock then can't hold
     /// the character.</summary>
-    public bool Available { get; }
+    public bool Available { get; private set; }
 
     public MovementSuppression(ISigScanner scanner, IGameInteropProvider interop, IPluginLog log)
     {
@@ -58,11 +58,11 @@ public sealed unsafe class MovementSuppression : IDisposable
             AddQuery(InputData.Addresses.IsInputIdHeld.Value);
             AddQuery(InputData.Addresses.IsInputIdReleased.Value);
             axisHook = interop.HookFromSignature<AxisQuery>("E8 ?? ?? ?? ?? 66 44 0F 6E C3",
-                (data, axis) => blocking && axis is 3 or 4 ? 0 : axisHook!.Original(data, axis));
+                (data, axis) => axis is 3 or 4 && BlocksKeys ? 0 : axisHook!.Original(data, axis));
             var address = InputManager.Addresses.GetInputStatus.Value;
             if (address == 0) throw new InvalidOperationException("Gameplay input support is unavailable.");
             statusHook = interop.HookFromAddress<InputManager.Delegates.GetInputStatus>(address,
-                (manager, code) => !(blocking && Blocks(code)) && statusHook!.Original(manager, code));
+                (manager, code) => !(Blocks(code) && BlocksKeys) && statusHook!.Original(manager, code));
             // Only your own emotes are kept going; everyone else's end as the game decides.
             cancelEmoteHook = interop.HookFromAddress<CancelEmoteDelegate>(
                 scanner.ScanText("E8 ?? ?? ?? ?? 48 8B 7B 08 45 33 C0"),
@@ -83,10 +83,17 @@ public sealed unsafe class MovementSuppression : IDisposable
         if (address == 0) throw new InvalidOperationException("Movement binding support is unavailable.");
         Hook<InputQuery>? hook = null;
         hook = interop.HookFromAddress<InputQuery>(address,
-            (data, id) => !(blocking && Blocks(id)) && hook!.Original(data, id));
+            (data, id) => !(Blocks(id) && BlocksKeys) && hook!.Original(data, id));
         queries.Add(hook);
         return hook;
     }
+
+    /// <summary>Someone else keeps the character from moving too, such as Cammy's free cam.</summary>
+    public bool HeldByOthers => movementCounter is not null && *movementCounter > (ownsCounter ? 1 : 0);
+
+    // Cammy's free cam flies with the keys the animation lock blocks, and reads them through these same
+    // hooks. Its own hold keeps the character still meanwhile, so the lock leaves the keys to it.
+    private bool BlocksKeys => blocking && (blockers.Contains(FreeCamService.Owner) || !HeldByOthers);
 
     // Character movement only; looking around stays with the game.
     private static bool Blocks(InputId id) => id is
@@ -121,21 +128,32 @@ public sealed unsafe class MovementSuppression : IDisposable
     public bool Hold(string owner)
     {
         if (!Available || movementCounter is null) return false;
-        if (!ownsCounter)
+        try
         {
-            if (*movementCounter < 0 || *movementCounter >= 100) return false;
-            ++*movementCounter;
-            ownsCounter = true;
-            cancelEmoteHook!.Enable();
+            if (!ownsCounter)
+            {
+                if (*movementCounter < 0 || *movementCounter >= 100) return false;
+                ++*movementCounter;
+                ownsCounter = true;
+                cancelEmoteHook!.Enable();
+            }
+            holders.Add(owner);
+            blockers.Add(owner);
+            if (blocking) return true;
+            blocking = true;
+            foreach (var hook in queries) hook.Enable();
+            axisHook!.Enable();
+            statusHook!.Enable();
+            return true;
         }
-        holders.Add(owner);
-        blockers.Add(owner);
-        if (blocking) return true;
-        blocking = true;
-        foreach (var hook in queries) hook.Enable();
-        axisHook!.Enable();
-        statusHook!.Enable();
-        return true;
+        catch (Exception ex)
+        {
+            // Half a hold must not stay behind: the caller hears no, so nobody would let go of it.
+            log.Error(ex, "The character couldn't be held still.");
+            Available = false;
+            Release(owner);
+            return false;
+        }
     }
 
     /// <summary>Lets the character stand up or change emote once nobody holds it; the movement keys stay

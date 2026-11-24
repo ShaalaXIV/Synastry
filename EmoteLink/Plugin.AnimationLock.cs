@@ -35,6 +35,21 @@ public sealed unsafe partial class Plugin
     private void TickAnimationLock(float seconds)
     {
         if (animationLock is not { } hold) return;
+        try
+        {
+            TickAnimationLock(hold, seconds);
+        }
+        catch (Exception exception)
+        {
+            // Never leave you stuck, nor take the rest of the update down with it every frame.
+            Log.Error(exception, "The animation lock failed and was turned off.");
+            animationLock = null;
+            hold.Release();
+        }
+    }
+
+    private void TickAnimationLock(AnimationLock hold, float seconds)
+    {
         if (!ReferenceEquals(CurrentPlay, lockedPlay))
         {
             lockedPlay = CurrentPlay;
@@ -58,14 +73,17 @@ public sealed unsafe partial class Plugin
     }
 
     // A looping emote or pose, the standing idle that was played, or a locked emote's own timeline.
+    // The last two only while standing normally: nothing says when they're over.
     private bool IsLockablePlay(Dalamud.Game.ClientState.Objects.Types.ICharacter local) =>
-        DrawnModel.IsLooping(local) || activeDirectPlayback is not null ||
-        CurrentPlay!.Trigger.StartsWith($"pose:{PoseKind.Idle}:", StringComparison.OrdinalIgnoreCase) &&
-        poses.CurrentKind() == PoseKind.Idle;
+        DrawnModel.IsLooping(local) ||
+        poses.CurrentKind() == PoseKind.Idle && (activeDirectPlayback is not null ||
+            CurrentPlay!.Trigger.StartsWith($"pose:{PoseKind.Idle}:", StringComparison.OrdinalIgnoreCase));
 
     private static bool CannotLockMovement() =>
-        Conditions.Any(ConditionFlag.InCombat, ConditionFlag.BetweenAreas, ConditionFlag.BetweenAreas51,
-            ConditionFlag.Mounted, ConditionFlag.OccupiedInCutSceneEvent, ConditionFlag.WatchingCutscene);
+        Conditions.Any(ConditionFlag.InCombat, ConditionFlag.Unconscious,
+            ConditionFlag.BetweenAreas, ConditionFlag.BetweenAreas51,
+            ConditionFlag.Mounting, ConditionFlag.Mounting71, ConditionFlag.Mounted, ConditionFlag.RidingPillion,
+            ConditionFlag.OccupiedInCutSceneEvent, ConditionFlag.WatchingCutscene, ConditionFlag.WatchingCutscene78);
 
     /// <summary>Lets go of your character so Synastry can stand you up or change your pose.</summary>
     private void LetGoOfCharacter()

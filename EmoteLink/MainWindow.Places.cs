@@ -183,9 +183,7 @@ public sealed partial class MainWindow
     {
         plugin.PlayPlace(place, solo);
         // The role chip in the library shows you as ready with it too.
-        var split = place.Trigger.IndexOf(':');
-        if (!solo && split > 0)
-            library.RememberReady(place.ModDirectory, $"$detected-{place.Trigger[..split]}", place.Trigger[(split + 1)..]);
+        if (!solo) library.RememberReady(place.ModDirectory, place.Trigger, plugin.RowOf(place));
     }
 
     private void DrawPlaceMenu(SavedPlace place)

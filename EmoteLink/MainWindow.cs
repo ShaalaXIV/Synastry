@@ -265,22 +265,25 @@ public sealed partial class MainWindow : Window
         {
             if (Theme.Text("Livepose")) plugin.OpenSimpleHeelsLivePose();
         });
+        var left = ImGui.GetItemRectMax().X + 12f * s;
         Tooltip(heels ? "Open Simple Heels' Livepose." : "Simple Heels isn't installed or loaded.");
 
-        DrawSpeedControls(start, width, y);
+        DrawSpeedControls(start, width, y, left);
         ImGui.SetCursorScreenPos(new Vector2(start.X, start.Y + height));
         ImGui.Dummy(Vector2.Zero);
     }
 
-    private void DrawSpeedControls(Vector2 footerStart, float width, float y)
+    private void DrawSpeedControls(Vector2 footerStart, float width, float y, float left)
     {
         var s = Theme.Scale;
         var matchLabel = plugin.IsAnimationSpeedMatching ? "Stop matching" : "Match target";
         var matchWidth = ImGui.CalcTextSize(matchLabel).X + 12f * s;
-        var sliderWidth = 130f * s;
         var percentWidth = 46f * s;
         var labelWidth = ImGui.CalcTextSize("Speed").X;
-        var x = footerStart.X + width - 12f * s - matchWidth - 8f * s - percentWidth - 6f * s - sliderWidth - 10f * s - labelWidth;
+        var right = footerStart.X + width - 12f * s - matchWidth - 8f * s - percentWidth - 6f * s;
+        // With a bigger font the buttons reach further at the smallest size; the slider gives way.
+        var sliderWidth = Math.Clamp(right - 10f * s - labelWidth - left, 60f * s, 130f * s);
+        var x = right - sliderWidth - 10f * s - labelWidth;
         ImGui.SetCursorScreenPos(new Vector2(x, y + (ImGui.GetFrameHeight() - ImGui.GetTextLineHeight()) * 0.5f));
         Theme.Label("Speed");
         ImGui.SameLine(0, 10f * s);
