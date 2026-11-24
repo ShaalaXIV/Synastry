@@ -157,29 +157,31 @@ public sealed class SettingsWindow : Window
         DrawAdvanced();
     }
 
-    /// <summary>Bending bones so couple animations meet, and the body setup that tells it where skin is.</summary>
+    /// <summary>Lining up from memory, bending bones so couple animations meet, and the body setup that
+    /// tells it where skin is.</summary>
     private void DrawAdvanced()
     {
         var s = Theme.Scale;
-        Theme.Heading("Experimental");
-        Theme.Wrapped("Still being tested, so everything here starts switched off. During a couple animation you " +
-                      "started with Synastry, these can line you up with your partner and bend bones so you actually " +
-                      "meet. Bones only turn at their joints, nothing stretches, and only someone in your room or your " +
-                      "target is affected.", Theme.Ash);
-        ImGui.Dummy(new Vector2(0, 4f * s));
-
-        var lineUp = plugin.AutomaticLineUpEnabled;
-        if (Theme.Toggle("##auto-line-up", "Line up couple animations automatically", ref lineUp))
-            plugin.SetAutomaticLineUp(lineUp);
+        Theme.Heading("Bone align");
+        var fromMemory = plugin.AutoAlignFromMemory;
+        if (Theme.Toggle("##auto-align-memory", "Line up from memory automatically", ref fromMemory))
+            plugin.SetAutoAlignFromMemory(fromMemory);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("When a couple animation starts, Synastry lines up penis with mouth, vagina or anus\n" +
-                             "through Simple Heels. Only the receiving partner moves.");
+            ImGui.SetTooltip("Each bone align is remembered for the animation you're playing. The next time you play it\n" +
+                             "with someone in your room, Synastry turns and moves you the same way through Simple Heels.");
         if (!plugin.SimpleHeelsAvailable)
         {
             ImGui.SameLine();
             Theme.Quiet("needs Simple Heels");
         }
 
+        Divider();
+        Theme.Heading("Experimental");
+        Theme.Wrapped("Still being tested, so everything here starts switched off. During a couple animation you " +
+                      "started with Synastry, these can bend bones so you and your partner actually meet. Bones only " +
+                      "turn at their joints, nothing stretches, and only someone in your room or your target is " +
+                      "affected.", Theme.Ash);
+        ImGui.Dummy(new Vector2(0, 4f * s));
 
         if (!plugin.ContactIkAvailable)
         {
@@ -192,7 +194,7 @@ public sealed class SettingsWindow : Window
         var changed = Theme.Toggle("##bend-shaft", "Aim the penis at your partner", ref shaft);
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("The shaft bends at its joints to point through the mouth, vagina or anus it's\n" +
-                             "lined up with, keeping its depth. Bigger gaps still use Line up.");
+                             "lined up with, keeping its depth. Bigger gaps still need bone align.");
         changed |= Theme.Toggle("##bend-openings", "Open the mouth, vagina or anus to fit", ref openings);
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("When the tip arrives, the opening widens a little for its thickness, within what the\n" +
@@ -275,7 +277,7 @@ public sealed class SettingsWindow : Window
         Theme.Label("Test partner");
         Theme.Wrapped("Summon any minion, then load a Mare character file (.mcdf): the minion becomes that character, on " +
                       "your screen only, stands on your spot and can play the other role of the animation you're " +
-                      "playing. Line-up, contact maps and bending treat it as your partner. Its files and measurements " +
+                      "playing. Bone align, contact maps and bending treat it as your partner. Its files and measurements " +
                       "are deleted when you release it or the minion leaves.", Theme.Ash);
 
         if (!plugin.HasTestPartnerCollection)

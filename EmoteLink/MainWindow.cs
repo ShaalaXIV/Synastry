@@ -50,8 +50,8 @@ public sealed partial class MainWindow : Window
     private bool openMarkAllPrivate;
     // The role this player last readied, shown as theirs while the room still has them ready.
     private string? readyRoleKey;
-    private string lastLineUpStatus = "";
-    private long lineUpStatusAt;
+    private string lastBoneAlignStatus = "";
+    private long boneAlignStatusAt;
     private bool tutorialActive;
     private TutorialStep tutorialStep;
     private string tutorialFeedback = "";
@@ -292,17 +292,11 @@ public sealed partial class MainWindow : Window
             : "Join a room to sync emotes with it.");
 
         ImGui.SameLine(0, 2f * s);
-        var heels = plugin.SimpleHeelsAvailable;
-        Disabled(!heels, () =>
-        {
-            if (Theme.Text(plugin.IsLiningUp ? "Lining up…" : "Line up")) plugin.LineUpNow();
-        });
-        Tooltip(heels
-            ? "Line up a couple animation now: penis with mouth, vagina or anus.\n" +
-              (plugin.AutomaticLineUpEnabled ? "This also happens by itself when a couple animation starts." : "Automatic line-up is off in Settings.")
-            : "Line up needs Simple Heels.");
+        if (Theme.Text(plugin.IsBoneAligning ? "Aligning…" : "Bone align")) plugin.ToggleBoneAlign();
+        Tooltip("Bring one of your body parts to your partner's, and have it remembered for the animation.");
 
         ImGui.SameLine(0, 2f * s);
+        var heels = plugin.SimpleHeelsAvailable;
         Disabled(!heels, () =>
         {
             if (Theme.Text("Temp offset")) plugin.OpenSimpleHeelsTempOffset();
@@ -666,16 +660,16 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    /// <summary>The line under the list: a fresh line-up result, else the plugin's last message.</summary>
+    /// <summary>The line under the list: a fresh bone align result, else the plugin's last message.</summary>
     private string CurrentStatus()
     {
-        var lineUp = plugin.LineUpStatus;
-        if (lineUp != lastLineUpStatus)
+        var boneAlign = plugin.BoneAlignStatus;
+        if (boneAlign != lastBoneAlignStatus)
         {
-            lastLineUpStatus = lineUp;
-            lineUpStatusAt = Environment.TickCount64;
+            lastBoneAlignStatus = boneAlign;
+            boneAlignStatusAt = Environment.TickCount64;
         }
-        if (lineUp.Length > 0 && Environment.TickCount64 - lineUpStatusAt < 8000) return lineUp;
+        if (boneAlign.Length > 0 && Environment.TickCount64 - boneAlignStatusAt < 8000) return boneAlign;
         var status = plugin.Status;
         return status is "Ready." or "" ? "" : status;
     }
@@ -1317,17 +1311,17 @@ public sealed partial class MainWindow : Window
         Tooltip("Others in the room choose your role and options. They apply to that animation only and you're readied automatically. Private animations are never used.");
 
         ImGui.Dummy(new Vector2(0, 4f * s));
-        Theme.Label("Line up with");
+        Theme.Label("Aim at");
         ImGui.SetNextItemWidth(MathF.Min(width, 200f * s));
         var preference = plugin.LineUpPreference;
-        if (ImGui.BeginCombo("##line-up-with", LineUpPreferenceName(preference)))
+        if (ImGui.BeginCombo("##aim-at", LineUpPreferenceName(preference)))
         {
             foreach (var option in Enum.GetValues<ContactPreference>())
                 if (ImGui.Selectable(LineUpPreferenceName(option), option == preference))
                     plugin.SetLineUpPreference(option);
             ImGui.EndCombo();
         }
-        Tooltip("Which opening a couple animation lines up with and aims at.\n" +
+        Tooltip("Which opening the penis aims at during a couple animation, when aiming is on in Settings.\n" +
                 "Animation's choice: the one the animation was made for (or the closest, if it has no contact map).\n" +
                 "Mouth, Vagina or Anus: your own choice, overriding the animation's. A mouth already in contact always wins.");
 
@@ -2021,7 +2015,7 @@ public sealed partial class MainWindow : Window
             if (active.Length > 0 && ImGui.Selectable($"Rename {active}…")) openRename = true;
             ImGui.EndCombo();
         }
-        Tooltip("The body your partners' hands and line-up aim at. Synastry switches by itself when your\n" +
+        Tooltip("The body your partners' hands and aiming go by. Synastry switches by itself when your\n" +
                 "loaded models match a saved mesh; pick one here to switch now.");
 
         if (openRename)

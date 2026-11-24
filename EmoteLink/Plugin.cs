@@ -108,7 +108,6 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     private readonly InPlaceEmoteConverter inPlaceEmoteConverter;
     private readonly VanillaEmoteRedirectService vanillaEmoteRedirect;
     private readonly MovementService movement;
-    private readonly ContactAlignService contactAlign;
     private readonly Align.HeelsOffset heels;
     private readonly AnimationPreloader preloader;
     private bool simpleHeelsLoaded;
@@ -312,11 +311,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             configuration.CommunityReporterId = Guid.NewGuid().ToString("N");
             generatedReporterIdentity = true;
         }
-        // 1.0.86 makes line-up and bone bending experimental: off for everyone once, then the
-        // player's choice.
+        // 1.0.86 makes bone bending experimental: off for everyone once, then the player's choice.
         if (!configuration.ExperimentalFeaturesReset)
         {
-            configuration.AutomaticLineUp = false;
             configuration.BendShaft = false;
             configuration.BendOpenings = false;
             configuration.BendHands = false;
@@ -357,7 +354,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         }
         catch (Exception exception)
         {
-            Log.Warning(exception, "Contact IK could not start; couple animations line up the old way.");
+            Log.Warning(exception, "Contact IK could not start; bending bones is unavailable.");
         }
         testPartner = new TestPartner.TestPartnerService(PluginInterface, Objects, penumbra, DataManager, Log);
         testPartner.Released += name =>
@@ -372,11 +369,6 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             if (Ik.BodyProfile.FromJson(shared.ProfileJson) is { } profile) sharedBodies[shared.DisplayName] = profile;
             else sharedBodies.TryRemove(shared.DisplayName, out _);
         };
-        // A test partner has no Synastry of its own, so your side always does the lining up.
-        contactAlign = new ContactAlignService(Objects, Targets, Log,
-            name => IsRoomMemberNamed(name) && !(testPartner.Active && name.Equals(testPartner.Name, StringComparison.OrdinalIgnoreCase)),
-            ExecuteCommand,
-            () => configuration.LineUpPreference, TestPartnerCharacter, MappedOpeningOf);
         heels = new Align.HeelsOffset(Objects, command => Commands.ProcessCommand(command), IsSimpleHeelsLoadedCached, Log);
         preloader = new AnimationPreloader(PluginInterface, Objects, penumbra, sync, Log);
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
@@ -1307,7 +1299,6 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             : "Sit/doze anywhere disabled. Chair-sit and doze will use normal game placement.";
     }
 
-    public bool AutomaticLineUpEnabled => configuration.AutomaticLineUp;
     public ContactPreference LineUpPreference => configuration.LineUpPreference;
 
     public void SetLineUpPreference(ContactPreference preference)
@@ -1315,19 +1306,6 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         configuration.LineUpPreference = preference;
         configuration.Save(PluginInterface);
     }
-    public string LineUpStatus => contactAlign.Status;
-    public bool IsLiningUp => contactAlign.IsMeasuring;
-
-    public void SetAutomaticLineUp(bool enabled)
-    {
-        configuration.AutomaticLineUp = enabled;
-        configuration.Save(PluginInterface);
-        Status = enabled
-            ? "Automatic line-up enabled. Couple animations line up through Simple Heels when they start."
-            : "Automatic line-up disabled. The Line up button still works.";
-    }
-
-    public void LineUpNow() => contactAlign.LineUpNow(IsSimpleHeelsLoadedCached());
 
     /// <summary>Whether this character name is someone else in the current room, and so runs Synastry.</summary>
     // ---- Bending bones and body setup --------------------------------------------------------
@@ -1563,7 +1541,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         var settings = new Ik.IkSettings(configuration.BendShaft, configuration.BendOpenings, configuration.BendHands,
             configuration.LineUpPreference);
         if (Objects.LocalPlayer is not { } local || (!settings.Shaft && !settings.Openings && !settings.Hands) ||
-            !IsSynastryAnimationPlaying())
+            !IsSynastryAnimationPlaying() || IsBoneAligning)
         {
             contactIk.Update([], settings);
             return;
@@ -1923,7 +1901,8 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     /// <summary>
     /// True while an animation Synastry started is still playing: something was activated (from the
     /// list, a room sync, Free Use, a slash command) and you haven't moved or switched to another
-    /// emote since. Line-up and bone bending only ever act then, never on ordinary sitting or emotes.
+    /// emote since. Lining up from memory and bone bending only ever act then, never on ordinary sitting
+    /// or emotes.
     /// </summary>
     private bool IsSynastryAnimationPlaying()
     {
@@ -1934,10 +1913,10 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             // Remember the loop it settles into once the emote has started and any pose-variant
             // cycling is over; until then, any loop counts (it may still be the old sit).
             if (looping && Environment.TickCount64 - playingSince > 3000)
-                playingSignature = ContactAlignService.Signature(local);
+                playingSignature = Align.PoseSignature.Of(local);
             return looping && Environment.TickCount64 - playingSince < 30000;
         }
-        return looping && ContactAlignService.Signature(local) == playingSignature;
+        return looping && Align.PoseSignature.Of(local) == playingSignature;
     }
 
     private static unsafe bool IsLoopingNow(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter player)
@@ -4156,12 +4135,12 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         return refreshed;
     }
 
-    private static bool RefreshActorEmote(nint address)
+    private static bool RefreshActorEmote(nint address, bool loopOnly = true)
     {
         var character = (Character*)address;
         if (character is null || character->DrawObject is null ||
             character->DrawObject->GetObjectType() != ObjectType.CharacterBase) return false;
-        if (character->Mode is not (CharacterModes.EmoteLoop or CharacterModes.InPositionLoop)) return false;
+        if (loopOnly && character->Mode is not (CharacterModes.EmoteLoop or CharacterModes.InPositionLoop)) return false;
         var characterBase = (CharacterBase*)character->DrawObject;
         if (characterBase->GetModelType() != CharacterBase.ModelType.Human) return false;
         var skeleton = ((Human*)character->DrawObject)->Skeleton;
@@ -4327,7 +4306,6 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         heels.Tick();
         TickPlaces();
         TickBoneAlign();
-        contactAlign.Tick(configuration.AutomaticLineUp, IsSimpleHeelsLoadedCached(), IsSynastryAnimationPlaying());
         if (bodySyncPending) StartBodyProfileSync();
         testPartner.Tick();
         MeasureTestPartner();
