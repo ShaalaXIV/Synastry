@@ -25,16 +25,6 @@ public sealed partial class MainWindow : Window
     private string search = "";
     private string newFolderName = "";
     private string roomCode = "";
-    private readonly List<ModTransferOfferDto> pendingTransferOffers = [];
-    private bool transferInboxOpen;
-    private RoomInvite? activeRoomInvite;
-    private readonly Queue<AnimationSuggestion> queuedAnimationSuggestions = [];
-    private AnimationSuggestion? activeAnimationSuggestion;
-    private bool openAnimationSuggestionPopup;
-    private readonly List<FreeUsePrompt> queuedFreeUsePrompts = [];
-    private FreeUsePrompt? activeFreeUsePrompt;
-    private bool openFreeUsePopup;
-    private Dictionary<string, List<string>> freeUseOptions = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> correctionBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> folderRenameBuffers = new(StringComparer.OrdinalIgnoreCase);
@@ -109,7 +99,6 @@ public sealed partial class MainWindow : Window
 
     public override void Draw()
     {
-        CollectTransferOffers();
         ObserveTutorialState();
         var width = ImGui.GetContentRegionAvail().X;
 
@@ -126,11 +115,7 @@ public sealed partial class MainWindow : Window
         ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(22f, 20f) * Theme.Scale);
         DrawCreateFolderPopup();
         DrawMarkAllPrivatePopup();
-        DrawAnimationSuggestionPopup();
-        DrawFreeUsePopup();
-        DrawRoomInvitePopup();
         ImGui.PopStyleVar();
-        DrawTransferInboxWindow();
     }
 
     // ---- Notifications from the plugin ----------------------------------------------------------
@@ -163,42 +148,6 @@ public sealed partial class MainWindow : Window
         if (!tutorialActive || tutorialStep < TutorialStep.QueueTogether) return;
         tutorialStep = TutorialStep.Complete;
         tutorialFeedback = "";
-    }
-
-    public void ShowAnimationSuggestion(AnimationSuggestion suggestion)
-    {
-        if (activeAnimationSuggestion is null)
-        {
-            activeAnimationSuggestion = suggestion;
-            openAnimationSuggestionPopup = true;
-        }
-        else if (SameSuggestion(activeAnimationSuggestion, suggestion))
-        {
-            activeAnimationSuggestion = suggestion;
-        }
-        else if (!queuedAnimationSuggestions.Any(queued => SameSuggestion(queued, suggestion)))
-        {
-            queuedAnimationSuggestions.Enqueue(suggestion);
-        }
-        IsOpen = true;
-    }
-
-    public void ShowFreeUsePrompt(FreeUsePrompt prompt)
-    {
-        // A newer choice for the same member replaces the older one.
-        queuedFreeUsePrompts.RemoveAll(queued => queued.MemberConnectionId == prompt.MemberConnectionId);
-        if (activeFreeUsePrompt is null || activeFreeUsePrompt.MemberConnectionId == prompt.MemberConnectionId)
-            BeginFreeUsePrompt(prompt);
-        else
-            queuedFreeUsePrompts.Add(prompt);
-        IsOpen = true;
-    }
-
-    private void BeginFreeUsePrompt(FreeUsePrompt prompt)
-    {
-        activeFreeUsePrompt = prompt;
-        freeUseOptions = plugin.GetFreeUseOptionTemplate(prompt.Directory);
-        openFreeUsePopup = true;
     }
 
     // ---- Header, banner, footer -----------------------------------------------------------------
@@ -870,7 +819,7 @@ public sealed partial class MainWindow : Window
 
     /// <summary>An opened animation: its roles as chips, then its mod options. Returns true when a
     /// role was chosen (the suggestion prompt closes then).</summary>
-    private bool DrawModDetails((string Directory, string Name) mod, bool suggestionMode)
+    internal bool DrawModDetails((string Directory, string Name) mod, bool suggestionMode = false)
     {
         var poses = plugin.GetDetectedPoses(mod.Directory);
         var emotes = plugin.GetDetectedEmotes(mod.Directory);
@@ -883,7 +832,7 @@ public sealed partial class MainWindow : Window
             ImGui.BeginGroup();
             activated = DrawRoleChips(mod, poses, emotes, suggestionMode);
             ImGui.EndGroup();
-            if (tutorialActive && tutorialStep == TutorialStep.ConfigureAnimation) HighlightLastItem();
+            if (tutorialActive && tutorialStep == TutorialStep.ConfigureAnimation && !suggestionMode) HighlightLastItem();
         }
         else
         {
@@ -1364,19 +1313,19 @@ public sealed partial class MainWindow : Window
     /// <summary>The line that appears when someone has offered this player an animation.</summary>
     private void DrawOffersLine(float width)
     {
-        if (pendingTransferOffers.Count == 0) return;
+        var count = plugin.PendingOfferCount;
+        if (count == 0) return;
         var s = Theme.Scale;
         ImGui.Dummy(new Vector2(0, 8f * s));
         var start = ImGui.GetCursorScreenPos();
         var draw = ImGui.GetWindowDrawList();
         Theme.HorizontalLine(draw, start, width);
         ImGui.Dummy(new Vector2(0, 6f * s));
-        var count = pendingTransferOffers.Count;
         ImGui.AlignTextToFramePadding();
         ImGui.TextColored(Theme.AzureText, $"{count} animation{(count == 1 ? "" : "s")} offered to you");
         ImGui.SameLine();
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0, ImGui.GetContentRegionAvail().X - ImGui.CalcTextSize("Review").X - 12f * s));
-        if (Theme.Text("Review", Theme.Bone)) transferInboxOpen = true;
+        if (Theme.Text("Review", Theme.Bone)) plugin.ReviewOffers();
         var end = ImGui.GetCursorScreenPos();
         Theme.HorizontalLine(draw, new Vector2(start.X, end.Y + 2f * s), width);
         ImGui.Dummy(new Vector2(0, 4f * s));
@@ -1467,239 +1416,8 @@ public sealed partial class MainWindow : Window
         ImGui.EndPopup();
     }
 
-    private void DrawAnimationSuggestionPopup()
-    {
-        if (activeAnimationSuggestion is not null && !plugin.IsAnimationSuggestionActive(activeAnimationSuggestion))
-            activeAnimationSuggestion = null;
-        if (activeAnimationSuggestion is null && queuedAnimationSuggestions.TryDequeue(out var queued))
-        {
-            activeAnimationSuggestion = queued;
-            openAnimationSuggestionPopup = true;
-        }
-        if (activeAnimationSuggestion is null) return;
-
-        const string popupTitle = "Picked for the room###SynastryAnimationSuggestion";
-        if (openAnimationSuggestionPopup)
-        {
-            ImGui.OpenPopup(popupTitle);
-            openAnimationSuggestionPopup = false;
-        }
-
-        ImGui.SetNextWindowSize(new Vector2(560f, 460f) * Theme.Scale, ImGuiCond.Appearing);
-        var popupOpen = true;
-        if (ImGui.BeginPopupModal(popupTitle, ref popupOpen, ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoTitleBar))
-        {
-            var suggestion = activeAnimationSuggestion;
-            if (suggestion is null)
-            {
-                ImGui.CloseCurrentPopup();
-                ImGui.EndPopup();
-                return;
-            }
-
-            ImGui.TextColored(Theme.AzureText, $"{suggestion.SuggestedBy} picked");
-            Theme.Title(suggestion.ModName);
-            var localMod = plugin.Mods.FirstOrDefault(mod =>
-                mod.Directory.Equals(suggestion.Directory, StringComparison.OrdinalIgnoreCase));
-            var animationActivated = false;
-            ImGui.Dummy(new Vector2(0, 6f * Theme.Scale));
-            ImGui.BeginChild("suggested-animation", new Vector2(0, -(ImGui.GetFrameHeightWithSpacing() + 18f * Theme.Scale)),
-                false, ImGuiWindowFlags.None);
-            if (string.IsNullOrWhiteSpace(localMod.Directory))
-            {
-                Theme.Wrapped("This animation isn't in your library anymore.", Theme.Ash);
-            }
-            else
-            {
-                plugin.EnsureDetectedEmotes(localMod.Directory, localMod.Name);
-                var detectedPoses = plugin.GetDetectedPoses(localMod.Directory);
-                var detectedEmotes = plugin.GetDetectedEmotes(localMod.Directory);
-                var theirs = SuggestionAnimationName(suggestion.ActivatedTrigger, detectedPoses, detectedEmotes);
-                Theme.Wrapped(theirs.Length > 0
-                    ? $"{suggestion.SuggestedBy} is playing {theirs}. Pick your role to get ready."
-                    : "Pick your role to get ready.", Theme.Soft);
-                ImGui.Dummy(new Vector2(0, 4f * Theme.Scale));
-                animationActivated = DrawModDetails(localMod, true);
-                Theme.Quiet("Option changes here only affect your copy.");
-            }
-            ImGui.EndChild();
-
-            var footer = ImGui.GetCursorScreenPos();
-            Theme.HorizontalLine(ImGui.GetWindowDrawList(), footer, ImGui.GetContentRegionAvail().X);
-            ImGui.Dummy(new Vector2(0, 10f * Theme.Scale));
-            if (animationActivated)
-            {
-                activeAnimationSuggestion = null;
-                ImGui.CloseCurrentPopup();
-            }
-            else if (Theme.Text("Not now"))
-            {
-                plugin.IgnoreAnimationSuggestion(suggestion);
-                activeAnimationSuggestion = null;
-                ImGui.CloseCurrentPopup();
-            }
-            ImGui.EndPopup();
-        }
-
-        if (!popupOpen && activeAnimationSuggestion is { } dismissed)
-        {
-            plugin.IgnoreAnimationSuggestion(dismissed);
-            activeAnimationSuggestion = null;
-        }
-    }
-
-    private void DrawFreeUsePopup()
-    {
-        if (activeFreeUsePrompt is not null && !plugin.IsFreeUseMemberAvailable(activeFreeUsePrompt.MemberConnectionId))
-            activeFreeUsePrompt = null;
-        while (activeFreeUsePrompt is null && queuedFreeUsePrompts.Count > 0)
-        {
-            var next = queuedFreeUsePrompts[0];
-            queuedFreeUsePrompts.RemoveAt(0);
-            if (plugin.IsFreeUseMemberAvailable(next.MemberConnectionId)) BeginFreeUsePrompt(next);
-        }
-
-        const string popupTitle = "Free Use Mode###SynastryFreeUse";
-        if (activeFreeUsePrompt is not { } prompt)
-        {
-            // The member left or switched free use off while the prompt was showing; a modal that is
-            // never submitted again would keep blocking the window, so close it explicitly.
-            if (ImGui.IsPopupOpen(popupTitle) && ImGui.BeginPopupModal(popupTitle))
-            {
-                ImGui.CloseCurrentPopup();
-                ImGui.EndPopup();
-            }
-            return;
-        }
-
-        // Keep asking until the modal is showing; a role picked inside another modal opens this one next frame.
-        if (openFreeUsePopup && !ImGui.IsPopupOpen(popupTitle)) ImGui.OpenPopup(popupTitle);
-
-        ImGui.SetNextWindowSize(new Vector2(560f, 480f) * Theme.Scale, ImGuiCond.Appearing);
-        var popupOpen = true;
-        if (ImGui.BeginPopupModal(popupTitle, ref popupOpen, ImGuiWindowFlags.NoCollapse | ImGuiWindowFlags.NoTitleBar))
-        {
-            openFreeUsePopup = false;
-            ImGui.TextColored(Theme.AzureText, $"{prompt.MemberName} is in Free Use Mode");
-            Theme.Title(prompt.ModName);
-            var poses = plugin.GetDetectedPoses(prompt.Directory);
-            var emotes = plugin.GetDetectedEmotes(prompt.Directory);
-            var ownRole = SuggestionAnimationName(prompt.OwnTrigger, poses, emotes);
-            if (ownRole.Length > 0) Theme.Label($"You're playing {ownRole}.");
-            ImGui.Dummy(new Vector2(0, 6f * Theme.Scale));
-
-            string? chosenTrigger = null;
-            ImGui.BeginChild("free-use-choice", new Vector2(0, -(ImGui.GetFrameHeightWithSpacing() + 18f * Theme.Scale)),
-                false, ImGuiWindowFlags.None);
-            Theme.Label($"Role for {prompt.MemberName}");
-            var right = ImGui.GetCursorScreenPos().X + ImGui.GetContentRegionAvail().X;
-            var first = true;
-            void Place(string label)
-            {
-                var chipWidth = ImGui.CalcTextSize(label).X + 30f * Theme.Scale;
-                if (!first)
-                {
-                    ImGui.SameLine(0, 8f * Theme.Scale);
-                    if (ImGui.GetCursorScreenPos().X + chipWidth > right) ImGui.NewLine();
-                }
-                first = false;
-            }
-            foreach (var pose in poses)
-                if (FreeUseRoleChip(prompt, "$detected-pose", $"{pose.Kind}:{pose.Index}", PoseDisplayName(pose),
-                        $"pose:{pose.Kind}:{pose.Index}", Place))
-                    chosenTrigger = $"pose:{pose.Kind}:{pose.Index}";
-            foreach (var emote in emotes)
-                if (FreeUseRoleChip(prompt, "$detected-emote", emote.Id.ToString(), emote.Name, $"emote:{emote.Id}", Place))
-                    chosenTrigger = $"emote:{emote.Id}";
-            if (poses.Count == 0 && emotes.Count == 0)
-                Theme.Quiet("This animation has no roles to pick.");
-            DrawFreeUseOptions(prompt.Directory);
-            ImGui.EndChild();
-
-            Theme.HorizontalLine(ImGui.GetWindowDrawList(), ImGui.GetCursorScreenPos(), ImGui.GetContentRegionAvail().X);
-            ImGui.Dummy(new Vector2(0, 10f * Theme.Scale));
-            if (chosenTrigger is not null)
-            {
-                plugin.DirectFreeUse(prompt, chosenTrigger, freeUseOptions);
-                activeFreeUsePrompt = null;
-                ImGui.CloseCurrentPopup();
-            }
-            else if (Theme.Text("Skip"))
-            {
-                activeFreeUsePrompt = null;
-                ImGui.CloseCurrentPopup();
-            }
-            ImGui.EndPopup();
-        }
-
-        if (!popupOpen) activeFreeUsePrompt = null;
-    }
-
-    private bool FreeUseRoleChip(
-        FreeUsePrompt prompt,
-        string group,
-        string option,
-        string animationName,
-        string trigger,
-        Action<string> place)
-    {
-        var note = plugin.GetOptionNote(prompt.Directory, group, option);
-        var role = string.IsNullOrWhiteSpace(note) ? animationName : note;
-        var isOwnRole = trigger.Equals(prompt.OwnTrigger, StringComparison.OrdinalIgnoreCase);
-        var label = isOwnRole ? $"{role}, yours" : role;
-        place(label);
-        var clicked = Theme.Chip($"{label}##{trigger}", isOwnRole ? ChipState.Mine : ChipState.Open);
-        if (ImGui.IsItemHovered())
-            ImGui.SetTooltip(isOwnRole
-                ? $"Your role. {prompt.MemberName} can play it too."
-                : $"{prompt.MemberName} plays {animationName}.");
-        return clicked;
-    }
-
-    private void DrawFreeUseOptions(string directory)
-    {
-        var groups = plugin.GetOptionGroups(directory);
-        if (groups.Count == 0) return;
-        var s = Theme.Scale;
-        ImGui.Dummy(new Vector2(0, 6f * s));
-        Theme.Label("Their options, copied from yours. Changes here are for them only.");
-        foreach (var group in groups)
-        {
-            ImGui.PushID("free-use-" + group.Name);
-            var selected = freeUseOptions.GetValueOrDefault(group.Name) ?? [];
-            if (!group.IsMultiSelect)
-            {
-                var current = group.Options.FirstOrDefault(option => selected.Contains(option, StringComparer.OrdinalIgnoreCase));
-                ImGui.SetNextItemWidth(MathF.Min(260f * s, ImGui.GetContentRegionAvail().X * 0.6f));
-                if (ImGui.BeginCombo(group.Name, current ?? "Mod default"))
-                {
-                    foreach (var option in group.Options)
-                        if (ImGui.Selectable(option, option.Equals(current, StringComparison.OrdinalIgnoreCase)))
-                            freeUseOptions[group.Name] = [option];
-                    ImGui.EndCombo();
-                }
-            }
-            else
-            {
-                ImGui.TextColored(Theme.Ash, group.Name);
-                foreach (var option in group.Options)
-                {
-                    var enabled = selected.Contains(option, StringComparer.OrdinalIgnoreCase);
-                    if (!ImGui.Checkbox(option, ref enabled)) continue;
-                    selected = selected.Where(item => !item.Equals(option, StringComparison.OrdinalIgnoreCase)).ToList();
-                    if (enabled) selected.Add(option);
-                    freeUseOptions[group.Name] = selected;
-                }
-            }
-            ImGui.PopID();
-        }
-    }
-
-    private static bool SameSuggestion(AnimationSuggestion left, AnimationSuggestion right) =>
-        left.SuggestedBy.Equals(right.SuggestedBy, StringComparison.OrdinalIgnoreCase) &&
-        left.ModKey.Equals(right.ModKey, StringComparison.OrdinalIgnoreCase);
-
-    private static string SuggestionAnimationName(
+    /// <summary>The emote or pose behind a trigger, for the prompts (PromptWindows.cs); empty when unknown.</summary>
+    internal static string SuggestionAnimationName(
         string trigger,
         IReadOnlyList<PoseTarget> detectedPoses,
         IReadOnlyList<EmoteTarget> detectedEmotes)
@@ -1721,108 +1439,6 @@ public sealed partial class MainWindow : Window
             }
         }
         return "";
-    }
-
-    private void DrawRoomInvitePopup()
-    {
-        if (activeRoomInvite is null && plugin.TryTakeRoomInvite(out var invite))
-        {
-            activeRoomInvite = invite;
-            ImGui.OpenPopup("Room invite###SynastryRoomInvite");
-        }
-        if (!ImGui.BeginPopupModal("Room invite###SynastryRoomInvite", ImGuiWindowFlags.AlwaysAutoResize | ImGuiWindowFlags.NoTitleBar))
-            return;
-        var active = activeRoomInvite;
-        if (active is null)
-        {
-            ImGui.CloseCurrentPopup();
-            ImGui.EndPopup();
-            return;
-        }
-        ImGui.TextColored(Theme.AzureText, $"{active.SenderName} invited you to their room");
-        using (Theme.CodeFont()) ImGui.TextUnformatted(active.RoomCode);
-        ImGui.Dummy(new Vector2(0, 6f * Theme.Scale));
-        if (Theme.Primary("Join", 140f * Theme.Scale))
-        {
-            plugin.AcceptRoomInvite(active);
-            activeRoomInvite = null;
-            ImGui.CloseCurrentPopup();
-        }
-        ImGui.SameLine();
-        if (Theme.Text("Decline"))
-        {
-            plugin.DeclineRoomInvite(active);
-            activeRoomInvite = null;
-            ImGui.CloseCurrentPopup();
-        }
-        ImGui.EndPopup();
-    }
-
-    private void CollectTransferOffers()
-    {
-        pendingTransferOffers.RemoveAll(offer => offer.ExpiresAt <= DateTimeOffset.UtcNow);
-        var received = false;
-        while (plugin.TryTakeTransferOffer(out var offer))
-        {
-            if (pendingTransferOffers.Any(existing => existing.TransferId == offer.TransferId)) continue;
-            pendingTransferOffers.Add(offer);
-            received = true;
-        }
-        if (received) transferInboxOpen = true;
-    }
-
-    private void DrawTransferInboxWindow()
-    {
-        if (!transferInboxOpen) return;
-        var s = Theme.Scale;
-        ImGui.SetNextWindowSize(new Vector2(440f, 360f) * s, ImGuiCond.Appearing);
-        ImGui.PushStyleVar(ImGuiStyleVar.WindowPadding, new Vector2(22f, 18f) * s);
-        var visible = ImGui.Begin("Offered to you###SynastryTransferInbox", ref transferInboxOpen, ImGuiWindowFlags.NoCollapse);
-        ImGui.PopStyleVar();
-        if (!visible)
-        {
-            ImGui.End();
-            return;
-        }
-
-        if (pendingTransferOffers.Count == 0)
-        {
-            Theme.Quiet("Nothing waiting. Offers show up here when someone in your room sends you an animation.");
-            ImGui.End();
-            return;
-        }
-
-        var draw = ImGui.GetWindowDrawList();
-        for (var index = 0; index < pendingTransferOffers.Count; index++)
-        {
-            var offer = pendingTransferOffers[index];
-            ImGui.PushID(offer.TransferId);
-            ImGui.TextUnformatted(offer.ModName);
-            Theme.Label($"from {offer.SenderName}");
-            ImGui.SameLine(0, 6f * s);
-            Theme.Number($"{offer.Size / 1024f / 1024f:0.0} MB");
-            var remaining = Math.Max(0, (int)Math.Ceiling((offer.ExpiresAt - DateTimeOffset.UtcNow).TotalMinutes));
-            Theme.Quiet($"Expires in {remaining} minute{(remaining == 1 ? "" : "s")}");
-            if (Theme.Primary("Install", 110f * s))
-            {
-                plugin.AcceptModTransfer(offer);
-                pendingTransferOffers.RemoveAt(index--);
-            }
-            else
-            {
-                ImGui.SameLine();
-                if (Theme.Text("Decline"))
-                {
-                    plugin.DeclineModTransfer(offer);
-                    pendingTransferOffers.RemoveAt(index--);
-                }
-            }
-            ImGui.Dummy(new Vector2(0, 4f * s));
-            Theme.HorizontalLine(draw, ImGui.GetCursorScreenPos(), ImGui.GetContentRegionAvail().X);
-            ImGui.Dummy(new Vector2(0, 8f * s));
-            ImGui.PopID();
-        }
-        ImGui.End();
     }
 
     // ---- Guide ----------------------------------------------------------------------------------

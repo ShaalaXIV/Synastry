@@ -6,7 +6,7 @@ namespace EmoteLink;
 
 /// <summary>
 /// Synastry shrunk down: what's playing, the room at a glance, and the moment-to-moment buttons.
-/// Everything else, prompts included, lives in the full window.
+/// Prompts have windows of their own; everything else lives in the full window.
 /// </summary>
 public sealed partial class MiniPlayerWindow : Window
 {

@@ -2113,6 +2113,8 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
                 return sync.JoinRoomAsync(invite.RoomCode, characterName, GetCatalogFingerprints());
             }, TaskScheduler.Default).Unwrap();
         RunSync(join, $"Joined {invite.SenderName} in room {invite.RoomCode}.");
+        // The invitation can be answered with Synastry closed; show the room being joined.
+        if (!mainWindow.IsOpen && !miniPlayerWindow.IsOpen && !wizardWindow.IsOpen) ToggleWindow();
     }
 
     public void DeclineRoomInvite(RoomInvite invite) =>
@@ -2322,8 +2324,6 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         if (string.IsNullOrWhiteSpace(senderName)) senderName = "A player";
         roomInvites.Enqueue(new RoomInvite(senderName, code));
         Status = $"{senderName} invited you to room {code}.";
-        miniPlayerWindow.IsOpen = false;
-        mainWindow.IsOpen = true;
         chatMessage.Message = $"Synastry invitation: {senderName} invited you to room {code}.";
     }
 
@@ -2669,11 +2669,8 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         var partnerId = partnerSync?.ConnectionId;
         foreach (var member in room.Members.Where(member =>
                      member.FreeUse && !sync.IsCurrentMember(member.ConnectionId) && member.ConnectionId != partnerId))
-        {
-            mainWindow.ShowFreeUsePrompt(new FreeUsePrompt(
+            ShowFreeUsePrompt(new FreeUsePrompt(
                 directory, name, ownTrigger, member.ConnectionId, member.DisplayName));
-            SurfacePromptFromMiniPlayer();
-        }
     }
 
     private void ProcessFreeUseDirectives()
@@ -4502,7 +4499,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         {
             if (result.Error is not null)
             {
-                Status = $"Could not download {result.Offer.ModName}: {result.Error.GetBaseException().Message}";
+                ReportPromptFailure($"Could not download {result.Offer.ModName}: {result.Error.GetBaseException().Message}");
                 Log.Warning(result.Error, "Transferred mod download failed.");
                 continue;
             }
@@ -4514,7 +4511,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             {
                 pendingPenumbraInstalls.Remove(pending);
                 TryDeleteManagedTransferPackage(result.Path, "after Penumbra rejected the install request");
-                Status = $"Downloaded {result.Offer.ModName}, but installation failed: {installation.Error}.";
+                ReportPromptFailure($"Downloaded {result.Offer.ModName}, but installation failed: {installation.Error}.");
                 continue;
             }
             RunSync(sync.CompleteModTransferAsync(result.Offer.TransferId),
@@ -4657,15 +4654,15 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     private void ProcessAnimationSuggestionNotifications()
     {
         while (incomingAnimationSuggestions.TryDequeue(out var suggestion))
-        {
-            mainWindow.ShowAnimationSuggestion(suggestion);
-            SurfacePromptFromMiniPlayer();
-        }
+            ShowAnimationSuggestion(suggestion);
     }
 
+    /// <summary>Still worth asking: not withdrawn, and not readied or planned for you meanwhile.</summary>
     public bool IsAnimationSuggestionActive(AnimationSuggestion suggestion) =>
         sync.IsInRoom && activeAnimationSuggestions.ContainsKey(
-            SuggestionKey(suggestion.SuggestedBy, suggestion.ModKey));
+            SuggestionKey(suggestion.SuggestedBy, suggestion.ModKey)) &&
+        !suggestion.ModKey.Equals(preparedModKey, StringComparison.OrdinalIgnoreCase) &&
+        !suggestion.ModKey.Equals(WizardPlan?.ModKey, StringComparison.OrdinalIgnoreCase);
 
     public void IgnoreAnimationSuggestion(AnimationSuggestion suggestion)
     {
@@ -5568,15 +5565,6 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         }
         if (configuration.UseMiniPlayer) miniPlayerWindow.IsOpen = true;
         else mainWindow.IsOpen = true;
-    }
-
-    /// <summary>Prompts only show in the full window; bring it up for one while the mini player is
-    /// showing, without changing which one Synastry opens as.</summary>
-    private void SurfacePromptFromMiniPlayer()
-    {
-        if (!miniPlayerWindow.IsOpen) return;
-        miniPlayerWindow.IsOpen = false;
-        mainWindow.IsOpen = true;
     }
 
     public void ShowMiniPlayer()
