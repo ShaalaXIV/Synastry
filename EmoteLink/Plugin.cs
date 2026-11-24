@@ -100,6 +100,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     [PluginService] private static IContextMenu ContextMenu { get; set; } = null!;
     [PluginService] private static IClientState ClientState { get; set; } = null!;
     [PluginService] private static IUnlockState UnlockState { get; set; } = null!;
+    [PluginService] private static ICondition Conditions { get; set; } = null!;
 
     private readonly Configuration configuration;
     private readonly AnimationIndexCache animationIndexCache;
@@ -108,6 +109,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     private readonly VanillaEmoteRedirectService vanillaEmoteRedirect;
     private readonly MovementService movement;
     private readonly ContactAlignService contactAlign;
+    private readonly Align.HeelsOffset heels;
     private readonly AnimationPreloader preloader;
     private bool simpleHeelsLoaded;
     private long simpleHeelsCheckedAt;
@@ -135,6 +137,34 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
 
     /// <summary>The animation this player last started, until it's cleared (moving or another start).</summary>
     public NowPlayingInfo? NowPlaying { get; private set; }
+
+    /// <summary>What you're playing, from the moment it really started.</summary>
+    internal Align.PlayContext? CurrentPlay { get; private set; }
+
+    /// <summary>A saved place is waiting to be applied or still being adjusted.</summary>
+    internal bool IsPlacing { get; set; }
+
+    /// <summary>A saved place next to your partner is holding you, so bone align's memory stays out of it.</summary>
+    internal bool HasPartnerPlace { get; set; }
+
+    /// <summary>Bone align is measuring; partner places hold still and contact IK waits.</summary>
+    internal bool IsBoneAligning { get; set; }
+
+    // Built in their own files: Plugin.BoneAlign.cs, Plugin.Places.cs, Plugin.FreeCam.cs and
+    // Plugin.Prompts.cs. A hook with no implementation compiles to nothing.
+    partial void InitializeFreeCam();
+    partial void InitializeBoneAlign();
+    partial void InitializePlaces();
+    partial void InitializePrompts();
+    partial void TickFreeCam(float seconds);
+    partial void TickBoneAlign();
+    partial void TickPlaces();
+    partial void OnPlayStarted();
+    partial void OnPlayCleared();
+    partial void DisposeFreeCam();
+    partial void DisposeBoneAlign();
+    partial void DisposePlaces();
+    partial void HandleFreeCamCommand(string arguments, ref bool handled);
     private readonly SettingsWindow settingsWindow;
     private readonly CustomCommandsWindow customCommandsWindow;
     private readonly TypedEmoteChooserWindow typedEmoteChooserWindow;
@@ -347,6 +377,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             name => IsRoomMemberNamed(name) && !(testPartner.Active && name.Equals(testPartner.Name, StringComparison.OrdinalIgnoreCase)),
             ExecuteCommand,
             () => configuration.LineUpPreference, TestPartnerCharacter, MappedOpeningOf);
+        heels = new Align.HeelsOffset(Objects, command => Commands.ProcessCommand(command), IsSimpleHeelsLoadedCached, Log);
         preloader = new AnimationPreloader(PluginInterface, Objects, penumbra, sync, Log);
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
         sync.LocalAnimationReceived += signal => localAnimationSignals.Enqueue(signal);
@@ -392,6 +423,10 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         windows.AddWindow(customCommandsWindow);
         windows.AddWindow(typedEmoteChooserWindow);
         windows.AddWindow(wizardWindow);
+        InitializeFreeCam();
+        InitializeBoneAlign();
+        InitializePlaces();
+        InitializePrompts();
 
         if (!configuration.HasSeenHowTo)
         {
@@ -433,6 +468,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             OpenWizard();
             return;
         }
+        var handled = false;
+        HandleFreeCamCommand(arguments, ref handled);
+        if (handled) return;
         var match = Regex.Match(arguments, @"^\s*join\s+([A-Za-z0-9]{4,8})\s*$", RegexOptions.IgnoreCase);
         if (match.Success) JoinSyncRoom(match.Groups[1].Value);
         else if (Regex.IsMatch(arguments, @"^\s*relay\s+(?:default|reset)\s*$", RegexOptions.IgnoreCase))
@@ -3072,7 +3110,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
 
         configuration.ActiveAssignments.Add(new TemporaryAssignment(collection.Value.Id, directory, name));
         configuration.Save(PluginInterface);
-        NowPlaying = new NowPlayingInfo(directory, name, NowPlayingLabel(directory, requestedPose, requestedCommand));
+        NowPlaying = new NowPlayingInfo(directory, name, NowPlayingLabel(directory, requestedPose, requestedCommand),
+            requestedPose is null ? "" : $"pose:{requestedPose.Kind}:{requestedPose.Index}",
+            selections.ToDictionary(pair => pair.Key, pair => pair.Value.ToList(), StringComparer.OrdinalIgnoreCase));
         playingSince = Environment.TickCount64;
         playingSignature = null;
         playingStarted = false;
@@ -3106,6 +3146,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             return false;
         }
         RememberTypedEmoteDefault(playback.EmoteId, directory);
+        if (NowPlaying is { } chosen) NowPlaying = chosen with { Trigger = $"emote:{playback.EmoteId}" };
 
         // Preserve the game's normal networked emote path whenever the character owns it.
         // Direct timeline playback is only the fallback that bypasses a locked emote.
@@ -4147,6 +4188,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     private void ClearTemporaryAssignmentsInternal(bool cancelGroupReady, bool clearRemote = true)
     {
         NowPlaying = null;
+        CurrentPlay = null;
+        OnPlayCleared();
+        heels.Reset();
         if (activeDirectPlayback is { } direct)
         {
             ActionTimelinePlayback.Stop(direct.ActorAddress, direct.OriginalBaseOverride);
@@ -4267,8 +4311,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         movementTrackingStart = Math.Max(movementTrackingStart, Environment.TickCount64 + 250);
     }
 
-    private void OnUpdate(IFramework _)
+    private void OnUpdate(IFramework framework)
     {
+        TickFreeCam((float)framework.UpdateDelta.TotalSeconds);
         ProcessTypedEmoteRequest();
         ProcessAnimationSuggestionNotifications();
         UpdateLocalPresence();
@@ -4279,6 +4324,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         if (roleSyncPending) StartRoleLabelSync();
         if (communityRoleSyncPending) StartCommunityRoleLabelSync();
         UpdateAlignment();
+        heels.Tick();
+        TickPlaces();
+        TickBoneAlign();
         contactAlign.Tick(configuration.AutomaticLineUp, IsSimpleHeelsLoadedCached(), IsSynastryAnimationPlaying());
         if (bodySyncPending) StartBodyProfileSync();
         testPartner.Tick();
@@ -4378,6 +4426,14 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             playingSince = Environment.TickCount64;
             playingSignature = null;
             playingStarted = true;
+            if (NowPlaying is { } started)
+            {
+                CurrentPlay = new Align.PlayContext(started.Directory, started.ModName,
+                    modCatalogKeys.GetValueOrDefault(started.Directory, ""),
+                    modSyncKeys.GetValueOrDefault(started.Directory, ""), started.Trigger, started.Animation,
+                    started.Selections ?? new Dictionary<string, List<string>>(), Environment.TickCount64);
+                OnPlayStarted();
+            }
         }
         if (animationStarted && pendingSelectionModKey is not null)
         {
@@ -5566,6 +5622,10 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
 
     public void Dispose()
     {
+        DisposeFreeCam();
+        DisposeBoneAlign();
+        DisposePlaces();
+        heels.Reset();
         LeaveTestPartnerRoom();
         testPartner.Dispose();
         contactIk?.Dispose();
@@ -5619,7 +5679,12 @@ public sealed record AnimationSuggestion(
     string ModName,
     string ActivatedTrigger = "");
 public sealed record EmoteTarget(uint Id, string Name, string Command);
-public sealed record NowPlayingInfo(string Directory, string ModName, string Animation);
+public sealed record NowPlayingInfo(
+    string Directory,
+    string ModName,
+    string Animation,
+    string Trigger = "",
+    IReadOnlyDictionary<string, List<string>>? Selections = null);
 public sealed record TypedEmoteCandidate(string Directory, string ModName, EmoteTarget Emote);
 public sealed record AnimationCommandTarget(
     string ModDirectory,

@@ -8,7 +8,7 @@ namespace EmoteLink;
 /// Synastry shrunk down: what's playing, the room at a glance, and the moment-to-moment buttons.
 /// Everything else, prompts included, lives in the full window.
 /// </summary>
-public sealed class MiniPlayerWindow : Window
+public sealed partial class MiniPlayerWindow : Window
 {
     private const float Width = 340f;
     private readonly Plugin plugin;
@@ -102,7 +102,10 @@ public sealed class MiniPlayerWindow : Window
         ImGui.SameLine(0, 2f * s);
         if (Theme.Text(plugin.IsAligning ? "Cancel alignment" : "Align to target")) plugin.ToggleAlignment();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Walk onto your target's spot and facing.");
+        DrawPlacesButton();
     }
+
+    partial void DrawPlacesButton();
 
     private static bool IconButton(string id, float size, Action<ImDrawListPtr, Vector2, uint> icon)
     {

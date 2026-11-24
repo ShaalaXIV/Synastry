@@ -10,7 +10,7 @@ namespace EmoteLink;
 /// The Synastry window: folders on the left, the selected folder's animations in the middle, the
 /// room on the right and the character tools along the bottom. See Theme for the look.
 /// </summary>
-public sealed class MainWindow : Window
+public sealed partial class MainWindow : Window
 {
     private const float HeaderHeight = 54f;
     private const float FooterHeight = 46f;
@@ -72,8 +72,14 @@ public sealed class MainWindow : Window
         All,
         Category,
         Uncategorized,
-        Private
+        Private,
+        Places
     }
+
+    // Saved places (MainWindow.Places.cs): a sidebar row, their own list and a footer button.
+    partial void DrawPlacesSidebarRow();
+    partial void DrawPlacesScope(ref bool drawn);
+    partial void DrawPlacesFooterButton();
 
     public MainWindow(Plugin plugin) : base("Synastry###EmoteLink")
     {
@@ -271,6 +277,7 @@ public sealed class MainWindow : Window
         if (Theme.Text(plugin.IsAligning ? "Cancel alignment" : "Align to target", Theme.Soft))
             plugin.ToggleAlignment();
         Tooltip("Walk onto your target's spot and facing. During a looping emote they must be within half a yalm.");
+        DrawPlacesFooterButton();
 
         ImGui.SameLine(0, 2f * s);
         Disabled(!plugin.Sync.IsInRoom, () =>
@@ -436,6 +443,7 @@ public sealed class MainWindow : Window
                 libraryScope == LibraryScope.Private && search.Length == 0, 0, null, out _))
             SelectScope(LibraryScope.Private, null);
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Never offered to the room or sent to anyone.");
+        DrawPlacesSidebarRow();
 
         ImGui.PopStyleVar();
         ImGui.EndChild();
@@ -573,6 +581,9 @@ public sealed class MainWindow : Window
 
     private void DrawAnimations()
     {
+        var drawnPlaces = false;
+        if (libraryScope == LibraryScope.Places && search.Length == 0) DrawPlacesScope(ref drawnPlaces);
+        if (drawnPlaces) return;
         var s = Theme.Scale;
         var mods = VisibleMods();
         selectedMods.RemoveWhere(directory => !plugin.Mods.Any(mod =>
