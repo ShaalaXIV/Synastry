@@ -5436,6 +5436,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
 
     private void StandUpFrom(PoseKind seat, long now)
     {
+        freeCam?.LetGoOfCharacter();
         ExecuteCommand(seat switch
         {
             PoseKind.GroundSit => "/groundsit",

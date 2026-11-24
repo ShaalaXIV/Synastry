@@ -26,10 +26,8 @@ public sealed unsafe class FreeCamService : IDisposable
     public const float MinimumSpeed = 0.1f;
     public const float MaximumSpeed = 5f;
     private const float FasterScale = 3f;
-    // One wheel notch of zoom becomes one step of speed.
+    // How much one notch of the mouse wheel changes the speed.
     private const float SpeedStep = 1.15f;
-    private const float ZoomPerStep = 0.75f;
-    private const float ZoomNoise = 0.01f;
     // Just short of straight up and down: the view has no "right" at exactly 90 degrees.
     private const float PitchLimit = 1.55f;
     private const float StillSeconds = 0.25f;
@@ -147,7 +145,7 @@ public sealed unsafe class FreeCamService : IDisposable
             fov = candidate->FoV;
             scenePosition = candidate->SceneCamera.Position;
             sceneLookAt = candidate->SceneCamera.LookAtVector;
-            // Pinned mid-range: at either end the game clamps the zoom and the wheel couldn't be read.
+            // Pinned mid-range: at its shortest, turning the wheel would switch to first person.
             pinnedDistance = (candidate->MinDistance + candidate->MaxDistance) * 0.5f;
             actor = objects.LocalPlayer!.Address;
             actorPosition = objects.LocalPlayer.Position;
@@ -303,12 +301,15 @@ public sealed unsafe class FreeCamService : IDisposable
                 End(reason);
                 return;
             }
-            // Zooming changes the speed instead. Read here, so it works with any zoom binding. The
+            // The wheel changes the speed instead of the zoom. The wheel itself is read, where the game
+            // reads it: how far the zoom moved says nothing near a wall, where the game limits it. The
             // direction stays under the game's control so mouse look keeps working.
-            var zoom = current->Distance - pinnedDistance;
-            if (float.IsFinite(zoom) && MathF.Abs(zoom) > ZoomNoise)
-                Speed = Math.Clamp(Speed * MathF.Pow(SpeedStep, Math.Clamp(-zoom / ZoomPerStep, -1f, 1f)),
-                    MinimumSpeed, MaximumSpeed);
+            var framework = GameFramework.Instance();
+            var wheel = framework is null || framework->UIModule is null
+                ? 0
+                : framework->UIModule->GetUIInputData()->UIFilteredCursorInputs.MouseWheel;
+            if (wheel != 0)
+                Speed = Math.Clamp(Speed * (wheel > 0 ? SpeedStep : 1f / SpeedStep), MinimumSpeed, MaximumSpeed);
             current->Distance = pinnedDistance;
             current->InterpDistance = pinnedDistance;
             current->FoV = fov;
