@@ -529,9 +529,9 @@ internal sealed class LibraryPanel(Plugin plugin, MainWindow window)
             ImGui.PushID($"pose-{pose.Kind}-{pose.Index}");
             var chip = WholeModChip(mod.Directory, "$detected-pose", $"{pose.Kind}:{pose.Index}", MainWindow.PoseDisplayName(pose));
             var chosen = RoleChip(chip, suggestionMode, false, ref flow, out var solo);
+            if ((chosen || solo) && row is not null) plugin.RememberRecent(row);
             if (chosen && (suggestionMode || window.GuideAllowsPick(mod.Directory, chip.AnimationName)))
             {
-                if (row is not null) plugin.RememberRecent(row);
                 plugin.ActivateDetectedPose(mod.Directory, mod.Name, pose);
                 RememberReady(chip.Key);
                 activated = true;
@@ -545,9 +545,9 @@ internal sealed class LibraryPanel(Plugin plugin, MainWindow window)
             ImGui.PushID($"emote-{emote.Id}");
             var chip = WholeModChip(mod.Directory, "$detected-emote", emote.Id.ToString(), emote.Name);
             var chosen = RoleChip(chip, suggestionMode, false, ref flow, out var solo);
+            if ((chosen || solo) && row is not null) plugin.RememberRecent(row);
             if (chosen && (suggestionMode || window.GuideAllowsPick(mod.Directory, chip.AnimationName)))
             {
-                if (row is not null) plugin.RememberRecent(row);
                 plugin.ActivateDetectedEmote(mod.Directory, mod.Name, emote);
                 RememberReady(chip.Key);
                 activated = true;

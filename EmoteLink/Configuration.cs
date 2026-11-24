@@ -16,6 +16,9 @@ public sealed class Configuration : IPluginConfiguration
         new(StringComparer.OrdinalIgnoreCase);
     public Dictionary<string, string> OptionNotes { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public HashSet<string> PrivateMods { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    // Starred and recently played animations, each "mod folder, group, option" on lines of their own.
+    public HashSet<string> FavoriteOptions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public List<string> RecentOptions { get; set; } = [];
     public HashSet<string> CommunityRoleKeys { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     // The last moderator revision applied to each tag. A moderator's tag replaces the player's
     // own once; after that it's theirs to change, until a moderator acts on it again.
@@ -56,9 +59,6 @@ public sealed class Configuration : IPluginConfiguration
     public Dictionary<string, string> ActiveBodyMesh { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<CustomAnimationCommand> CustomAnimationCommands { get; set; } = [];
     public Dictionary<uint, string> TypedEmoteDefaults { get; set; } = [];
-    // Starred and recently played animations, each "mod folder, group, option" on lines of their own.
-    public HashSet<string> FavoriteOptions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
-    public List<string> RecentOptions { get; set; } = [];
 
     public void Save(IDalamudPluginInterface pluginInterface) => pluginInterface.SavePluginConfig(this);
 }
