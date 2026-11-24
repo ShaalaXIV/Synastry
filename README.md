@@ -57,7 +57,7 @@ A room member can turn on **FREE USE mode** in the room panel to hand their role
 
 - Automatically lists Penumbra mods containing animation files.
 - Assign custom slash commands such as `/wicked` to any indexed emote or pose from the **Emote Commands** window.
-- Collapsible option groups support large packs with hundreds of choices.
+- Big packs open as lists of animations: each option is its own row with its own role buttons, a search reaches every option, and favourites and recent plays have their own folders. Settings that play nothing stay out of the way.
 - Create nested folders and drag complete folder trees or individual mods into them. Folders keep their open/closed state after a move, and mods sort alphabetically within each availability-color tier.
 - Mark mods private from their right-click menu. In a room, private mods stay below public mods that have no shared match.
 - The full-width color legend explains room availability, suggestions, privacy, and unmatched animations.
@@ -67,6 +67,11 @@ A room member can turn on **FREE USE mode** in the room panel to hand their role
 - Use the footer to run lobby-only **EmoteSync** manually. When Simple Heels is loaded, **Temp Offset** opens `/heels temp` and **Livepose** opens `/heels livepose`.
 - Right-click another player to send a room invitation they can accept or decline immediately.
 - Align your character with a nearby target before playback.
+- **Bone align** moves your drawn character so a body part meets a partner's, through Simple Heels, and remembers each animation it lined up so it can do it again by itself.
+- **Saved places** remember where an animation landed (a spot, a piece of furniture or next to a partner) and put you back there when you play it again.
+- **Free cam** flies the camera around (`/syn freecam`): Cammy's when Cammy is on, Synastry's own otherwise.
+- Your character stays still while a Synastry animation plays, so a stray key can't end it. Unlock with the lock button or `/syn unlock`.
+- Offers and suggestions pop up even while Synastry is closed.
 - Optionally enable **Sit/doze anywhere** for furniture-free chair-sit and doze animations.
 - Choose an existing Penumbra mod-list folder for received animations, or create a dedicated folder without leaving Synastry.
 - Green, orange, purple, cyan, and white indicators show room availability, suggestions, and privacy state.
@@ -118,3 +123,9 @@ The in-place emote carrier beta uses
 [NoireLib](https://github.com/Aspher0/NoireLib) by Aspher0 for PAP retargeting and follows the
 emote-swap approach demonstrated by
 [BypassEmote](https://github.com/Aspher0/BypassEmote). Both are used under AGPL-compatible terms.
+
+The library layout, bone align, alignment memory, saved places, free cam and animation lock are adapted from
+[PoseKit](https://github.com/RaylaPetal/PoseKit) by RaylaPetal (AGPL-3.0), used with permission. PoseKit credits
+[SimpleHeels](https://github.com/Caraxi/SimpleHeels) for the render offset,
+[Ktisis](https://github.com/ktisis-tools/Ktisis) for free cam movement and keyboard input, and
+[Cammy](https://github.com/UnknownX7/Cammy) for free cam input handling.
