@@ -58,6 +58,8 @@ public sealed class Configuration : IPluginConfiguration
     public Dictionary<string, string> ActiveBodyMesh { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<CustomAnimationCommand> CustomAnimationCommands { get; set; } = [];
     public Dictionary<uint, string> TypedEmoteDefaults { get; set; } = [];
+    // Saved places per character, keyed "Name@HomeWorldId".
+    public Dictionary<string, List<Places.SavedPlace>> SavedPlaces { get; set; } = [];
 
     public void Save(IDalamudPluginInterface pluginInterface) => pluginInterface.SavePluginConfig(this);
 }
