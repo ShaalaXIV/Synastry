@@ -36,10 +36,17 @@ public sealed class Configuration : IPluginConfiguration
     public bool DozeAnywhereOnly { get; set; }
     // Open Synastry as the small mini player instead of the full window.
     public bool UseMiniPlayer { get; set; }
-    // Line up a couple animation's contact (penis with mouth, vagina or anus) through Simple Heels.
-    // Experimental, off until the player turns it on (1.0.86).
+    // Was the automatic line-up before bone align. Nothing reads it any more; it stays so older
+    // settings files still load.
     public bool AutomaticLineUp { get; set; }
-    // Which part line-up aims for when more than one is in reach.
+    // Bone align: the parts to bring together, the room left between them, and whether to turn first.
+    public Align.BodyPart BoneAlignSelf { get; set; } = Align.BodyPart.Penis;
+    public Align.BodyPart BoneAlignPartner { get; set; } = Align.BodyPart.Vagina;
+    public float BoneAlignGap { get; set; } = 0.02f;
+    public bool BoneAlignFaceSameWay { get; set; } = true;
+    // Repeat a remembered bone align by itself when the animation starts again.
+    public bool AutoAlignFromMemory { get; set; } = true;
+    // Which part the contact IK aims for when more than one is in reach.
     public ContactPreference LineUpPreference { get; set; } = ContactPreference.Closest;
     // Bending bones to make couple animations meet.
     public bool BendShaft { get; set; }

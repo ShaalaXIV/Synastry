@@ -92,12 +92,8 @@ public sealed partial class MiniPlayerWindow : Window
                 : "Join a room to sync emotes with it.");
 
         ImGui.SameLine(0, 2f * s);
-        var heels = plugin.SimpleHeelsAvailable;
-        if (!heels) ImGui.BeginDisabled();
-        if (Theme.Text(plugin.IsLiningUp ? "Lining up…" : "Line up")) plugin.LineUpNow();
-        if (!heels) ImGui.EndDisabled();
-        if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
-            ImGui.SetTooltip(heels ? "Line up a couple animation now." : "Line up needs Simple Heels.");
+        if (Theme.Text(plugin.IsBoneAligning ? "Aligning…" : "Bone align")) plugin.ToggleBoneAlign();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip("Bring one of your body parts to your partner's.");
 
         ImGui.SameLine(0, 2f * s);
         if (Theme.Text(plugin.IsAligning ? "Cancel alignment" : "Align to target")) plugin.ToggleAlignment();

@@ -116,6 +116,10 @@ internal sealed unsafe class ContactMapResolver
 
     public void Forget() => maps.Clear();
 
+    /// <summary>Looks again at which file everyone is playing: another mod or option on the same
+    /// timeline changes the file but not the timeline.</summary>
+    public void ForgetPlaying() => playing.Clear();
+
     /// <summary>The hash of the file this character loads for the timeline, or null while it is
     /// still being hashed in the background or when it is a game file (no mod, so no map).</summary>
     private string? FileHashFor(ushort race, ushort timeline, ushort objectIndex, bool isLocal)
