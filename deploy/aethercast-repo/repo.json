@@ -26,7 +26,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.97.0",
+    "AssemblyVersion": "1.0.98.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -41,10 +41,10 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.97/Synastry-1.0.97.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.97/Synastry-1.0.97.zip",
-    "Changelog": "New: big packs open as lists with every animation on its own row, plus Favorites, Recent and a search that reaches every option. Bone align (with memory) replaces Line up, saved places put you back where an animation landed, a free cam (Cammy's when it is on), and an animation lock so a stray key can't end a pose (/syn unlock). Offers, suggestions and invites now pop up even while Synastry is closed. Listings, bone align, places, free cam and lock are adapted from PoseKit by RaylaPetal, with permission.",
-    "LastUpdate": "1795487514"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.98/Synastry-1.0.98.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.98/Synastry-1.0.98.zip",
+    "Changelog": "Bone align is now in the room panel, above Start now, and Unlock movement is a full-width button right below Start now, so both are easy to find. 1.0.97 added big-pack listings, bone align with memory, saved places, free cam, the animation lock (/syn unlock) and popups that show while Synastry is closed, adapted from PoseKit by RaylaPetal with permission.",
+    "LastUpdate": "1795497676"
   },
   {
     "Author": "ShaalaXIV",
