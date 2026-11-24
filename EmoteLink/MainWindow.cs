@@ -3,6 +3,7 @@ using System.Text;
 using Dalamud.Bindings.ImGui;
 using Dalamud.Interface.Windowing;
 using Dalamud.Utility;
+using EmoteLink.Library;
 
 namespace EmoteLink;
 
@@ -35,21 +36,17 @@ public sealed partial class MainWindow : Window
     private FreeUsePrompt? activeFreeUsePrompt;
     private bool openFreeUsePopup;
     private Dictionary<string, List<string>> freeUseOptions = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string> noteBuffers = new(StringComparer.OrdinalIgnoreCase);
-    private readonly Dictionary<string, string> correctionBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> folderRenameBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly Dictionary<string, string> folderChildBuffers = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> collapsedFolders = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> selectedMods = new(StringComparer.OrdinalIgnoreCase);
-    private readonly HashSet<string> openMods = new(StringComparer.OrdinalIgnoreCase);
+    private readonly LibraryPanel library;
     private LibraryScope libraryScope = LibraryScope.All;
     private string? activeCategoryId;
     private string? selectionAnchor;
     private string? selectionAnchorGroup;
     private bool openCreateFolder;
     private bool openMarkAllPrivate;
-    // The role this player last readied, shown as theirs while the room still has them ready.
-    private string? readyRoleKey;
     private string lastLineUpStatus = "";
     private long lineUpStatusAt;
     private bool tutorialActive;
@@ -67,13 +64,15 @@ public sealed partial class MainWindow : Window
         Complete
     }
 
-    private enum LibraryScope
+    internal enum LibraryScope
     {
         All,
         Category,
         Uncategorized,
         Private,
-        Places
+        Places,
+        Favorites,
+        Recent
     }
 
     // Saved places (MainWindow.Places.cs): a sidebar row, their own list and a footer button.
@@ -84,6 +83,7 @@ public sealed partial class MainWindow : Window
     public MainWindow(Plugin plugin) : base("Synastry###EmoteLink")
     {
         this.plugin = plugin;
+        library = new LibraryPanel(plugin, this);
         Size = new Vector2(1100, 700);
         SizeCondition = ImGuiCond.FirstUseEver;
         SizeConstraints = new WindowSizeConstraints
@@ -414,6 +414,7 @@ public sealed partial class MainWindow : Window
     private void DrawFolders()
     {
         var s = Theme.Scale;
+        var view = library.Refresh(libraryScope, activeCategoryId, search);
         ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 10f * s);
         Theme.Label("Folders");
         ImGui.Dummy(new Vector2(0, 2f * s));
@@ -425,9 +426,13 @@ public sealed partial class MainWindow : Window
         if (FolderRow("all", "All animations", plugin.Mods.Count, libraryScope == LibraryScope.All && search.Length == 0, 0, null, out _))
             SelectScope(LibraryScope.All, null);
         AcceptFolderRootDrop();
+        if (FolderRow("favorites", "Favorites", view.FavoriteCount, libraryScope == LibraryScope.Favorites && search.Length == 0, 0, null, out _))
+            SelectScope(LibraryScope.Favorites, null);
+        if (FolderRow("recent", "Recent", view.RecentCount, libraryScope == LibraryScope.Recent && search.Length == 0, 0, null, out _))
+            SelectScope(LibraryScope.Recent, null);
 
         foreach (var category in plugin.GetChildCategories(null).ToList())
-            DrawFolderTree(category, 0);
+            DrawFolderTree(category, 0, view);
 
         if (FolderRow("unsorted", "Unsorted", plugin.GetOrganizedMods(null).Count,
                 libraryScope == LibraryScope.Uncategorized && search.Length == 0, 0, null, out _))
@@ -439,7 +444,7 @@ public sealed partial class MainWindow : Window
             ImGui.GetContentRegionAvail().X - 20f * s);
         ImGui.Dummy(new Vector2(0, 12f * s));
 
-        if (FolderRow("private", "Private", plugin.Mods.Count(mod => plugin.IsModPrivate(mod.Directory)),
+        if (FolderRow("private", "Private", view.PrivateCount,
                 libraryScope == LibraryScope.Private && search.Length == 0, 0, null, out _))
             SelectScope(LibraryScope.Private, null);
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Never offered to the room or sent to anyone.");
@@ -461,14 +466,14 @@ public sealed partial class MainWindow : Window
         ClearModSelection();
     }
 
-    private void DrawFolderTree(ModCategory category, int depth)
+    private void DrawFolderTree(ModCategory category, int depth, LibraryView view)
     {
         ImGui.PushID(category.Id);
         var children = plugin.GetChildCategories(category.Id).ToList();
         var open = !collapsedFolders.Contains(category.Id);
         var selected = libraryScope == LibraryScope.Category && search.Length == 0 &&
                        activeCategoryId?.Equals(category.Id, StringComparison.OrdinalIgnoreCase) == true;
-        if (FolderRow("folder", category.Name, plugin.GetCategoryModCount(category.Id), selected, depth,
+        if (FolderRow("folder", category.Name, view.FolderCount(category.Id), selected, depth,
                 children.Count > 0 ? open : null, out var toggled))
             SelectScope(LibraryScope.Category, category.Id);
         if (toggled && !collapsedFolders.Remove(category.Id)) collapsedFolders.Add(category.Id);
@@ -477,7 +482,7 @@ public sealed partial class MainWindow : Window
         AcceptFolderDrop(category);
         AcceptModDrop(category.Id);
         if (open)
-            foreach (var child in children) DrawFolderTree(child, depth + 1);
+            foreach (var child in children) DrawFolderTree(child, depth + 1, view);
         ImGui.PopID();
     }
 
@@ -585,7 +590,7 @@ public sealed partial class MainWindow : Window
         if (libraryScope == LibraryScope.Places && search.Length == 0) DrawPlacesScope(ref drawnPlaces);
         if (drawnPlaces) return;
         var s = Theme.Scale;
-        var mods = VisibleMods();
+        var view = library.Refresh(libraryScope, activeCategoryId, search);
         selectedMods.RemoveWhere(directory => !plugin.Mods.Any(mod =>
             mod.Directory.Equals(directory, StringComparison.OrdinalIgnoreCase)));
 
@@ -596,7 +601,7 @@ public sealed partial class MainWindow : Window
             ImGui.TextUnformatted(Theme.Truncate(CurrentLibraryTitle(), width * 0.55f));
         ImGui.SameLine(0, 10f * s);
         ImGui.SetCursorScreenPos(new Vector2(ImGui.GetCursorScreenPos().X, headerStart.Y + 18f * s));
-        Theme.Number(mods.Count.ToString("N0"));
+        Theme.Number((view.IsFlat ? view.Rows.Count : view.Blocks.Count).ToString("N0"));
 
         if (selectedMods.Count > 0)
         {
@@ -624,7 +629,9 @@ public sealed partial class MainWindow : Window
             Theme.Quiet(hint);
         }
 
-        ImGui.SetCursorScreenPos(new Vector2(headerStart.X, headerStart.Y + 50f * s));
+        ImGui.SetCursorScreenPos(headerStart + new Vector2(18f * s, 42f * s));
+        library.DrawKindFilter();
+        ImGui.SetCursorScreenPos(new Vector2(headerStart.X, headerStart.Y + 74f * s));
         ImGui.Dummy(Vector2.Zero);
 
         var status = CurrentStatus();
@@ -633,19 +640,24 @@ public sealed partial class MainWindow : Window
         ImGui.BeginChild("rows", new Vector2(0, ImGui.GetContentRegionAvail().Y - statusHeight),
             false, ImGuiWindowFlags.AlwaysUseWindowPadding | ImGuiWindowFlags.None);
         ImGui.PopStyleVar();
-        if (mods.Count == 0)
+        if (view.Blocks.Count + view.Rows.Count == 0)
         {
             ImGui.Dummy(new Vector2(0, 8f * s));
             ImGui.SetCursorPosX(ImGui.GetCursorPosX() + 12f * s);
             Theme.Quiet(search.Length > 0
                 ? "No animations match this search."
-                : libraryScope == LibraryScope.Category
-                    ? "Drag animations here to fill this folder."
-                    : "No animation mods here yet.");
+                : libraryScope switch
+                {
+                    LibraryScope.Category => "Drag animations here to fill this folder.",
+                    LibraryScope.Favorites => "Star an animation to keep it here.",
+                    LibraryScope.Recent => "Animations you play show up here.",
+                    _ => "No animation mods here yet."
+                });
         }
         ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(8f, 2f) * s);
-        foreach (var mod in mods)
-            DrawModRow(mod, FindCategoryForMod(mod.Directory), mods);
+        if (view.IsFlat) library.DrawFlat();
+        foreach (var block in view.Blocks)
+            if (!library.SkipHidden(block, RowHeight * s)) DrawModRow(block, view.Order);
         ImGui.PopStyleVar();
         ImGui.Dummy(new Vector2(0, 12f * s));
         ImGui.EndChild();
@@ -677,28 +689,26 @@ public sealed partial class MainWindow : Window
         return status is "Ready." or "" ? "" : status;
     }
 
-    private void DrawModRow(
-        (string Directory, string Name) mod,
-        string? categoryId,
-        IReadOnlyList<(string Directory, string Name)> order)
+    private void DrawModRow(ModBlock block, IReadOnlyList<(string Directory, string Name)> order)
     {
         var s = Theme.Scale;
+        var mod = block.Mod;
+        var categoryId = block.CategoryId;
         ImGui.PushID(mod.Directory);
         var draw = ImGui.GetWindowDrawList();
         var start = ImGui.GetCursorScreenPos();
         var width = ImGui.GetContentRegionAvail().X;
         var height = RowHeight * s;
-        var open = openMods.Contains(mod.Directory);
+        var open = library.IsOpen(block);
         var selected = selectedMods.Contains(mod.Directory);
         var isPrivate = plugin.IsModPrivate(mod.Directory);
         var pickedBy = plugin.GetRemoteModSelector(mod.Directory);
         var inRoom = plugin.Sync.IsInRoom;
 
+        // Behind what's inside, at the height it took last time; the cards in it need the draw list whole.
         if (open)
-        {
-            draw.ChannelsSplit(2);
-            draw.ChannelsSetCurrent(1);
-        }
+            draw.AddRectFilled(start, start + new Vector2(width, MathF.Max(height, library.OpenHeight(mod.Directory) - 2f * s)),
+                ImGui.GetColorU32(Theme.Raised), 3f * s);
 
         // The row's click area stops short of the Send to room button instead of lying under it:
         // an overlapped row took the button's clicks, so Send never fired.
@@ -716,7 +726,7 @@ public sealed partial class MainWindow : Window
         {
             var io = ImGui.GetIO();
             if (io.KeyCtrl || io.KeyShift) HandleModSelection(mod.Directory, categoryId, order);
-            else if (!openMods.Remove(mod.Directory)) openMods.Add(mod.Directory);
+            else library.Toggle(block);
         }
         if (ImGui.IsItemClicked(ImGuiMouseButton.Right) && !selectedMods.Contains(mod.Directory))
             SelectOnly(mod.Directory, categoryId);
@@ -732,10 +742,11 @@ public sealed partial class MainWindow : Window
 
         // Colour-coded like the old list: green everyone, amber some, azure picked, grey private.
         var highlight = pickedBy is not null ? Theme.AzureText : Theme.AvailabilityColor(availability);
-        if (highlight is { } wash && !open)
+        if (highlight is { } wash)
         {
-            draw.AddRectFilled(start, start + new Vector2(width, height),
-                ImGui.GetColorU32(new Vector4(wash.X, wash.Y, wash.Z, 0.07f)), 3f * s);
+            if (!open)
+                draw.AddRectFilled(start, start + new Vector2(width, height),
+                    ImGui.GetColorU32(new Vector4(wash.X, wash.Y, wash.Z, 0.07f)), 3f * s);
             draw.AddRectFilled(start, start + new Vector2(2f * s, height), ImGui.GetColorU32(wash), 1f * s);
         }
         Theme.AvailabilityMark(draw, new Vector2(start.X + 16f * s, start.Y + height * 0.5f), availability);
@@ -743,7 +754,7 @@ public sealed partial class MainWindow : Window
         var nameColor = highlight ?? (isPrivate ? Theme.Ash : Theme.Bone);
 
         // What sits at the right: Send to room on hover, otherwise who picked it or what it holds.
-        var trailing = pickedBy is not null ? $"{pickedBy} picked this" : isPrivate ? "private" : Summary(mod.Directory);
+        var trailing = pickedBy is not null ? $"{pickedBy} picked this" : isPrivate ? "private" : library.Summary(block);
         var trailingColor = pickedBy is not null ? Theme.AzureText : Theme.Faint;
         var trailingWidth = rowHovered && canSend
             ? ImGui.CalcTextSize(sendLabel).X + 24f * s
@@ -774,13 +785,11 @@ public sealed partial class MainWindow : Window
             ImGui.BeginGroup();
             ImGui.PushStyleVar(ImGuiStyleVar.ItemSpacing, new Vector2(8f, 6f) * s);
             plugin.EnsureDetectedEmotes(mod.Directory, mod.Name);
-            DrawModDetails(mod, false);
+            DrawModDetails(mod);
             ImGui.PopStyleVar();
             ImGui.EndGroup();
             var bottom = MathF.Max(ImGui.GetItemRectMax().Y, start.Y + height) + 16f * s;
-            draw.ChannelsSetCurrent(0);
-            draw.AddRectFilled(start, new Vector2(start.X + width, bottom), ImGui.GetColorU32(Theme.Raised), 3f * s);
-            draw.ChannelsMerge();
+            library.RememberOpenHeight(mod.Directory, bottom + 2f * s - start.Y);
             ImGui.SetCursorScreenPos(new Vector2(start.X, bottom + 2f * s));
             ImGui.Dummy(Vector2.Zero);
         }
@@ -795,17 +804,6 @@ public sealed partial class MainWindow : Window
         if (members <= 1) return Availability.Solo;
         if (matches >= members) return Availability.Everyone;
         return matches > 1 ? Availability.Some : Availability.OnlyYou;
-    }
-
-    private string Summary(string directory)
-    {
-        if (plugin.IsModConverted(directory)) return "carrier";
-        var emotes = plugin.GetDetectedEmotes(directory).Count;
-        var poses = plugin.GetDetectedPoses(directory).Count;
-        if (emotes > 0) return $"{emotes} emote{(emotes == 1 ? "" : "s")}";
-        if (poses > 0) return $"{poses} pose{(poses == 1 ? "" : "s")}";
-        var groups = plugin.GetOptionGroups(directory).Count;
-        return groups > 0 ? $"{groups} option{(groups == 1 ? "" : "s")}" : "";
     }
 
     private void DrawModContextMenu((string Directory, string Name) mod)
@@ -866,196 +864,6 @@ public sealed partial class MainWindow : Window
                 MoveDroppedMods(source, categoryId, mod.Directory);
             ImGui.EndDragDropTarget();
         }
-    }
-
-    /// <summary>An opened animation: its roles as chips, then its mod options. Returns true when a
-    /// role was chosen (the suggestion prompt closes then).</summary>
-    private bool DrawModDetails((string Directory, string Name) mod, bool suggestionMode)
-    {
-        var poses = plugin.GetDetectedPoses(mod.Directory);
-        var emotes = plugin.GetDetectedEmotes(mod.Directory);
-        var groups = plugin.GetOptionGroups(mod.Directory);
-        var activated = false;
-
-        if (poses.Count + emotes.Count > 0)
-        {
-            Theme.Label(plugin.Sync.IsInRoom && !suggestionMode ? "Roles" : "Animations");
-            ImGui.BeginGroup();
-            activated = DrawRoleChips(mod, poses, emotes, suggestionMode);
-            ImGui.EndGroup();
-            if (tutorialActive && tutorialStep == TutorialStep.ConfigureAnimation) HighlightLastItem();
-        }
-        else
-        {
-            Theme.Quiet("No emote or pose found in this mod's current options.");
-        }
-
-        if (groups.Count > 0)
-        {
-            ImGui.Dummy(new Vector2(0, 4f * Theme.Scale));
-            DrawOptionGroups(plugin, mod.Directory, groups);
-        }
-        return activated;
-    }
-
-    private bool DrawRoleChips(
-        (string Directory, string Name) mod,
-        IReadOnlyList<PoseTarget> poses,
-        IReadOnlyList<EmoteTarget> emotes,
-        bool suggestionMode)
-    {
-        var activated = false;
-        var right = ImGui.GetCursorScreenPos().X + ImGui.GetContentRegionAvail().X;
-        var first = true;
-
-        void Place(string label, float extra)
-        {
-            var chipWidth = ImGui.CalcTextSize(label).X + 30f * Theme.Scale + extra;
-            if (!first)
-            {
-                ImGui.SameLine(0, 8f * Theme.Scale);
-                if (ImGui.GetCursorScreenPos().X + chipWidth > right) ImGui.NewLine();
-            }
-            first = false;
-        }
-
-        foreach (var pose in poses)
-        {
-            ImGui.PushID($"pose-{pose.Kind}-{pose.Index}");
-            var name = PoseDisplayName(pose);
-            var option = $"{pose.Kind}:{pose.Index}";
-            var choice = RoleChip(mod.Directory, "$detected-pose", option, name, suggestionMode, Place, out var solo);
-            if (choice && (suggestionMode || TryTutorialAnimationAction(mod.Directory, name)))
-            {
-                plugin.ActivateDetectedPose(mod.Directory, mod.Name, pose);
-                RememberReady(mod.Directory, "$detected-pose", option);
-                activated = true;
-            }
-            if (solo) plugin.ActivateDetectedPoseSolo(mod.Directory, mod.Name, pose);
-            ImGui.PopID();
-        }
-
-        foreach (var emote in emotes)
-        {
-            ImGui.PushID($"emote-{emote.Id}");
-            var name = emote.Name;
-            var option = emote.Id.ToString();
-            var choice = RoleChip(mod.Directory, "$detected-emote", option, name, suggestionMode, Place, out var solo);
-            if (choice && (suggestionMode || TryTutorialAnimationAction(mod.Directory, name)))
-            {
-                plugin.ActivateDetectedEmote(mod.Directory, mod.Name, emote);
-                RememberReady(mod.Directory, "$detected-emote", option);
-                activated = true;
-            }
-            if (solo) plugin.ActivateDetectedEmoteSolo(mod.Directory, mod.Name, emote);
-            ImGui.PopID();
-        }
-        return activated;
-    }
-
-    private void RememberReady(string directory, string group, string option)
-    {
-        if (plugin.Sync.IsInRoom) readyRoleKey = NoteKey(directory, group, option);
-    }
-
-    private bool IsLocallyReady()
-    {
-        var room = plugin.Sync.Room;
-        return room is not null && room.Members.Any(member => plugin.Sync.IsCurrentMember(member.ConnectionId) && member.Ready);
-    }
-
-    /// <summary>A role chip. Its right-click menu renames the role, reports a bad shared name and,
-    /// in a room, plays it just for this player.</summary>
-    private bool RoleChip(
-        string directory,
-        string group,
-        string option,
-        string animationName,
-        bool suggestionMode,
-        Action<string, float> place,
-        out bool solo)
-    {
-        solo = false;
-        var key = NoteKey(directory, group, option);
-        var savedNote = plugin.GetOptionNote(directory, group, option);
-        if (!noteBuffers.TryGetValue(key, out var note) ||
-            (string.IsNullOrWhiteSpace(note) && !string.IsNullOrWhiteSpace(savedNote))) note = savedNote;
-        noteBuffers[key] = note;
-        var role = string.IsNullOrWhiteSpace(savedNote) ? animationName : savedNote;
-        var pickedBy = plugin.GetRemoteDetectedTriggerSelector(directory, group, option);
-        var inRoom = plugin.Sync.IsInRoom;
-        var mine = inRoom && !suggestionMode && readyRoleKey == key && IsLocallyReady();
-
-        var (label, state) = pickedBy is not null
-            ? ($"{role}, {pickedBy}", suggestionMode ? ChipState.Taken : ChipState.Theirs)
-            : mine
-                ? ($"{role}, you're ready", ChipState.Mine)
-                : (role, ChipState.Open);
-        var showSolo = inRoom && !suggestionMode;
-        place(label, showSolo ? ImGui.CalcTextSize("Solo").X + 16f * Theme.Scale : 0f);
-        var clicked = Theme.Chip($"{label}##chip", state);
-        var chipHeight = ImGui.GetItemRectSize().Y;
-        if (ImGui.IsItemHovered())
-        {
-            var action = suggestionMode ? $"Ready as {role}" : inRoom ? $"Get ready as {role}" : $"Play {animationName}";
-            var who = pickedBy is not null ? $"\n{pickedBy} picked this role." : "";
-            var name = !role.Equals(animationName, StringComparison.Ordinal) ? $"\n{animationName}" : "";
-            ImGui.SetTooltip($"{action}{name}{who}\nRight-click to rename.");
-        }
-        if (ImGui.BeginPopupContextItem("roleMenu"))
-        {
-            ImGui.TextUnformatted(animationName);
-            if (inRoom && !suggestionMode && ImGui.MenuItem("Play just for me"))
-                solo = true;
-            ImGui.Separator();
-            Theme.Label("Role name");
-            ImGui.SetNextItemWidth(220f * Theme.Scale);
-            var submit = ImGui.InputTextWithHint("##role", "Lead, Follow, Top…", ref note, 21,
-                ImGuiInputTextFlags.EnterReturnsTrue);
-            noteBuffers[key] = note;
-            if (Theme.Primary("Save") || submit)
-            {
-                plugin.SaveOptionNote(directory, group, option, note);
-                noteBuffers[key] = plugin.GetOptionNote(directory, group, option);
-                ImGui.CloseCurrentPopup();
-            }
-            ImGui.SameLine();
-            if (Theme.Text("Clear"))
-            {
-                plugin.SaveOptionNote(directory, group, option, "");
-                noteBuffers[key] = "";
-                ImGui.CloseCurrentPopup();
-            }
-            if (!string.IsNullOrWhiteSpace(savedNote))
-            {
-                ImGui.Separator();
-                Theme.Label("Wrong shared name? Suggest a better one");
-                if (!correctionBuffers.TryGetValue(key, out var correction)) correction = "";
-                ImGui.SetNextItemWidth(220f * Theme.Scale);
-                ImGui.InputTextWithHint("##correction", "Better name", ref correction, 21);
-                correctionBuffers[key] = correction;
-                if (Theme.Outline("Suggest") && !string.IsNullOrWhiteSpace(correction))
-                {
-                    plugin.ReportBadRoleLabel(directory, group, option, correction);
-                    noteBuffers[key] = plugin.GetOptionNote(directory, group, option);
-                    correctionBuffers[key] = "";
-                    ImGui.CloseCurrentPopup();
-                }
-                Tooltip("Changes it for you now. Five matching suggestions change it for everyone.");
-            }
-            ImGui.EndPopup();
-        }
-
-        // After the chip's right-click menu, which attaches to the item drawn just before it.
-        if (showSolo)
-        {
-            // Back from before the redesign: play this role just for you, without readying the room.
-            ImGui.SameLine(0, 2f * Theme.Scale);
-            ImGui.SetCursorPosY(ImGui.GetCursorPosY() + (chipHeight - ImGui.GetFrameHeight()) * 0.5f);
-            if (Theme.Text("Solo", Theme.Ash)) solo = true;
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip($"Play {animationName} just for you, without the room.");
-        }
-        return clicked;
     }
 
     /// <summary>A mod's option groups as combos and checkboxes. Shared with the Synastry Wizard.</summary>
@@ -1143,26 +951,6 @@ public sealed partial class MainWindow : Window
         }
     }
 
-    private List<(string Directory, string Name)> VisibleMods()
-    {
-        IEnumerable<(string Directory, string Name)> source;
-        if (search.Length > 0)
-        {
-            source = plugin.Mods.Where(MatchesSearch);
-        }
-        else
-        {
-            source = libraryScope switch
-            {
-                LibraryScope.Category when activeCategoryId is not null => plugin.GetOrganizedMods(activeCategoryId),
-                LibraryScope.Uncategorized => plugin.GetOrganizedMods(null),
-                LibraryScope.Private => plugin.Mods.Where(mod => plugin.IsModPrivate(mod.Directory)),
-                _ => plugin.Mods
-            };
-        }
-        return plugin.OrderModsForLibrary(source.DistinctBy(mod => mod.Directory, StringComparer.OrdinalIgnoreCase));
-    }
-
     private string CurrentLibraryTitle()
     {
         if (search.Length > 0) return $"Results for “{search}”";
@@ -1171,12 +959,11 @@ public sealed partial class MainWindow : Window
             LibraryScope.Category when activeCategoryId is not null => plugin.GetCategoryPath(activeCategoryId),
             LibraryScope.Uncategorized => "Unsorted",
             LibraryScope.Private => "Private",
+            LibraryScope.Favorites => "Favorites",
+            LibraryScope.Recent => "Recent",
             _ => "All animations"
         };
     }
-
-    private string? FindCategoryForMod(string directory) => plugin.Categories.FirstOrDefault(category =>
-        category.ModDirectories.Any(item => item.Equals(directory, StringComparison.OrdinalIgnoreCase)))?.Id;
 
     // ---- Room -----------------------------------------------------------------------------------
 
@@ -2118,9 +1905,6 @@ public sealed partial class MainWindow : Window
                 center + new Vector2(2.5f, 0) * s, color);
     }
 
-    private static string NoteKey(string directory, string group, string option) =>
-        directory + "\n" + group + "\n" + option;
-
     internal static string PoseDisplayName(PoseTarget pose) => pose.Kind switch
     {
         PoseKind.Sit => $"Chair sit {pose.Index}",
@@ -2246,10 +2030,6 @@ public sealed partial class MainWindow : Window
         }
         plugin.MoveMod(source, categoryId, beforeDirectory);
     }
-
-    private bool MatchesSearch((string Directory, string Name) mod) =>
-        search.Length == 0 || mod.Name.Contains(search, StringComparison.OrdinalIgnoreCase) ||
-        mod.Directory.Contains(search, StringComparison.OrdinalIgnoreCase);
 
     private static unsafe string? ReadPayload(ImGuiPayloadPtr payload)
     {

@@ -2,6 +2,7 @@ using Dalamud.Plugin.Services;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using EmoteLink.Library;
 
 namespace EmoteLink;
 
@@ -205,7 +206,8 @@ internal sealed class AnimationIndexCache
             Index = pose.Index
         }).ToList(),
         Poses = source.Poses.ToList(),
-        Emotes = source.Emotes.ToList()
+        Emotes = source.Emotes.ToList(),
+        Manifest = source.Manifest
     };
 
     private void WriteSnapshot(CachedAnimationIndex document)
@@ -268,6 +270,8 @@ internal sealed class CachedAnimationMod
     public List<CachedOptionPose> OptionPoses { get; set; } = [];
     public List<PoseTarget> Poses { get; set; } = [];
     public List<EmoteTarget> Emotes { get; set; } = [];
+    // Missing from older entries: those show at once and are scanned again in the background.
+    public OptionManifest? Manifest { get; set; }
 }
 
 internal sealed class CachedOptionGroup

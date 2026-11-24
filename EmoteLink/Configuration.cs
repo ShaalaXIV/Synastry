@@ -56,6 +56,9 @@ public sealed class Configuration : IPluginConfiguration
     public Dictionary<string, string> ActiveBodyMesh { get; set; } = new(StringComparer.OrdinalIgnoreCase);
     public List<CustomAnimationCommand> CustomAnimationCommands { get; set; } = [];
     public Dictionary<uint, string> TypedEmoteDefaults { get; set; } = [];
+    // Starred and recently played animations, each "mod folder, group, option" on lines of their own.
+    public HashSet<string> FavoriteOptions { get; set; } = new(StringComparer.OrdinalIgnoreCase);
+    public List<string> RecentOptions { get; set; } = [];
 
     public void Save(IDalamudPluginInterface pluginInterface) => pluginInterface.SavePluginConfig(this);
 }

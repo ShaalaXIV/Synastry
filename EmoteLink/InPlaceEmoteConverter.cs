@@ -64,6 +64,17 @@ internal sealed class InPlaceEmoteConverter
         TryGetModPath(modRoot, directory, out var modPath) &&
         File.Exists(Path.Combine(modPath, MarkerFileName));
 
+    /// <summary>The emote a conversion stands in for, and the carrier it plays through.</summary>
+    public bool TryGetCarrier(string? modRoot, string directory, out uint sourceEmoteId, out uint carrierEmoteId)
+    {
+        sourceEmoteId = carrierEmoteId = 0;
+        if (!IsConverted(modRoot, directory) || !TryGetModPath(modRoot, directory, out var modPath) ||
+            !TryReadMarker(modPath, out var marker)) return false;
+        sourceEmoteId = marker.SourceEmoteId;
+        carrierEmoteId = marker.CarrierEmoteId;
+        return true;
+    }
+
     public bool TryGetOriginalIdentity(
         string? modRoot,
         string directory,
