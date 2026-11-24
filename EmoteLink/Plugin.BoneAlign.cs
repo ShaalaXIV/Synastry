@@ -2,6 +2,7 @@ using System.Numerics;
 using Dalamud.Game.ClientState.Objects.SubKinds;
 using Dalamud.Game.ClientState.Objects.Types;
 using EmoteLink.Align;
+using Character = FFXIVClientStructs.FFXIV.Client.Game.Character.Character;
 
 namespace EmoteLink;
 
@@ -110,9 +111,18 @@ public sealed unsafe partial class Plugin
 
     internal void ForgetKnownAlignment() => autoAlign.Forget();
 
-    internal void BoneAlignTurn(float degrees) => boneAlign.Turn(configuration.BoneAlignSelf, degrees);
+    // Placing yourself by hand counts as lining up yourself, so memory doesn't move you afterwards.
+    internal void BoneAlignTurn(float degrees)
+    {
+        autoAlign.StandDown();
+        boneAlign.Turn(configuration.BoneAlignSelf, degrees);
+    }
 
-    internal void ResetBoneAlign() => boneAlign.Reset();
+    internal void ResetBoneAlign()
+    {
+        autoAlign.StandDown();
+        boneAlign.Reset();
+    }
 
     private void StartBoneAlign(AlignRequest request)
     {
@@ -123,6 +133,12 @@ public sealed unsafe partial class Plugin
             return;
         }
         autoAlign.StandDown();
+        if (RememberablePlay is not null)
+        {
+            // Files are hashed in the background: asked for now, they're known when the result is kept.
+            AnimationHashOf(local);
+            AnimationHashOf(partner);
+        }
         boneAlign.Start(request, partner);
         IsBoneAligning = boneAlign.IsAligning;
     }
@@ -137,7 +153,7 @@ public sealed unsafe partial class Plugin
         if ((Targets.Target ?? Targets.SoftTarget) is IPlayerCharacter target && target.Address != local.Address &&
             Vector3.Distance(target.Position, local.Position) <= BoneAlignReach)
             partners.Add(target);
-        if (TestPartnerCharacter() is { } test) partners.Add(test);
+        if (BoneAlignTestPartner() is { } test) partners.Add(test);
         partners.AddRange(NearbyRoomMembers(local).Where(member => partners.All(partner => partner.Address != member.Address)));
         return partners;
     }
@@ -153,7 +169,7 @@ public sealed unsafe partial class Plugin
     internal List<ICharacter> RoomPartners(ICharacter local)
     {
         var partners = new List<ICharacter>();
-        if (testPartner.Playing && TestPartnerCharacter() is { } test) partners.Add(test);
+        if (testPartner.Playing && BoneAlignTestPartner() is { } test) partners.Add(test);
         partners.AddRange(NearbyRoomMembers(local));
         return partners;
     }
@@ -181,7 +197,14 @@ public sealed unsafe partial class Plugin
     private bool IsTestPartner(ICharacter character) => testPartner.Active && character.Address == testPartner.Address;
 
     private ICharacter? FindCharacter(ulong id) =>
-        TestPartnerCharacter() is { } test && test.GameObjectId == id ? test : Objects.SearchById(id) as ICharacter;
+        BoneAlignTestPartner() is { } test && test.GameObjectId == id ? test : Objects.SearchById(id) as ICharacter;
+
+    /// <summary>The test partner while its minion is still out. The service only notices it leaving on
+    /// its own tick, after this one, and by then the minion's memory is gone.</summary>
+    private ICharacter? BoneAlignTestPartner() =>
+        Objects.LocalPlayer is { } local && (nint)((Character*)local.Address)->ChildObject == testPartner.Address
+            ? TestPartnerCharacter()
+            : null;
 
     // ---- What is playing ------------------------------------------------------------------------
 

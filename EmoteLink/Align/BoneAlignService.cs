@@ -144,9 +144,15 @@ internal sealed class BoneAlignService(
 
     public void Tick()
     {
-        if (phase == Phase.Idle) return;
-
         var local = objects.LocalPlayer;
+        if (phase == Phase.Idle)
+        {
+            // Simple Heels dropped it with the loop it was made in; kept, it would be sent again into
+            // the next one by whatever moves you then.
+            if (local is not null && OffsetIsStale(local)) heels.Reset();
+            return;
+        }
+
         if (local is null || PoseSignature.Loop(local) != loopAtStart || PoseSignature.Variant(local) != variantAtStart ||
             heels.Generation != generationAtStart)
         {
@@ -310,11 +316,13 @@ internal sealed class BoneAlignService(
     private bool OffsetIsStale(ICharacter local) =>
         heels.Bone != OffsetLayer.None && PoseSignature.Loop(local) != offsetLoop;
 
-    /// <summary>Ends without moving you: a turn made at the start is taken back.</summary>
+    /// <summary>Ends without moving you: a turn made at the start is taken back. Not once you've left
+    /// the loop: Simple Heels has dropped it, and an offset sent while standing stays on you.</summary>
     private void Fail(string reason)
     {
         phase = Phase.Idle;
-        if (turned && heels.Generation == generationAtStart) heels.SetBone(boneAtStart);
+        if (turned && heels.Generation == generationAtStart && objects.LocalPlayer is { } local &&
+            PoseSignature.Loop(local) == loopAtStart) heels.SetBone(boneAtStart);
         turned = false;
         Say(reason);
     }

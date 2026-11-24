@@ -61,6 +61,8 @@ internal sealed class AutoAlign
     {
         if (Known is not { } known) return;
         memory.Forget(known.Key);
+        // One made before the files were known would otherwise take its place.
+        if (handled is { } play) memory.Forget(AlignmentMemory.ModKey(play));
         Known = null;
         StandDown();
     }

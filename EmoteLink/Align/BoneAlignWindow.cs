@@ -90,7 +90,8 @@ internal sealed class BoneAlignWindow : Window
             ImGui.SetCursorScreenPos(start + new Vector2(14f * s, 0f));
             ImGui.AlignTextToFramePadding();
             ImGui.TextColored(Theme.Everyone, "Known animation");
-            Tooltip($"{known.ModName}, {known.Label}\nRemembered {known.Updated.ToLocalTime():d}.");
+            Tooltip((known.Label.Length > 0 ? $"{known.ModName}, {known.Label}" : known.ModName) +
+                    $"\nRemembered {known.Updated.ToLocalTime():d}.");
 
             const string use = "Use it";
             const string forget = "Forget";
