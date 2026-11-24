@@ -31,6 +31,9 @@ public sealed partial class MainWindow : Window
     private readonly HashSet<string> collapsedFolders = new(StringComparer.OrdinalIgnoreCase);
     private readonly HashSet<string> selectedMods = new(StringComparer.OrdinalIgnoreCase);
     private readonly LibraryPanel library;
+    private readonly Align.BoneAlignPanel boneAlignPanel;
+    // The buttons under the room column, measured while drawing so the part above them can scroll.
+    private float roomButtonsHeight;
     private LibraryScope libraryScope = LibraryScope.All;
     private string? activeCategoryId;
     private string? selectionAnchor;
@@ -74,6 +77,7 @@ public sealed partial class MainWindow : Window
     {
         this.plugin = plugin;
         library = new LibraryPanel(plugin, this);
+        boneAlignPanel = new Align.BoneAlignPanel(plugin);
         Size = new Vector2(1100, 700);
         SizeCondition = ImGuiCond.FirstUseEver;
         SizeConstraints = new WindowSizeConstraints
@@ -248,9 +252,13 @@ public sealed partial class MainWindow : Window
             ? "Restart everyone in the room's animation at the same moment."
             : "Join a room to sync emotes with it.");
 
-        ImGui.SameLine(0, 2f * s);
-        if (Theme.Text(plugin.IsBoneAligning ? "Aligning…" : "Bone align")) plugin.ToggleBoneAlign();
-        Tooltip("Bring one of your body parts to your partner's, and have it remembered for the animation.");
+        // In a room it is in the room column.
+        if (!plugin.Sync.IsInRoom)
+        {
+            ImGui.SameLine(0, 2f * s);
+            if (Theme.Text(plugin.IsBoneAligning ? "Aligning…" : "Bone align")) plugin.ToggleBoneAlign();
+            Tooltip("Bring one of your body parts to your partner's, and have it remembered for the animation.");
+        }
 
         ImGui.SameLine(0, 2f * s);
         var heels = plugin.SimpleHeelsAvailable;
@@ -954,6 +962,7 @@ public sealed partial class MainWindow : Window
         ImGui.Dummy(new Vector2(0, 8f * s));
         if (Theme.Primary("Link up", width, 36f * s)) plugin.ConnectSync();
         if (tutorialActive && tutorialStep == TutorialStep.Connect) HighlightLastItem();
+        if (plugin.MovementLocked) DrawUnlockButton(width);
         Theme.Quiet($"as {plugin.SyncDisplayName}");
         BottomAligned(() =>
         {
@@ -976,6 +985,7 @@ public sealed partial class MainWindow : Window
         if (Theme.Primary("Join", width, 36f * s)) plugin.JoinSyncRoom(roomCode);
         if (Theme.Outline("Start a new room", width, 36f * s)) plugin.CreateSyncRoom();
         if (tutorialActive && tutorialStep == TutorialStep.Room) HighlightLastItem();
+        if (plugin.MovementLocked) DrawUnlockButton(width);
         ImGui.Dummy(new Vector2(0, 4f * s));
         Theme.Wrapped("Or right-click someone in game and choose Invite to Synastry.", Theme.Ash);
         DrawOffersLine(width);
@@ -999,7 +1009,23 @@ public sealed partial class MainWindow : Window
         ImGui.SetCursorScreenPos(new Vector2(ImGui.GetCursorScreenPos().X, codeRect.Item2.Y - ImGui.GetFrameHeight() - 2f * s));
         if (Theme.Text("Copy", Theme.Ash)) CopyRoomCode(room);
 
+        // The cast and the settings scroll, so a small window or a long cast can't push the buttons out
+        // of reach.
         ImGui.Dummy(new Vector2(0, 6f * s));
+        var buttonsHeight = roomButtonsHeight > 0 ? roomButtonsHeight : 190f * s;
+        ImGui.BeginChild("room-scroll", new Vector2(width, MathF.Max(60f * s, ImGui.GetContentRegionAvail().Y - buttonsHeight)), false);
+        DrawRoomBody(room, ImGui.GetContentRegionAvail().X);
+        ImGui.EndChild();
+
+        var buttonsTop = ImGui.GetCursorScreenPos().Y;
+        DrawRoomButtons(room, width);
+        roomButtonsHeight = ImGui.GetCursorScreenPos().Y - buttonsTop;
+    }
+
+    /// <summary>The cast, then the settings for the animation you're about to play.</summary>
+    private void DrawRoomBody(RoomStateDto room, float width)
+    {
+        var s = Theme.Scale;
         Theme.Label("Cast");
         var draw = ImGui.GetWindowDrawList();
         foreach (var member in room.Members)
@@ -1074,29 +1100,53 @@ public sealed partial class MainWindow : Window
 
         DrawMeshPicker(width);
 
+        ImGui.Dummy(new Vector2(0, 6f * s));
+        Theme.Label("Bone align");
+        boneAlignPanel.Draw(width);
         DrawOffersLine(width);
-        BottomAligned(() =>
+    }
+
+    private void DrawRoomButtons(RoomStateDto room, float width)
+    {
+        var s = Theme.Scale;
+        ImGui.Dummy(new Vector2(0, 6f * s));
+        var ready = room.Members.Count(member => member.Ready);
+        Theme.Number($"{ready} of {room.Members.Count}", Theme.Bone);
+        ImGui.SameLine(0, 8f * s);
+        var waitingFor = plugin.WaitingForAnimationFiles;
+        Theme.Label(Theme.Truncate(waitingFor.Count > 0
+                ? "ready. Getting files."
+                : ready == room.Members.Count ? "ready. Starting together." : "ready. Waiting on others.",
+            ImGui.GetContentRegionAvail().X));
+        if (waitingFor.Count > 0)
+            Theme.Quiet(Theme.Truncate($"Getting {string.Join(", ", waitingFor)}'s animation…", width));
+        if (plugin.Sync.IsRoomLeader)
         {
-            var ready = room.Members.Count(member => member.Ready);
-            Theme.Number($"{ready} of {room.Members.Count}", Theme.Bone);
-            ImGui.SameLine(0, 8f * s);
-            var waitingFor = plugin.WaitingForAnimationFiles;
-            Theme.Label(waitingFor.Count > 0
-                ? "ready. Getting files first."
-                : ready == room.Members.Count ? "ready. Starting together." : "ready. Plays when everyone is.");
-            if (waitingFor.Count > 0)
-                Theme.Quiet(Theme.Truncate($"Getting {string.Join(", ", waitingFor)}'s animation…", width));
-            if (plugin.Sync.IsRoomLeader)
-            {
-                if (Theme.Primary("Start now", width, 36f * s)) plugin.ForceSyncStart();
-                Tooltip("Start everyone who has picked a role now, without waiting for the rest or for their files.");
-            }
-            if (Theme.Text("Unready", Theme.Soft)) plugin.CancelSyncReady();
-            ImGui.SameLine();
-            var leave = "Leave room";
-            ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0, width - ImGui.CalcTextSize("Unready").X - ImGui.CalcTextSize(leave).X - 36f * s));
-            if (Theme.Text(leave, Theme.Ash)) plugin.LeaveSyncRoom();
-        }, (plugin.Sync.IsRoomLeader ? 3 : 2) + (plugin.WaitingForAnimationFiles.Count > 0 ? 1 : 0));
+            if (Theme.Primary("Start now", width, 36f * s)) plugin.ForceSyncStart();
+            Tooltip("Start everyone who has picked a role now, without waiting for the rest or for their files.");
+        }
+        DrawUnlockButton(width);
+        if (Theme.Text("Unready", Theme.Soft)) plugin.CancelSyncReady();
+        ImGui.SameLine();
+        var leave = "Leave room";
+        ImGui.SetCursorPosX(ImGui.GetCursorPosX() + MathF.Max(0, width - ImGui.CalcTextSize("Unready").X - ImGui.CalcTextSize(leave).X - 36f * s));
+        if (Theme.Text(leave, Theme.Ash)) plugin.LeaveSyncRoom();
+    }
+
+    /// <summary>Frees your movement keys, which stay locked while a Synastry animation plays.</summary>
+    private void DrawUnlockButton(float width)
+    {
+        var s = Theme.Scale;
+        var locked = plugin.MovementLocked;
+        Disabled(!locked, () =>
+        {
+            ImGui.PushStyleColor(ImGuiCol.Text, locked ? Theme.AzureText : Theme.Faint);
+            if (Theme.Outline("Unlock movement", width, 36f * s)) plugin.UnlockMovement();
+            ImGui.PopStyleColor();
+        });
+        Tooltip(locked
+            ? "Frees your movement keys. Moving then ends the animation."
+            : "Your movement isn't locked. It locks while a Synastry animation plays, so a stray key can't end it.");
     }
 
     private void CopyRoomCode(RoomStateDto room)

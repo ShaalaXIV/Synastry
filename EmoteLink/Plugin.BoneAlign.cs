@@ -17,6 +17,7 @@ public sealed unsafe partial class Plugin
     private AutoAlign autoAlign = null!;
     private BoneAlignWindow boneAlignWindow = null!;
     private ulong boneAlignPartner;
+    private long boneAlignPanelDrawnAt = long.MinValue / 2;
 
     partial void InitializeBoneAlign()
     {
@@ -38,7 +39,11 @@ public sealed unsafe partial class Plugin
 
     // ---- The panel ------------------------------------------------------------------------------
 
-    internal bool IsBoneAlignOpen => boneAlignWindow.IsOpen;
+    /// <summary>The panel is on screen, in the room column or its own window.</summary>
+    internal bool IsBoneAlignOpen => Environment.TickCount64 - boneAlignPanelDrawnAt < 250;
+
+    internal void NoteBoneAlignPanel() => boneAlignPanelDrawnAt = Environment.TickCount64;
+
     internal string BoneAlignProblem => boneAlign.Problem;
     internal bool CanBoneAlignTurn => boneAlign.CanTurn;
     internal bool CanBoneAlignReset => boneAlign.CanReset;
