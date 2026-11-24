@@ -443,7 +443,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         Chat.ChatMessage += OnChatMessage;
         Commands.AddHandler(PrimaryCommand, new CommandInfo(HandleCommand)
         {
-            HelpMessage = "Open Synastry, start the guide with /syn tutorial, join with /syn join ROOMCODE, or select a localhost dev relay with /syn relay URL."
+            HelpMessage = "Open Synastry, start the guide with /syn tutorial, turn the free camera on or off with /syn freecam (or /syn cam), join with /syn join ROOMCODE, or select a localhost dev relay with /syn relay URL."
         });
         Commands.AddHandler(FallbackCommand, new CommandInfo(HandleCommand)
         {

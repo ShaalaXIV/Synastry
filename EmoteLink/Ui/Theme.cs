@@ -371,6 +371,17 @@ internal static class Theme
         draw.AddLine(star + new Vector2(-3f, 0) * s, star + new Vector2(3f, 0) * s, color, 1.2f * s);
     }
 
+    /// <summary>A small camera, for the free cam buttons.</summary>
+    public static void CameraIcon(ImDrawListPtr draw, Vector2 center, uint color)
+    {
+        var s = Scale;
+        draw.AddRect(center + new Vector2(-6.5f, -3.5f) * s, center + new Vector2(6.5f, 5f) * s, color, 1.5f * s, ImDrawFlags.None, 1.4f * s);
+        draw.AddLine(center + new Vector2(-3.5f, -3.5f) * s, center + new Vector2(-2f, -5.5f) * s, color, 1.4f * s);
+        draw.AddLine(center + new Vector2(-2f, -5.5f) * s, center + new Vector2(2f, -5.5f) * s, color, 1.4f * s);
+        draw.AddLine(center + new Vector2(2f, -5.5f) * s, center + new Vector2(3.5f, -3.5f) * s, color, 1.4f * s);
+        draw.AddCircle(center + new Vector2(0, 0.75f) * s, 2.3f * s, color, 12, 1.3f * s);
+    }
+
     public static void Dot(ImDrawListPtr draw, Vector2 center, Vector4 color, bool filled)
     {
         var radius = 4f * Scale;

@@ -36,6 +36,8 @@ public sealed class Configuration : IPluginConfiguration
     public bool DozeAnywhereOnly { get; set; }
     // Open Synastry as the small mini player instead of the full window.
     public bool UseMiniPlayer { get; set; }
+    // How fast Synastry's free cam flies, where 1 is normal. Set with the mouse wheel while flying.
+    public float FreeCamSpeed { get; set; } = 1f;
     // Line up a couple animation's contact (penis with mouth, vagina or anus) through Simple Heels.
     // Experimental, off until the player turns it on (1.0.86).
     public bool AutomaticLineUp { get; set; }

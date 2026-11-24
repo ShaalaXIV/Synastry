@@ -39,9 +39,12 @@ public sealed partial class MiniPlayerWindow : Window
         var start = ImGui.GetCursorScreenPos();
         var draw = ImGui.GetWindowDrawList();
 
-        // Header: name on the left, expand and close on the right.
+        // Header: name on the left; free cam, wizard, expand and close on the right.
         Theme.Label("Synastry");
         var button = 24f * s;
+        ImGui.SetCursorScreenPos(new Vector2(start.X + width - button * 4 - 12f * s, start.Y - 3f * s));
+        if (IconButton("##freecam", button, Theme.CameraIcon, plugin.FreeCamOn)) plugin.ToggleFreeCam();
+        if (ImGui.IsItemHovered()) ImGui.SetTooltip(plugin.FreeCamTooltip);
         ImGui.SetCursorScreenPos(new Vector2(start.X + width - button * 3 - 8f * s, start.Y - 3f * s));
         if (IconButton("##wizard", button, Theme.WandIcon)) plugin.OpenWizard();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Synastry Wizard");
@@ -107,14 +110,15 @@ public sealed partial class MiniPlayerWindow : Window
 
     partial void DrawPlacesButton();
 
-    private static bool IconButton(string id, float size, Action<ImDrawListPtr, Vector2, uint> icon)
+    private static bool IconButton(string id, float size, Action<ImDrawListPtr, Vector2, uint> icon, bool active = false)
     {
         var start = ImGui.GetCursorScreenPos();
         var clicked = ImGui.InvisibleButton(id, new Vector2(size, size));
         var hovered = ImGui.IsItemHovered();
         var draw = ImGui.GetWindowDrawList();
         if (hovered) draw.AddRectFilled(start, start + new Vector2(size, size), ImGui.GetColorU32(Theme.RowHover), 3f * Theme.Scale);
-        icon(draw, start + new Vector2(size, size) * 0.5f, ImGui.GetColorU32(hovered ? Theme.Bone : Theme.Soft));
+        icon(draw, start + new Vector2(size, size) * 0.5f,
+            ImGui.GetColorU32(active ? Theme.AzureText : hovered ? Theme.Bone : Theme.Soft));
         return clicked;
     }
 

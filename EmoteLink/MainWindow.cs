@@ -227,7 +227,7 @@ public sealed partial class MainWindow : Window
         var searchWidth = MathF.Min(270f * s, width * 0.28f);
         const string wizardLabel = "Synastry Wizard";
         var wizardWidth = ImGui.CalcTextSize(wizardLabel).X + 34f * s;
-        var wizardX = right - button * 3 - 14f * s - wizardWidth;
+        var wizardX = right - button * 4 - 18f * s - wizardWidth;
         ImGui.SetCursorScreenPos(new Vector2(wizardX - 10f * s - searchWidth,
             start.Y + (height - ImGui.GetFrameHeight()) * 0.5f));
         ImGui.SetNextItemWidth(searchWidth);
@@ -237,6 +237,9 @@ public sealed partial class MainWindow : Window
         if (IconTextButton("##wizard", wizardLabel, Theme.WandIcon)) plugin.OpenWizard();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Ready an animation with your room, step by step");
 
+        ImGui.SetCursorScreenPos(new Vector2(right - button * 4 - 12f * s, start.Y + (height - button) * 0.5f));
+        if (IconButton("##freecam", button, Theme.CameraIcon, plugin.FreeCamOn)) plugin.ToggleFreeCam();
+        Tooltip(plugin.FreeCamTooltip);
         ImGui.SetCursorScreenPos(new Vector2(right - button * 3 - 8f * s, start.Y + (height - button) * 0.5f));
         if (IconButton("##minimize", button, DrawMinimizeIcon)) plugin.ShowMiniPlayer();
         if (ImGui.IsItemHovered()) ImGui.SetTooltip("Shrink to the mini player");
@@ -1399,6 +1402,8 @@ public sealed partial class MainWindow : Window
         if (!ImGui.BeginPopup("synastry-menu")) return;
         if (ImGui.MenuItem("Synastry Wizard")) plugin.OpenWizard();
         Tooltip("Ready an animation with your room, step by step.");
+        if (ImGui.MenuItem("Free cam", "", plugin.FreeCamOn)) plugin.ToggleFreeCam();
+        Tooltip(plugin.FreeCamTooltip);
         ImGui.Separator();
         Disabled(plugin.IsRefreshingMods, () =>
         {
@@ -1964,14 +1969,15 @@ public sealed partial class MainWindow : Window
         if (disabled) ImGui.EndDisabled();
     }
 
-    private static bool IconButton(string id, float size, Action<ImDrawListPtr, Vector2, uint> icon)
+    private static bool IconButton(string id, float size, Action<ImDrawListPtr, Vector2, uint> icon, bool active = false)
     {
         var start = ImGui.GetCursorScreenPos();
         var clicked = ImGui.InvisibleButton(id, new Vector2(size, size));
         var hovered = ImGui.IsItemHovered();
         var draw = ImGui.GetWindowDrawList();
         if (hovered) draw.AddRectFilled(start, start + new Vector2(size, size), ImGui.GetColorU32(Theme.RowHover), 3f * Theme.Scale);
-        icon(draw, start + new Vector2(size, size) * 0.5f, ImGui.GetColorU32(hovered ? Theme.Bone : Theme.Soft));
+        icon(draw, start + new Vector2(size, size) * 0.5f,
+            ImGui.GetColorU32(active ? Theme.AzureText : hovered ? Theme.Bone : Theme.Soft));
         return clicked;
     }
 

@@ -19,6 +19,8 @@ public sealed unsafe class MovementService : IDisposable
     private Action? arrived;
     private long started;
     public bool IsWalking { get; private set; }
+    /// <summary>The movement keys fly the free camera, so they don't move your character.</summary>
+    public bool IgnoreKeys { get; set; }
 
     public MovementService(IGameInteropProvider interop, IObjectTable objects)
     {
@@ -53,6 +55,11 @@ public sealed unsafe class MovementService : IDisposable
         byte* backwardOrStrafe, byte* unknown, byte additive)
     {
         hook!.Original(self, left, forward, turnLeft, backwardOrStrafe, unknown, additive);
+        if (IgnoreKeys)
+        {
+            *left = *forward = *turnLeft = 0;
+            return;
+        }
         if (!IsWalking) return;
         if (Environment.TickCount64 - started > 2000) { Finish(); return; }
         if (*left != 0 || *forward != 0) { Cancel(); return; }
