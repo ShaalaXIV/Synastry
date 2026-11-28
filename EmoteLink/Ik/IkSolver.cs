@@ -64,43 +64,48 @@ internal static class IkSolver
     }
 
     /// <summary>
-    /// Bends a chain (base to tip) so its tip moves toward <paramref name="target"/>, by rotation
-    /// only, with each joint turning at most <paramref name="maxDegreesPerJoint"/> from where the
-    /// animation put it. Returns one rotation per joint (excluding the tip), applied in order from
-    /// the base, or null when the chain is too short to bend.
+    /// Points a chain (base to tip) so its tip lands on <paramref name="target"/>, the way a penis moves:
+    /// the whole chain first pivots at its base, keeping the shape it has, by up to
+    /// <paramref name="rootDegrees"/>. Whatever that leaves is shared out evenly along the other joints
+    /// as a gentle curve, each turning at most <paramref name="bendDegrees"/>, rather than piling up at
+    /// the tip. Rotation only, so nothing stretches. Returns the new positions, or null when the chain
+    /// is too short.
     /// </summary>
-    public static Quaternion[]? Chain(
-        IReadOnlyList<Vector3> joints, Vector3 target, float maxDegreesPerJoint = 14f, int iterations = 12)
+    public static Vector3[]? Aim(IReadOnlyList<Vector3> joints, Vector3 target, float rootDegrees, float bendDegrees,
+        int iterations = 8)
     {
         if (joints.Count < 2) return null;
         var points = joints.ToArray();
+        var root = points[0];
+        var toTip = points[^1] - root;
+        var toTarget = target - root;
+        if (toTip.LengthSquared() < 1e-10f || toTarget.LengthSquared() < 1e-10f) return null;
+        var pivot = ClampAngle(FromTo(toTip, toTarget), DegreesToRadians(rootDegrees));
+        for (var i = 1; i < points.Length; i++) points[i] = root + Vector3.Transform(points[i] - root, pivot);
+
+        // Joints that turn: all but the base (already used) and the tip (nothing beyond it).
         var count = points.Length - 1;
+        var limit = DegreesToRadians(bendDegrees);
         var applied = Enumerable.Repeat(Quaternion.Identity, count).ToArray();
-        var limit = DegreesToRadians(maxDegreesPerJoint);
-
-        // Cyclic coordinate descent from the joint nearest the tip back to the base: each pass
-        // turns one joint to aim the tip at the target, within that joint's remaining budget.
-        for (var pass = 0; pass < iterations; pass++)
+        for (var pass = 0; pass < iterations && count > 1; pass++)
         {
-            for (var joint = count - 1; joint >= 0; joint--)
-            {
-                var pivot = points[joint];
-                var toTip = points[^1] - pivot;
-                var toTarget = target - pivot;
-                if (toTip.LengthSquared() < 1e-10f || toTarget.LengthSquared() < 1e-10f) continue;
-
-                var step = FromTo(toTip, toTarget);
-                var total = Quaternion.Normalize(step * applied[joint]);
-                total = ClampAngle(total, limit);
-                step = Quaternion.Normalize(total * Quaternion.Inverse(applied[joint]));
-                applied[joint] = total;
-
-                for (var after = joint + 1; after < points.Length; after++)
-                    points[after] = pivot + Vector3.Transform(points[after] - pivot, step);
-            }
             if (Vector3.DistanceSquared(points[^1], target) < 1e-8f) break;
+            // Base to tip, each joint taking only its share of what is left, so the curve is even.
+            for (var joint = 1; joint < count; joint++)
+            {
+                var at = points[joint];
+                var tip = points[^1] - at;
+                var goal = target - at;
+                if (tip.LengthSquared() < 1e-10f || goal.LengthSquared() < 1e-10f) continue;
+                var share = Quaternion.Slerp(Quaternion.Identity, FromTo(tip, goal), 1f / (count - joint));
+                var total = ClampAngle(Quaternion.Normalize(share * applied[joint]), limit);
+                var step = Quaternion.Normalize(total * Quaternion.Inverse(applied[joint]));
+                applied[joint] = total;
+                for (var after = joint + 1; after < points.Length; after++)
+                    points[after] = at + Vector3.Transform(points[after] - at, step);
+            }
         }
-        return applied;
+        return points;
     }
 
     /// <summary>The shortest rotation taking direction <paramref name="from"/> onto <paramref name="to"/>.</summary>

@@ -6,7 +6,8 @@ namespace EmoteLink;
 
 /// <summary>
 /// Keeps your character still while a Synastry animation plays, so a stray movement key can't end it.
-/// Unlocking only frees the movement keys; moving then ends the animation as usual.
+/// Unlocking (or double-tapping a movement key) only frees the movement keys; moving then ends the
+/// animation as usual.
 /// </summary>
 /// <remarks>Adapted from PoseKit by RaylaPetal (AGPL-3.0), https://github.com/RaylaPetal/PoseKit</remarks>
 public sealed unsafe class AnimationLock(MovementSuppression suppression)
@@ -19,12 +20,20 @@ public sealed unsafe class AnimationLock(MovementSuppression suppression)
     private const long ArrivalMs = 8000;
     private const long EndedMs = 300;
 
+    // Two presses of the same direction key this close together break free.
+    private const long DoubleTapMs = 350;
+
     private long armedAt;
     private long notPlayingSince;
     private string signature = "";
     private Vector3 observedPosition;
     private float stillFor;
     private bool hinted;
+
+    // The direction keys down last frame (-1 while not watching), and the last press.
+    private int lastKeys = -1;
+    private int lastTapKeys;
+    private long lastTapAt;
 
     public bool Locked { get; private set; }
 
@@ -51,6 +60,7 @@ public sealed unsafe class AnimationLock(MovementSuppression suppression)
         armedAt = 0;
         notPlayingSince = 0;
         stillFor = 0;
+        StopWatchingKeys();
         if (!Locked) return;
         Locked = false;
         suppression.Release(Owner);
@@ -105,11 +115,43 @@ public sealed unsafe class AnimationLock(MovementSuppression suppression)
         else Release();   // You started a pose of your own over Synastry's.
     }
 
-    /// <summary>True once a play, when a movement key is pressed while locked, so the player can be told
-    /// how to get free.</summary>
+    /// <summary>True when the same direction key is pressed twice in quick succession while locked: the
+    /// player wants to move. Not while the keys fly a free cam.</summary>
+    public bool TakeDoubleTap(bool keysInUse)
+    {
+        if (!Locked || keysInUse || suppression.HeldByOthers)
+        {
+            StopWatchingKeys();
+            return false;
+        }
+        var keys = suppression.DirectionKeysDown();
+        // A key already held when watching starts isn't a press.
+        var pressed = lastKeys < 0 ? 0 : keys & ~lastKeys;
+        lastKeys = keys;
+        if (pressed == 0) return false;
+        var now = Environment.TickCount64;
+        if ((pressed & lastTapKeys) != 0 && now - lastTapAt <= DoubleTapMs)
+        {
+            StopWatchingKeys();
+            return true;
+        }
+        lastTapKeys = pressed;
+        lastTapAt = now;
+        return false;
+    }
+
+    private void StopWatchingKeys()
+    {
+        lastKeys = -1;
+        lastTapKeys = 0;
+    }
+
+    /// <summary>True once a play, when a movement key is held while locked, so the player can be told how
+    /// to get free. A quick tap isn't held: it may be the first half of a double-tap.</summary>
     public bool TakeHint(bool keysInUse)
     {
-        if (!Locked || hinted || keysInUse || suppression.HeldByOthers || !suppression.IsMovementKeyDown()) return false;
+        if (!Locked || hinted || keysInUse || suppression.HeldByOthers || !suppression.IsMovementKeyDown() ||
+            Environment.TickCount64 - lastTapAt <= DoubleTapMs) return false;
         hinted = true;
         return true;
     }

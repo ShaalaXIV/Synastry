@@ -224,6 +224,13 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     private int alignmentFramesRemaining;
     private int alignmentStableFrames;
     private float? animationSpeedOverride;
+    // Speeds room partners set in their Synastry, by name, and where they apply now, by character.
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, float> sharedSpeeds =
+        new(StringComparer.OrdinalIgnoreCase);
+    private volatile IReadOnlyDictionary<nint, float> partnerSpeeds = new Dictionary<nint, float>();
+    // Your speed as the room last heard it, and when it may next be told.
+    private float? sharedOwnSpeed;
+    private long nextSpeedShare;
     private System.Numerics.Vector3? animationSpeedPosition;
     private nint animationSpeedMatchTargetAddress;
     private string animationSpeedMatchTargetName = "";
@@ -320,6 +327,13 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             configuration.ExperimentalFeaturesReset = true;
             upgradedConfiguration = true;
         }
+        // 1.0.99 makes the animation lock opt-in: off for everyone once, then the player's choice.
+        if (!configuration.AnimationLockReset)
+        {
+            configuration.LockMovementWhilePlaying = false;
+            configuration.AnimationLockReset = true;
+            upgradedConfiguration = true;
+        }
         if (generatedReporterIdentity || upgradedConfiguration) configuration.Save(PluginInterface);
         penumbra = new PenumbraService(PluginInterface, Log);
         inPlaceEmoteConverter = new InPlaceEmoteConverter(
@@ -341,7 +355,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         try
         {
             animationSpeedController = new AnimationSpeedService(
-                Interop, Objects, DataManager, GetAnimationSpeedHookOverride);
+                Interop, Objects, DataManager, AnimationSpeedFor);
         }
         catch (Exception exception)
         {
@@ -364,11 +378,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             measuringBodies.Remove(name);
         };
         contactMaps = new Ik.ContactMapResolver(DataManager, penumbra, hashes => sync.GetContactMapsAsync(hashes), Log);
-        sync.BodyProfileChanged += shared =>
-        {
-            if (Ik.BodyProfile.FromJson(shared.ProfileJson) is { } profile) sharedBodies[shared.DisplayName] = profile;
-            else sharedBodies.TryRemove(shared.DisplayName, out _);
-        };
+        sync.BodyProfileChanged += shared => TakeSharedProfile(shared.DisplayName, shared.ProfileJson);
         heels = new Align.HeelsOffset(Objects, command => Commands.ProcessCommand(command), IsSimpleHeelsLoadedCached, Log);
         preloader = new AnimationPreloader(PluginInterface, Objects, penumbra, sync, Log);
         sync.PlayReceived += signal => syncPlaySignals.Enqueue(signal);
@@ -1309,15 +1319,6 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             : "Sit/doze anywhere disabled. Chair-sit and doze will use normal game placement.";
     }
 
-    public ContactPreference LineUpPreference => configuration.LineUpPreference;
-
-    public void SetLineUpPreference(ContactPreference preference)
-    {
-        configuration.LineUpPreference = preference;
-        configuration.Save(PluginInterface);
-    }
-
-    /// <summary>Whether this character name is someone else in the current room, and so runs Synastry.</summary>
     // ---- Bending bones and body setup --------------------------------------------------------
 
     public bool ContactIkAvailable => contactIk?.Available == true;
@@ -1356,7 +1357,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         configuration.ActiveBodyMesh[name] = mesh;
         configuration.Save(PluginInterface);
         ownBody = null;
-        if (sync.IsInRoom && OwnBody() is { } profile) _ = sync.SetBodyProfileAsync(profile.ToJson());
+        ShareOwnProfile();
         Status = automatic ? $"Your body changed; using the {mesh} mesh." : $"Using the {mesh} mesh.";
     }
 
@@ -1392,7 +1393,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             configuration.ActiveBodyMesh.Remove(name);
         configuration.Save(PluginInterface);
         ownBody = null;
-        if (sync.IsInRoom) _ = sync.SetBodyProfileAsync(OwnBody()?.ToJson() ?? "");
+        ShareOwnProfile(true);
     }
 
     /// <summary>Measures this character's body from its loaded models into a saved mesh (the current
@@ -1434,7 +1435,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
                 configuration.Save(PluginInterface);
                 ownBody = profile;
                 ownBodyName = name;
-                if (sync.IsInRoom) _ = sync.SetBodyProfileAsync(profile.ToJson());
+                ShareOwnProfile();
                 Status = $"{mesh} mesh set up: {DescribeBody(profile)}.";
             });
         }, TaskScheduler.Default);
@@ -1451,9 +1452,34 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     }
 
     /// <summary>Shares the finished tuning with the room; called when a slider is let go.</summary>
-    public void ShareBodyProfile()
+    public void ShareBodyProfile() => ShareOwnProfile();
+
+    /// <summary>Sends your body, the penis you aimed with bone align and your animation speed to your
+    /// room. Nothing is sent when there is none of them, unless <paramref name="evenEmpty"/> asks to
+    /// take back what was.</summary>
+    private void ShareOwnProfile(bool evenEmpty = false)
     {
-        if (sync.IsInRoom && OwnBody() is { } profile) _ = sync.SetBodyProfileAsync(profile.ToJson());
+        if (!sync.IsInRoom) return;
+        var aim = OwnSharedAim();
+        var speed = sharedOwnSpeed;
+        var body = OwnBody();
+        var json = body is null && aim is null && speed is null
+            ? ""
+            : (body ?? new Ik.BodyProfile()).ForSharing(aim, speed).ToJson();
+        if (json.Length > 0 || evenEmpty) _ = sync.SetBodyProfileAsync(json);
+    }
+
+    /// <summary>A room partner's body and aim. One that only carries an aim isn't a body, so the partner
+    /// is still measured here.</summary>
+    private void TakeSharedProfile(string name, string json)
+    {
+        var profile = Ik.BodyProfile.FromJson(json);
+        if (profile?.Aim is { } aim) sharedAims[name] = aim;
+        else sharedAims.TryRemove(name, out _);
+        if (profile?.Speed is { } speed) sharedSpeeds[name] = speed;
+        else sharedSpeeds.TryRemove(name, out _);
+        if (profile is { IsMeasured: true }) sharedBodies[name] = profile;
+        else sharedBodies.TryRemove(name, out _);
     }
 
     /// <summary>A character's saved meshes. A single measurement from 1.0.80-1.0.81 becomes "My body".</summary>
@@ -1534,12 +1560,11 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     {
         bodySyncPending = false;
         if (!sync.IsInRoom) return;
-        if (OwnBody() is { } profile) _ = sync.SetBodyProfileAsync(profile.ToJson());
+        ShareOwnProfile();
         _ = sync.GetBodyProfilesAsync().ContinueWith(task =>
         {
             if (!task.IsCompletedSuccessfully) return;
-            foreach (var shared in task.Result)
-                if (Ik.BodyProfile.FromJson(shared.ProfileJson) is { } parsed) sharedBodies[shared.DisplayName] = parsed;
+            foreach (var shared in task.Result) TakeSharedProfile(shared.DisplayName, shared.ProfileJson);
         }, TaskScheduler.Default);
     }
 
@@ -1548,10 +1573,10 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
     private unsafe void UpdateContactIk()
     {
         if (contactIk is null) return;
+        var aims = ContactAims(out var ownAim);
         var settings = new Ik.IkSettings(configuration.BendShaft, configuration.BendOpenings, configuration.BendHands,
-            configuration.LineUpPreference);
-        if (Objects.LocalPlayer is not { } local || (!settings.Shaft && !settings.Openings && !settings.Hands) ||
-            !IsSynastryAnimationPlaying() || IsBoneAligning)
+            aims, ownAim);
+        if (Objects.LocalPlayer is not { } local || !settings.Any || !IsSynastryAnimationPlaying() || IsBoneAligning)
         {
             contactIk.Update([], settings);
             return;
@@ -4059,6 +4084,14 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         character->Timeline.OverallSpeed = Math.Clamp(speed, -2f, 2f);
     }
 
+    /// <summary>The speed Synastry holds a character at: yours, or a room partner's that they shared.
+    /// Called from the game's speed calculation.</summary>
+    private float? AnimationSpeedFor(nint address)
+    {
+        if (address == Objects.LocalPlayer?.Address) return GetAnimationSpeedHookOverride();
+        return partnerSpeeds.TryGetValue(address, out var speed) ? speed : null;
+    }
+
     private float? GetAnimationSpeedHookOverride()
     {
         if (animationSpeedMatchTargetAddress != 0)
@@ -4081,8 +4114,54 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         ApplyAnimationSpeed(player.Address, targetCharacter->Timeline.OverallSpeed);
     }
 
+    /// <summary>Tells the room your speed when it changes (what you set, or the target's you follow), a
+    /// few times a second at most while the slider is dragged. Speed is only ever applied on each
+    /// player's own screen, so without this nobody else would see it, and Match target would read 100%
+    /// off a partner who changed theirs in Synastry.</summary>
+    private void ShareAnimationSpeed()
+    {
+        float? speed = Objects.LocalPlayer is null ? null : GetAnimationSpeedHookOverride();
+        if (speed is { } value) speed = MathF.Round(value, 2);
+        if (speed is { } rounded && MathF.Abs(rounded - 1f) < 0.005f) speed = null;   // normal speed isn't news
+        if (Nullable.Equals(speed, sharedOwnSpeed)) return;
+        var now = Environment.TickCount64;
+        if (now < nextSpeedShare) return;
+        nextSpeedShare = now + 300;
+        sharedOwnSpeed = speed;
+        ShareOwnProfile(true);
+    }
+
+    /// <summary>Holds room partners at the speed their Synastry shared, so you see what they see.</summary>
+    private void UpdatePartnerSpeeds()
+    {
+        var previous = partnerSpeeds;
+        if (sharedSpeeds.IsEmpty && previous.Count == 0) return;
+        var current = new Dictionary<nint, float>();
+        var present = new HashSet<nint>();
+        var localAddress = Objects.LocalPlayer?.Address ?? 0;
+        foreach (var player in Objects.OfType<IPlayerCharacter>())
+        {
+            if (player.Address == localAddress) continue;
+            present.Add(player.Address);
+            var name = player.Name.TextValue;
+            if (!sharedSpeeds.TryGetValue(name, out var speed) || !IsRoomMemberNamed(name)) continue;
+            current.TryAdd(player.Address, speed);
+            // Right away, rather than at the game's next speed calculation; only while they pose.
+            var character = (Character*)player.Address;
+            if (character->Mode is CharacterModes.EmoteLoop or CharacterModes.InPositionLoop)
+                ApplyAnimationSpeed(player.Address, speed);
+        }
+        // Someone who went back to normal speed (or left the room) is shown at normal speed again.
+        foreach (var address in previous.Keys)
+            if (!current.ContainsKey(address) && present.Contains(address))
+                ApplyAnimationSpeed(address, 1f);
+        partnerSpeeds = current;
+    }
+
     private void UpdateAnimationSpeed()
     {
+        UpdatePartnerSpeeds();
+        ShareAnimationSpeed();
         var player = Objects.LocalPlayer;
         if (player is null)
         {
@@ -4332,7 +4411,8 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         ProcessLocalAnimationSignals();
         UpdateRemotePlaybacks();
         var animationStarted = false;
-        var standingUp = StandUpFirst();
+        // Standing up comes first, then lining up with the room host; either holds the start back.
+        var standingUp = StandUpFirst() || LineUpFirst();
         if (!standingUp && pendingNearbyBroadcast is { } nearby)
         {
             pendingNearbyBroadcast = null;
@@ -4342,6 +4422,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         }
         if (!standingUp)
         {
+        if (PendingStart() is not null && Environment.TickCount64 >= pendingCommandTime) SnapToLineUpHost();
         if (pendingPose is not null && Environment.TickCount64 >= pendingCommandTime)
         {
             var pose = pendingPose;
@@ -4690,6 +4771,8 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         if (roomCode is null)
         {
             remoteSelectionRoom = null;
+            sharedAims.Clear();
+            sharedSpeeds.Clear();
             remoteOptionSelections.Clear();
             activeAnimationSuggestions.Clear();
             ignoredAnimationSuggestions.Clear();
@@ -4712,9 +4795,12 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             roleSyncPending = true;
             bodySyncPending = true;
             sharedBodies.Clear();
+            sharedAims.Clear();
+            sharedSpeeds.Clear();
             contactMaps.Forget();
         }
         var room = sync.Room!;
+        RememberReadyAnimations(room);
         var currentMembers = room.Members.Select(member => member.DisplayName).ToHashSet(StringComparer.OrdinalIgnoreCase);
         foreach (var pair in remoteOptionSelections.Where(pair => !currentMembers.Contains(pair.Value.MemberName)))
             remoteOptionSelections.TryRemove(pair.Key, out _);
@@ -5165,6 +5251,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
                     preparedDirectPlayback,
                     "group animation");
             NewStartScheduled();
+            ScheduleLineUp();
             standUpGaveUp = readyStandUpGaveUp;   // already tried before the Ready: start on the countdown
             readyStandUpGaveUp = false;
             if (preparedDirectPlayback is not null &&

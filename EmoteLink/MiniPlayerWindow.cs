@@ -46,7 +46,7 @@ public sealed partial class MiniPlayerWindow : Window
         {
             ImGui.SetCursorScreenPos(new Vector2(start.X + width - button * 5 - 16f * s, start.Y - 3f * s));
             if (IconButton("##unlock", button, Theme.LockIcon, true)) plugin.UnlockMovement();
-            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Movement is locked. Click to unlock, then move to end the animation.");
+            if (ImGui.IsItemHovered()) ImGui.SetTooltip("Movement is locked. Click to unlock, or double-tap a movement key.");
         }
         ImGui.SetCursorScreenPos(new Vector2(start.X + width - button * 4 - 12f * s, start.Y - 3f * s));
         if (IconButton("##freecam", button, Theme.CameraIcon, plugin.FreeCamOn)) plugin.ToggleFreeCam();

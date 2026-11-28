@@ -117,6 +117,16 @@ internal static class BodyParts
         return false;
     }
 
+    /// <summary>Whether the body has a real shaft, not the collapsed set every YAS body carries.</summary>
+    public static unsafe bool HasShaft(ICharacter character)
+    {
+        var native = (Character*)character.Address;
+        if (native is null) return false;
+        var view = SkeletonView.Read((nint)native->DrawObject, character.Name.TextValue, character.GameObjectId,
+            Wanted[BodyPart.Penis]);
+        return view is not null && TryShaftTip(view, out _);
+    }
+
     /// <summary>The tip of the chain this body really uses, when one isn't collapsed.</summary>
     private static bool TryShaftTip(SkeletonView view, out Vector3 tip)
     {

@@ -61,9 +61,18 @@ public sealed class SettingsWindow : Window
         if (!plugin.LockMovementAvailable) ImGui.EndDisabled();
         if (ImGui.IsItemHovered(ImGuiHoveredFlags.AllowWhenDisabled))
             ImGui.SetTooltip(plugin.LockMovementAvailable
-                ? "Movement keys do nothing until the animation ends or you unlock, so a stray key can't stop it.\n" +
-                  "Unlock with the lock button or /syn unlock."
+                ? "Off by default. Movement keys do nothing until the animation ends, so a stray key can't stop it.\n" +
+                  "Double-tap any movement key to break free, or use the lock button or /syn unlock."
                 : "Unavailable: its game hooks couldn't be set up.");
+
+        var lineUp = plugin.LineUpBeforeStartEnabled;
+        if (Theme.Toggle("##line-up-before-start", "Line up with the room host before an animation starts", ref lineUp))
+            plugin.SetLineUpBeforeStart(lineUp);
+        if (ImGui.IsItemHovered())
+            ImGui.SetTooltip("During a room start's countdown, you walk onto the host's spot and turn to their facing,\n" +
+                             "like Align to target, so the animation starts lined up. The host stays put.\n" +
+                             "Skipped when everyone plays the same animation (like a group dance) or the host is\n" +
+                             "more than 3 yalms away.");
 
         var anywhere = plugin.SitDozeAnywhereEnabled;
         if (!plugin.SitDozeAnywhereAvailable) ImGui.BeginDisabled();
@@ -203,8 +212,9 @@ public sealed class SettingsWindow : Window
         var hands = plugin.BendHandsEnabled;
         var changed = Theme.Toggle("##bend-shaft", "Aim the penis at your partner", ref shaft);
         if (ImGui.IsItemHovered())
-            ImGui.SetTooltip("The shaft bends at its joints to point through the mouth, vagina or anus it's\n" +
-                             "lined up with, keeping its depth. Bigger gaps still need bone align.");
+            ImGui.SetTooltip("For animations that have a contact map: the penis pivots at its base to point through\n" +
+                             "the opening the animation was made for, keeping its depth. To choose the opening\n" +
+                             "yourself, or for any other animation, use bone align with Penis only.");
         changed |= Theme.Toggle("##bend-openings", "Open the mouth, vagina or anus to fit", ref openings);
         if (ImGui.IsItemHovered())
             ImGui.SetTooltip("When the tip arrives, the opening widens a little for its thickness, within what the\n" +

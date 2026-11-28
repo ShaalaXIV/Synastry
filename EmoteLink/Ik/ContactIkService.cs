@@ -5,18 +5,30 @@ using FFXIVClientStructs.FFXIV.Client.Game.Object;
 
 namespace EmoteLink.Ik;
 
-/// <summary>A character near you this frame, gathered on the framework thread.</summary>
 /// <summary>A character near you this frame, gathered on the framework thread, with the animation
 /// file it's playing (SHA-256) and that file's contact map when one exists.</summary>
 internal sealed record IkActor(nint Address, ulong ObjectId, string Name, bool IsLocal, bool Looping,
     string? Hash = null, ContactMap? Map = null);
 
-/// <summary>What the player has switched on, read once per frame.</summary>
-internal sealed record IkSettings(bool Shaft, bool Openings, bool Hands, ContactPreference Preference);
+/// <summary>A penis aimed at an opening with bone align, by character name. It bends and the opening
+/// widens whatever the animation's contact map says.</summary>
+internal sealed record ShaftAim(string Giver, string Receiver, ContactPart Opening);
+
+/// <summary>How the player's own aim is doing: whether the opening was in reach, and how far past it
+/// the tip went at its deepest over the last few seconds (negative: short of it), in yalms.</summary>
+internal sealed record ShaftAimReport(ShaftAim Aim, bool Engaged, float Deepest);
+
+/// <summary>What the player has switched on, read once per frame: the automatic bending, the aims
+/// from bone align (yours and your room's), and which of them is yours to report on.</summary>
+internal sealed record IkSettings(bool Shaft, bool Openings, bool Hands, IReadOnlyList<ShaftAim> Aims,
+    ShaftAim? Reported = null)
+{
+    public bool Any => Shaft || Openings || Hands || Aims.Count > 0;
+}
 
 /// <summary>
-/// Bends bones to make couple animations meet: the shaft aims through the chosen opening, the
-/// opening widens a little for it, and hands that hover near a partner's body settle onto it and
+/// Bends bones to make couple animations meet: the shaft aims through the opening bone align or the
+/// animation's contact map chose, the opening widens for it, and hands that hover near a partner's body settle onto it and
 /// close their fingers. It runs just before the game draws each frame, on top of the finished
 /// animation, for you and the room partners near you (every Synastry in the room does the same, so
 /// everyone sees it). Bones only ever rotate, within joint limits; a limb that can't reach stops
@@ -31,8 +43,10 @@ internal sealed unsafe class ContactIkService : IDisposable
     // about 7 cm from the opening (sex-animation-corpus, 241 pairs); 10 cm catches them all without
     // bending a shaft toward an opening it was never aimed at.
     private const float ShaftEngageDistance = 0.10f;
-    // A mouth this close always wins, whatever the preference.
-    private const float MouthContactDistance = 0.08f;
+    // A penis aimed with bone align bends toward its opening from further away, since the player chose
+    // it, but never toward one off to the side or behind it.
+    private const float AimEngageDistance = 0.25f;
+    private const float MaxAimAngleDegrees = 75f;
     // A shaft shorter than this is the collapsed set every YAS body carries.
     private const float MinShaftLength = 0.05f;
     // Hands, measured on 1,142 hands in 262 scenes (sex-animation-corpus): a hand an animator put on
@@ -44,7 +58,16 @@ internal sealed unsafe class ContactIkService : IDisposable
     private const float HandHoldSeconds = 0.27f;      // eight animation frames at 30 fps
     // A palm this low (model space, above the feet) is propping on the floor, not on a partner.
     private const float FloorHeight = 0.12f;
-    private const float ShaftJointLimitDegrees = 14f;
+    // The whole penis pivots at its root first, keeping the shape the animation gave it; only what that
+    // can't cover is shared out along it as a gentle curve.
+    private const float ShaftRootLimitDegrees = 30f;
+    private const float ShaftBendLimitDegrees = 8f;
+    // An opening starts to part when the tip is 2 cm away, is fully open once it is 1 cm in, and stays
+    // shut while the shaft passes more than 3 cm beside it.
+    private const float OpenBefore = 0.02f;
+    private const float OpenWhenIn = 0.01f;
+    private const float OpenMiss = 0.03f;
+    private const float AimReportSeconds = 2.5f;
     private const float PalmTurnLimitDegrees = 40f;
     private const float EaseSeconds = 0.3f;
 
@@ -97,7 +120,11 @@ internal sealed unsafe class ContactIkService : IDisposable
         public (string Actor, string From, string To, float Radius)? Surface;
     }
     private volatile IReadOnlyList<IkActor> actors = [];
-    private volatile IkSettings settings = new(false, false, false, ContactPreference.Closest);
+    private volatile IkSettings settings = new(false, false, false, []);
+    private volatile ShaftAimReport? aimReport;
+    private ShaftAim? trackedAim;
+    private float trackedTime;
+    private float? trackedDeepest;
     private long lastFrame;
     private bool failed;
 
@@ -119,6 +146,13 @@ internal sealed unsafe class ContactIkService : IDisposable
 
     public bool Available => renderHook is not null && !failed;
     public string Status { get; private set; } = "";
+
+    /// <summary>How the player's own bone align aim is doing; null until it has been watched a moment.</summary>
+    public ShaftAimReport? AimReport
+    {
+        get => aimReport;
+        private set => aimReport = value;
+    }
 
     /// <summary>Called each framework tick with the characters to work on.</summary>
     public void Update(IReadOnlyList<IkActor> nearby, IkSettings current)
@@ -153,7 +187,13 @@ internal sealed unsafe class ContactIkService : IDisposable
 
         var current = settings;
         var list = actors;
-        if (list.Count == 0 || (!current.Shaft && !current.Openings && !current.Hands))
+        // Your aim ended: what it reached last time no longer applies.
+        if (current.Reported is null && trackedAim is not null)
+        {
+            trackedAim = null;
+            AimReport = null;
+        }
+        if (list.Count == 0 || !current.Any)
         {
             weights.Clear();
             return;
@@ -176,7 +216,7 @@ internal sealed unsafe class ContactIkService : IDisposable
         // Decide everything from the untouched animation first, then write.
         openings.Clear();
         var shaftWork = new List<Action>();
-        if (current.Shaft || current.Openings)
+        if (current.Shaft || current.Openings || current.Aims.Count > 0)
             foreach (var (actor, view) in views)
                 if (actor.Looping && PlanShaft(actor, view, views, current, deltaSeconds) is { } work)
                     shaftWork.Add(work);
@@ -190,104 +230,156 @@ internal sealed unsafe class ContactIkService : IDisposable
                             handWork.Add(work);
 
         foreach (var work in shaftWork) work();
-        if (current.Openings)
-            foreach (var (_, view) in views)
-                if (openings.TryGetValue(view.Name, out var opening))
-                    Open(view, opening);
+        foreach (var (_, view) in views)
+            if (openings.TryGetValue(view.Name, out var opening))
+                Open(view, opening);
         foreach (var work in handWork) work();
     }
 
     // ---- Shaft ----------------------------------------------------------------------------------
 
-    private sealed record OpeningTarget(ContactPart Part, float Amount);
+    /// <summary>An opening to widen this frame: by how much on each side, and the receiver-space
+    /// direction its sides part along (square to the shaft).</summary>
+    private sealed record OpeningTarget(ContactPart Part, float Amount, Vector3 Across);
 
     private Action? PlanShaft(IkActor giver, SkeletonView view, List<(IkActor Actor, SkeletonView View)> all,
         IkSettings current, float deltaSeconds)
     {
         var key = "shaft|" + giver.Name;
+        // Bone align's aim is the player's own choice and always wins. Otherwise only an animation whose
+        // contact map says where the shaft goes is bent, and only when that is switched on.
+        var aim = current.Aims.FirstOrDefault(candidate => candidate.Giver == giver.Name);
+        var reported = aim is not null && aim == current.Reported;
         var profile = profileOf(giver.Name);
         var names = ShaftChainOf(view, profile);
         var joints = names.Select(view.Model).ToList();
-        if (joints.Count < 2 || Length(joints) < MinShaftLength) return Decay(key, deltaSeconds, view, names);
-        // Only an animation whose contact map says where the shaft goes is bent.
-        if (giver.Map?.Shaft is not { } shaftMap) return Decay(key, deltaSeconds, view, names);
-        var mappedPart = shaftMap.Opening switch
-        {
-            "mouth" => ContactPart.Mouth,
-            "anus" => ContactPart.Anus,
-            _ => ContactPart.Vagina
-        };
+        if (joints.Count < 2 || Length(joints) < MinShaftLength)
+            return Missed(reported, aim, key, deltaSeconds, view, names);
+
+        ContactPart part;
+        var mapPartner = giver.Map?.Shaft?.Partner;
+        if (aim is not null) part = aim.Opening;
+        else if ((current.Shaft || current.Openings) && giver.Map?.Shaft is { } shaftMap)
+            part = shaftMap.Opening switch
+            {
+                "mouth" => ContactPart.Mouth,
+                "anus" => ContactPart.Anus,
+                _ => ContactPart.Vagina
+            };
+        else return Decay(key, deltaSeconds, view, names);
+        var bend = aim is not null || current.Shaft;
+        var open = aim is not null || current.Openings;
+        var engage = aim is not null ? AimEngageDistance : ShaftEngageDistance;
 
         var lastDirection = Vector3.Normalize(joints[^1] - joints[^2]);
         var tipExtra = profile?.Shaft?.TipBeyondLastBone is > 0 and var extra ? extra : Vector3.Distance(joints[^1], joints[^2]);
-        var tip = joints[^1] + lastDirection * tipExtra;
+        var chain = new List<Vector3>(joints) { joints[^1] + lastDirection * tipExtra };
+        var basePoint = chain[0];
+        var tip = chain[^1];
+        var pointing = tip - basePoint;
+        var maxAngle = IkSolver.DegreesToRadians(MaxAimAngleDegrees);
 
-        // Every opening in reach on everyone else, in this giver's own space.
-        (SkeletonView Receiver, ContactPart Part, Vector3 Point, float Distance)? mouth = null, chosen = null, preferred = null;
-        var wanted = current.Preference switch
-        {
-            ContactPreference.Mouth => ContactPart.Mouth,
-            ContactPreference.Vagina => ContactPart.Vagina,
-            ContactPreference.Anus => ContactPart.Anus,
-            _ => (ContactPart?)null
-        };
+        // The opening to aim for, in this giver's own space: the aimed partner's, or the closest one on
+        // a partner the contact map names. Never one off to the side or behind the shaft.
+        (SkeletonView Receiver, Vector3 Point, float Distance)? target = null;
         foreach (var (receiverActor, receiver) in all)
         {
             if (receiverActor.ObjectId == giver.ObjectId) continue;
-            if (!giver.Map.IsPartner(shaftMap.Partner, receiverActor.Hash)) continue;
-            // "Animation's choice" aims where the animation was made to go; picking Mouth, Vagina or
-            // Anus yourself overrides it for pairs you're in.
-            var aimFor = wanted is { } chosenPart && (giver.IsLocal || receiverActor.IsLocal) ? chosenPart : mappedPart;
-            foreach (var (part, world) in OpeningsOf(receiver))
+            if (aim is not null ? receiverActor.Name != aim.Receiver
+                : !giver.Map!.IsPartner(mapPartner!, receiverActor.Hash)) continue;
+            foreach (var (found, world) in OpeningsOf(receiver, aim is not null))
             {
-                if (part != aimFor) continue;
+                if (found != part) continue;
                 var point = view.ToModel(world);
-                var distance = MathF.Min(Vector3.Distance(point, tip), Vector3.Distance(point, ClosestOnPolyline(joints, point)));
-                if (distance > ShaftEngageDistance) continue;
-                var candidate = (receiver, part, point, distance);
-                if (part == ContactPart.Mouth && distance <= MouthContactDistance &&
-                    (mouth is null || distance < mouth.Value.Distance)) mouth = candidate;
-                // The local player's preference applies to pairs it is part of.
-                if (wanted == part && (giver.IsLocal || receiverActor.IsLocal) &&
-                    (preferred is null || distance < preferred.Value.Distance)) preferred = candidate;
-                if (chosen is null || distance < chosen.Value.Distance) chosen = candidate;
+                var distance = MathF.Min(Vector3.Distance(point, tip), Vector3.Distance(point, ClosestOnPolyline(chain, point)));
+                if (distance > engage || Angle(pointing, point - basePoint) > maxAngle) continue;
+                if (target is null || distance < target.Value.Distance) target = (receiver, point, distance);
             }
         }
-        var target = mouth ?? preferred ?? chosen;
-        if (target is not { } aim) return Decay(key, deltaSeconds, view, names);
+        if (target is not { } goal) return Missed(reported, aim, key, deltaSeconds, view, names);
 
-        // Aim the shaft through the opening without changing how deep it is: the tip goes on the
-        // line from the base through the opening, at its current reach.
-        var basePoint = joints[0];
-        var through = aim.Point - basePoint;
-        if (through.LengthSquared() < 1e-8f) return Decay(key, deltaSeconds, view, names);
-        var tipTarget = basePoint + Vector3.Normalize(through) * Vector3.Distance(basePoint, tip);
-
-        var chain = new List<Vector3>(joints) { tip };
-        var solved = IkSolver.Chain(chain, tipTarget, ShaftJointLimitDegrees);
-        if (solved is null) return Decay(key, deltaSeconds, view, names);
-        var finalPoints = SimulateChain(chain, solved);
-        var deltas = SequentialDeltas(chain, finalPoints);
-
+        var through = goal.Point - basePoint;
+        if (through.LengthSquared() < 1e-8f) return Missed(reported, aim, key, deltaSeconds, view, names);
+        var direction = Vector3.Normalize(through);
         var weight = Ease(key, 1f, deltaSeconds);
-        shaftDeltas[key] = deltas;
 
-        if (settings.Openings)
+        // Aim through the opening without changing how deep the animation takes it: the tip goes on the
+        // line from the base through the opening, at its current reach. The penis pivots at its root
+        // first, so it keeps its shape instead of curling at the tip.
+        Action? work = null;
+        var finalTip = tip;
+        if (bend && IkSolver.Aim(chain, basePoint + direction * pointing.Length(), ShaftRootLimitDegrees,
+                ShaftBendLimitDegrees) is { } final)
         {
-            var shaftRadius = profile?.Shaft?.Radius is > 0 and var radius ? radius : 0.018f;
-            var receiverProfile = profileOf(aim.Receiver.Name);
-            var openingName = PartKey(aim.Part);
-            var rest = receiverProfile?.Openings.GetValueOrDefault(openingName);
-            var restRadius = rest?.Radius is > 0 and var r ? r : aim.Part == ContactPart.Mouth ? 0.012f : 0.004f;
-            var maxOpen = rest?.MaxOpen is > 0 and var m ? m : aim.Part == ContactPart.Mouth ? 0.03f : 0.012f;
-            var tuning = receiverProfile?.Tuning.OpeningAmount ?? 1f;
-            // Only when the tip has actually arrived: a shaft hovering nearby doesn't open anything.
-            var arrival = Math.Clamp(1f - aim.Distance / 0.04f, 0f, 1f);
-            var amount = Math.Clamp(shaftRadius - restRadius + 0.004f, 0f, maxOpen) * tuning * arrival * weight;
-            if (amount > 0.0005f) openings[aim.Receiver.Name] = new OpeningTarget(aim.Part, amount);
+            var deltas = SequentialDeltas(chain, final);
+            shaftDeltas[key] = deltas;
+            finalTip = final[^1];
+            work = () => ApplyChain(view, names, deltas, weight);
+        }
+        else
+        {
+            shaftDeltas.Remove(key);
         }
 
-        return () => ApplyChain(view, names, deltas, weight);
+        // How far past the opening the tip goes (negative: short of it), and how far the opening sits
+        // off the shaft, both after aiming.
+        var insertion = Vector3.Dot(finalTip - basePoint, direction) - through.Length();
+        var miss = Vector3.Distance(goal.Point, ClosestOnSegment(basePoint, finalTip, goal.Point));
+        if (reported) Track(aim!, true, insertion * view.Scale, deltaSeconds);
+
+        if (open)
+        {
+            var receiverProfile = profileOf(goal.Receiver.Name);
+            var rest = receiverProfile?.Openings.GetValueOrDefault(PartKey(part));
+            var restRadius = rest?.Radius is > 0 and var r ? r : 0.004f;
+            var maxOpen = rest?.MaxOpen is > 0 and var m ? m : part == ContactPart.Mouth ? 0.03f : 0.012f;
+            var tuning = receiverProfile?.Tuning.OpeningAmount ?? 1f;
+            // The shaft's thickness in the receiver's own space.
+            var shaftRadius = (profile?.Shaft?.Radius is > 0 and var radius ? radius : 0.018f) * view.Scale / goal.Receiver.Scale;
+            // Lips start closed, so the jaw drops for the whole width; the other openings part on each
+            // side by what their resting radius lacks.
+            var needed = part == ContactPart.Mouth ? shaftRadius * 2f - 0.006f : shaftRadius - restRadius + 0.003f;
+            // Only once the tip has arrived and while it's on target: a shaft hovering nearby or passing
+            // beside the opening doesn't open anything.
+            var arrival = Math.Clamp((insertion + OpenBefore) / (OpenBefore + OpenWhenIn), 0f, 1f) *
+                          Math.Clamp(1f - miss / OpenMiss, 0f, 1f);
+            var amount = Math.Clamp(needed, 0f, maxOpen) * tuning * arrival * weight;
+            if (amount > 0.0005f)
+            {
+                // The receiver's left and right, squared to the shaft as it enters.
+                var along = goal.Receiver.ToModel(view.ToWorld(basePoint + direction)) - goal.Receiver.ToModel(view.ToWorld(basePoint));
+                along = along.LengthSquared() > 1e-10f ? Vector3.Normalize(along) : Vector3.UnitZ;
+                var across = Vector3.UnitX - along * Vector3.Dot(Vector3.UnitX, along);
+                across = across.LengthSquared() > 1e-4f ? Vector3.Normalize(across) : Vector3.UnitX;
+                openings[goal.Receiver.Name] = new OpeningTarget(part, amount, across);
+            }
+        }
+        return work;
+    }
+
+    /// <summary>No opening to aim at this frame: eases out, and tells the player when it's their aim.</summary>
+    private Action? Missed(bool reported, ShaftAim? aim, string key, float deltaSeconds, SkeletonView view, string[] names)
+    {
+        if (reported) Track(aim!, false, 0f, deltaSeconds);
+        return Decay(key, deltaSeconds, view, names);
+    }
+
+    /// <summary>Keeps the deepest the player's own aim reached over a short window, for the panel.</summary>
+    private void Track(ShaftAim aim, bool engaged, float insertion, float deltaSeconds)
+    {
+        if (aim != trackedAim)
+        {
+            trackedAim = aim;
+            trackedTime = 0f;
+            trackedDeepest = null;
+            AimReport = null;
+        }
+        trackedTime += deltaSeconds;
+        if (engaged) trackedDeepest = MathF.Max(trackedDeepest ?? float.MinValue, insertion);
+        if (trackedTime < AimReportSeconds) return;
+        AimReport = new ShaftAimReport(aim, trackedDeepest is not null, trackedDeepest ?? 0f);
+        trackedTime = 0f;
+        trackedDeepest = null;
     }
 
     private Action? Decay(string key, float deltaSeconds, SkeletonView view, string[] names)
@@ -305,16 +397,6 @@ internal sealed unsafe class ContactIkService : IDisposable
     {
         for (var i = 0; i < deltas.Length && i < names.Length; i++)
             view.Rotate(names[i], Quaternion.Slerp(Quaternion.Identity, deltas[i], IkSolver.Ease(weight)));
-    }
-
-    /// <summary>The final joint positions after the solver's rotations, applied base first.</summary>
-    private static Vector3[] SimulateChain(List<Vector3> chain, Quaternion[] rotations)
-    {
-        var points = chain.ToArray();
-        for (var joint = 0; joint < rotations.Length; joint++)
-            for (var after = joint + 1; after < points.Length; after++)
-                points[after] = points[joint] + Vector3.Transform(points[after] - points[joint], rotations[joint]);
-        return points;
     }
 
     /// <summary>Rotations that, applied base first with children following, move the chain from
@@ -346,9 +428,12 @@ internal sealed unsafe class ContactIkService : IDisposable
         return [];
     }
 
-    private IEnumerable<(ContactPart Part, Vector3 World)> OpeningsOf(SkeletonView receiver)
+    /// <param name="chosen">The player picked this partner's opening in bone align, so a body that also
+    /// has a shaft offers its vagina without a profile saying so.</param>
+    private IEnumerable<(ContactPart Part, Vector3 World)> OpeningsOf(SkeletonView receiver, bool chosen)
     {
         var profile = profileOf(receiver.Name);
+        // A measured body lists the openings its mesh really uses; one it doesn't is never aimed at.
         bool Allowed(ContactPart part) =>
             profile is null || profile.Openings.Count == 0 || profile.Openings.ContainsKey(PartKey(part));
 
@@ -362,9 +447,10 @@ internal sealed unsafe class ContactIkService : IDisposable
         }
         var receiverShaft = ShaftChainOf(receiver, profile).Select(receiver.Model).ToList();
         var hasShaft = receiverShaft.Count >= 2 && Length(receiverShaft) >= MinShaftLength;
-        // A body with a real shaft carries an unused vagina bone, so only a profile can say it has one.
+        // A body with a real shaft carries an unused vagina bone, so only a profile (or the player) can
+        // say it has one.
         if (receiver.TryWorld("iv_omanko", out var vagina) && Allowed(ContactPart.Vagina) &&
-            (!hasShaft || profile?.Openings.ContainsKey("vagina") == true))
+            (!hasShaft || chosen || profile?.Openings.ContainsKey("vagina") == true))
             yield return (ContactPart.Vagina, vagina);
         if (receiver.TryWorld("iv_koumon", out var anus) && Allowed(ContactPart.Anus))
             yield return (ContactPart.Anus, anus);
@@ -374,8 +460,9 @@ internal sealed unsafe class ContactIkService : IDisposable
 
     private static void Open(SkeletonView receiver, OpeningTarget target)
     {
-        // Character model space faces +Z with its left side toward +X.
-        var left = Vector3.UnitX * (target.Amount * 0.5f);
+        // Each side moves out by the full amount, so the opening's radius grows by it. Character model
+        // space faces +Z with its left side toward +X, and Across keeps that sign.
+        var left = target.Across * target.Amount;
         switch (target.Part)
         {
             case ContactPart.Vagina:
@@ -639,6 +726,12 @@ internal sealed unsafe class ContactIkService : IDisposable
     {
         var present = names.Where(view.Has).ToList();
         return present.Count == 0 ? null : present.Aggregate(Vector3.Zero, (sum, name) => sum + view.Model(name)) / present.Count;
+    }
+
+    private static float Angle(Vector3 a, Vector3 b)
+    {
+        if (a.LengthSquared() < 1e-10f || b.LengthSquared() < 1e-10f) return 0f;
+        return MathF.Acos(Math.Clamp(Vector3.Dot(Vector3.Normalize(a), Vector3.Normalize(b)), -1f, 1f));
     }
 
     private static float Length(IReadOnlyList<Vector3> points)

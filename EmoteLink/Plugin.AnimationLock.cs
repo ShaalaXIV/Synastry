@@ -23,7 +23,8 @@ public sealed unsafe partial class Plugin
         if (!enabled) animationLock?.Release();
     }
 
-    /// <summary>Frees the movement keys until the next animation; moving then ends this one.</summary>
+    /// <summary>Frees the movement keys until the next animation; moving then ends this one. Double-tapping
+    /// a movement key does the same.</summary>
     public void UnlockMovement()
     {
         if (!MovementLocked) return;
@@ -67,9 +68,16 @@ public sealed unsafe partial class Plugin
         // Synastry's own doing, and the hold would stand in their way.
         var busy = standUpStartedAt != 0 || PendingStart() is not null || cyclingPose is not null || movement.IsWalking;
         hold.Tick(local.Position, IsLockablePlay(local), busy, PoseSignature.Of(local), seconds);
-        if (hold.TakeHint(FreeCamOn || Camera.FreeCamService.NavigationPaused()))
+        var keysInUse = FreeCamOn || Camera.FreeCamService.NavigationPaused();
+        // The second tap is usually still held, so you walk off at once and the animation ends.
+        if (hold.TakeDoubleTap(keysInUse))
+        {
+            UnlockMovement();
+            return;
+        }
+        if (hold.TakeHint(keysInUse))
             Chat.Print("[Synastry] Your movement is locked so the animation doesn't end. " +
-                       "Use the lock button, or type /syn unlock, then move to end it.");
+                       "Double-tap a movement key to move again, or use the lock button or /syn unlock.");
     }
 
     // A looping emote or pose, the standing idle that was played, or a locked emote's own timeline.

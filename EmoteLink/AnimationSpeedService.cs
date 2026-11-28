@@ -6,6 +6,12 @@ using Lumina.Excel.Sheets;
 
 namespace EmoteLink;
 
+/// <summary>
+/// Holds a character's animation speed where Synastry set it: the game works the speed out again as
+/// the animation plays, and this puts Synastry's back on top each time. Works for you and for room
+/// partners whose speed their Synastry shared. LivePose (inside Simple Heels) hooks the same
+/// calculation for its own speed, so a LivePose speed on the same character can win over this one.
+/// </summary>
 public sealed unsafe class AnimationSpeedService : IDisposable
 {
     private delegate void CalculateAndApplyOverallSpeedDelegate(TimelineContainer* timeline);
@@ -15,7 +21,7 @@ public sealed unsafe class AnimationSpeedService : IDisposable
     private Hook<CalculateAndApplyOverallSpeedDelegate>? calculateAndApplyOverallSpeedHook { get; init; }
 
     private readonly IObjectTable objects;
-    private readonly Func<float?> getSpeedOverride;
+    private readonly Func<nint, float?> getSpeedOverride;
     private readonly HashSet<uint> adjustableTimelines =
     [
         3, 3124, 3126, 3182, 3184, 7405, 7407
@@ -25,7 +31,7 @@ public sealed unsafe class AnimationSpeedService : IDisposable
         IGameInteropProvider interop,
         IObjectTable objects,
         IDataManager data,
-        Func<float?> getSpeedOverride)
+        Func<nint, float?> getSpeedOverride)
     {
         this.objects = objects;
         this.getSpeedOverride = getSpeedOverride;
@@ -45,13 +51,15 @@ public sealed unsafe class AnimationSpeedService : IDisposable
     {
         calculateAndApplyOverallSpeedHook!.Original(timeline);
         if (timeline is null || timeline->OwnerObject is null) return;
-
-        var player = objects.LocalPlayer;
-        if (player is null || (nint)timeline->OwnerObject != player.Address) return;
-        if (!adjustableTimelines.Contains(timeline->TimelineSequencer.TimelineIds[0])) return;
-
-        if (getSpeedOverride() is { } speed)
-            timeline->OverallSpeed = Math.Clamp(speed, -2f, 2f);
+        if (getSpeedOverride((nint)timeline->OwnerObject) is not { } speed) return;
+        // Only a loop or a standing pose: speeding up walking or a one-off action would break it. A
+        // Synastry animation can play on a timeline no emote lists (a carrier, a direct playback), so
+        // being in a looping emote or seat counts as well.
+        var character = timeline->OwnerObject;
+        if (!adjustableTimelines.Contains(timeline->TimelineSequencer.TimelineIds[0]) &&
+            !adjustableTimelines.Contains(timeline->BaseOverride) &&
+            character->Mode is not (CharacterModes.EmoteLoop or CharacterModes.InPositionLoop)) return;
+        timeline->OverallSpeed = Math.Clamp(speed, -2f, 2f);
     }
 
     public void Dispose() => calculateAndApplyOverallSpeedHook?.Dispose();

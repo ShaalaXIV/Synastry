@@ -23,6 +23,9 @@ internal sealed class AlignmentEntry
     public StoredVector ContactOffset { get; set; } = new();
     /// <summary>The animation file your partner was playing; null when it wasn't known.</summary>
     public string? PartnerHash { get; set; }
+    /// <summary>Penis only: the penis bends into the opening and nobody moves, so there is no offset or
+    /// facing to repeat.</summary>
+    public bool ShaftOnly { get; set; }
     public DateTime Updated { get; set; }
 }
 

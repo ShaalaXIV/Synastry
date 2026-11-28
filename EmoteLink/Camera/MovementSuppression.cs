@@ -114,11 +114,32 @@ public sealed unsafe class MovementSuppression : IDisposable
         var framework = GameFramework.Instance();
         if (framework is null || framework->UIModule is null) return false;
         var data = (InputData*)framework->UIModule->GetUIInputData();
-        return data is not null && (
-            IsDown(data, InputId.MOVE_FORE) || IsDown(data, InputId.MOVE_BACK) ||
-            IsDown(data, InputId.MOVE_LEFT) || IsDown(data, InputId.MOVE_RIGHT) ||
-            IsDown(data, InputId.MOVE_STRIFE_L) || IsDown(data, InputId.MOVE_STRIFE_R) ||
+        return data is not null && (DirectionKeysDown(data) != 0 ||
             IsDown(data, InputId.JUMP) || IsDown(data, InputId.MOVE_DESCENT));
+    }
+
+    private static readonly InputId[] DirectionKeys =
+    [
+        InputId.MOVE_FORE, InputId.MOVE_BACK, InputId.MOVE_LEFT, InputId.MOVE_RIGHT,
+        InputId.MOVE_STRIFE_L, InputId.MOVE_STRIFE_R,
+    ];
+
+    /// <summary>Which directional movement keys are physically down, past the block: one bit each for
+    /// forward, back, left, right, strafe left and strafe right.</summary>
+    public int DirectionKeysDown()
+    {
+        var framework = GameFramework.Instance();
+        if (framework is null || framework->UIModule is null) return 0;
+        var data = (InputData*)framework->UIModule->GetUIInputData();
+        return data is null ? 0 : DirectionKeysDown(data);
+    }
+
+    private int DirectionKeysDown(InputData* data)
+    {
+        var keys = 0;
+        for (var i = 0; i < DirectionKeys.Length; i++)
+            if (IsDown(data, DirectionKeys[i])) keys |= 1 << i;
+        return keys;
     }
 
     /// <summary>

@@ -63,9 +63,11 @@ internal sealed class BoneAlignPanel(Plugin plugin)
             if (Theme.Text(forget, Theme.Ash)) plugin.ForgetKnownAlignment();
             Tooltip("Stop lining up this animation until you align or remember it again.");
 
-            Theme.Wrapped($"{BodyParts.DisplayName(known.Self)} to {BodyParts.Words(known.Partner)}, " +
-                          $"{known.ContactOffset.ToVector3().Length():0.00}y apart, " +
-                          BoneAlignService.FacingText(known.RelativeYaw), Theme.Soft);
+            Theme.Wrapped(known.ShaftOnly
+                ? $"{BodyParts.DisplayName(known.Self)} to {BodyParts.Words(known.Partner)}, penis only"
+                : $"{BodyParts.DisplayName(known.Self)} to {BodyParts.Words(known.Partner)}, " +
+                  $"{known.ContactOffset.ToVector3().Length():0.00}y apart, " +
+                  BoneAlignService.FacingText(known.RelativeYaw), Theme.Soft);
         }
         if (plugin.AlignmentWaiting.Length > 0) Theme.Wrapped(plugin.AlignmentWaiting, Theme.Some);
         if (plugin.KnownAlignment is not null || plugin.AlignmentWaiting.Length > 0) ImGui.Dummy(new Vector2(0f, 2f * s));
@@ -98,6 +100,17 @@ internal sealed class BoneAlignPanel(Plugin plugin)
         Row("Partner", width);
         if (PartCombo("##bone-align-partner", ref partner)) plugin.PickBoneAlignParts(self, partner);
         Tooltip("Your partner's body part it should meet.");
+
+        if (Plugin.IsPenetration(self, partner))
+        {
+            var shaftOnly = plugin.BoneAlignShaftOnly;
+            if (Theme.Toggle("##bone-align-shaft-only", "Penis only", ref shaftOnly)) plugin.SetBoneAlignShaftOnly(shaftOnly);
+            Tooltip("Align bends just the penis into the opening and opens it to fit, if the body's mesh can,\n" +
+                    "instead of moving your whole body. Lasts for this animation. Your partner sees it too.\n" +
+                    "If the bodies are too far apart for the penis to reach, turn this off and align to move closer.");
+            // Nobody moves, so there is no gap to leave or facing to turn to.
+            if (plugin.AligningShaftOnly) return;
+        }
 
         var gap = plugin.BoneAlignGap;
         Row("Gap", width);
@@ -135,6 +148,18 @@ internal sealed class BoneAlignPanel(Plugin plugin)
         {
             if (Theme.Primary(aligning ? "Aligning…###bone-align-go" : "Align###bone-align-go", width)) plugin.BoneAlignNow();
         });
+        if (plugin.AligningShaftOnly)
+        {
+            Tooltip("Bends the penis into the opening every frame and widens the opening for it. Nobody moves.\n" +
+                    "It lasts for this animation and is remembered for it.");
+            Disabled(!plugin.CanBoneAlignReset, () =>
+            {
+                if (Theme.Text("Reset")) plugin.ResetBoneAlign();
+            });
+            Tooltip("Back to how the animation moves the penis, and to how you were before bone align.\n" +
+                    "What is remembered stays.");
+            return;
+        }
         Tooltip("Restarts both animations, watches both parts for a moment, then moves you so they meet.\n" +
                 "If an animation from Synastry is playing, the result is remembered for it.");
 

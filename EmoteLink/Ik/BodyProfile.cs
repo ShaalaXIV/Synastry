@@ -36,6 +36,27 @@ internal sealed class BodyProfile
     /// <summary>The player's own adjustments from the setup page.</summary>
     public BodyTuning Tuning { get; set; } = new();
 
+    /// <summary>A penis this player aimed with bone align, sent along with the body so every Synastry in
+    /// the room bends it the same way. Never saved with a mesh.</summary>
+    public SharedAim? Aim { get; set; }
+
+    /// <summary>The animation speed this player set in Synastry (1 = normal), sent along with the body so
+    /// the room sees it too. Null when they haven't changed it. Never saved with a mesh.</summary>
+    public float? Speed { get; set; }
+
+    /// <summary>Whether this came from body setup, rather than only carrying an aim or a speed.</summary>
+    [JsonIgnore]
+    public bool IsMeasured => BodySignature.Length > 0 || SurfaceRadius.Count > 0 || Shaft is not null || Openings.Count > 0;
+
+    /// <summary>A copy carrying <paramref name="aim"/> and <paramref name="speed"/>, for sharing.</summary>
+    public BodyProfile ForSharing(SharedAim? aim, float? speed)
+    {
+        var copy = (BodyProfile)MemberwiseClone();
+        copy.Aim = aim;
+        copy.Speed = speed;
+        return copy;
+    }
+
     private static readonly JsonSerializerOptions Options = new()
     {
         DefaultIgnoreCondition = JsonIgnoreCondition.WhenWritingNull,
@@ -85,6 +106,10 @@ internal sealed class BodyProfile
         Tuning.ContactGap = Math.Clamp(float.IsFinite(Tuning.ContactGap) ? Tuning.ContactGap : 0f, -0.05f, 0.05f);
         Tuning.GripStrength = Math.Clamp(float.IsFinite(Tuning.GripStrength) ? Tuning.GripStrength : 1f, 0f, 1.5f);
         Tuning.OpeningAmount = Math.Clamp(float.IsFinite(Tuning.OpeningAmount) ? Tuning.OpeningAmount : 1f, 0f, 1.5f);
+        if (Speed is { } speed) Speed = float.IsFinite(speed) ? Math.Clamp(speed, -2f, 2f) : null;
+        if (Aim is { } aim && (aim.Giver.Length is 0 or > 64 || aim.Receiver.Length is 0 or > 64 ||
+                               aim.Opening is not ("mouth" or "vagina" or "anus")))
+            Aim = null;
         return this;
     }
 }
@@ -110,6 +135,14 @@ internal sealed class OpeningShape
     public float MaxOpen { get; set; }
     /// <summary>How deep the shaft may go along the opening before it would pass through the body.</summary>
     public float Depth { get; set; }
+}
+
+/// <summary>Whose penis aims at whose opening ("mouth", "vagina" or "anus"), by character name.</summary>
+internal sealed class SharedAim
+{
+    public string Giver { get; set; } = "";
+    public string Receiver { get; set; } = "";
+    public string Opening { get; set; } = "";
 }
 
 internal sealed class HandShape

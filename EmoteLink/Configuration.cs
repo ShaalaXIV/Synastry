@@ -39,8 +39,14 @@ public sealed class Configuration : IPluginConfiguration
     public bool DozeAnywhereOnly { get; set; }
     // Open Synastry as the small mini player instead of the full window.
     public bool UseMiniPlayer { get; set; }
-    // Movement keys do nothing while a Synastry animation plays, until you unlock.
-    public bool LockMovementWhilePlaying { get; set; } = true;
+    // Movement keys do nothing while a Synastry animation plays, until you unlock or double-tap a
+    // movement key. Off unless the player turns it on.
+    public bool LockMovementWhilePlaying { get; set; }
+    // Set once 1.0.99 has switched the animation lock off for everyone (it was on by default in
+    // 1.0.97-1.0.98), so a player's own choice afterwards is kept.
+    public bool AnimationLockReset { get; set; }
+    // Before a room animation starts, walk onto the room host's spot and facing, like Align to target.
+    public bool LineUpBeforeStart { get; set; } = true;
     // How fast Synastry's free cam flies, where 1 is normal. Set with the mouse wheel while flying.
     public float FreeCamSpeed { get; set; } = 1f;
     // Was the automatic line-up before bone align. Nothing reads it any more; it stays so older
@@ -51,9 +57,13 @@ public sealed class Configuration : IPluginConfiguration
     public Align.BodyPart BoneAlignPartner { get; set; } = Align.BodyPart.Vagina;
     public float BoneAlignGap { get; set; } = 0.02f;
     public bool BoneAlignFaceSameWay { get; set; } = true;
+    // Bone align between a penis and an opening bends the penis and opens the partner instead of
+    // moving your whole body.
+    public bool BoneAlignShaftOnly { get; set; } = true;
     // Repeat a remembered bone align by itself when the animation starts again.
     public bool AutoAlignFromMemory { get; set; } = true;
-    // Which part the contact IK aims for when more than one is in reach.
+    // Was the room's "Aim at" choice before bone align picked the opening. Nothing reads it any more;
+    // it stays so older settings files still load.
     public ContactPreference LineUpPreference { get; set; } = ContactPreference.Closest;
     // Bending bones to make couple animations meet.
     public bool BendShaft { get; set; }

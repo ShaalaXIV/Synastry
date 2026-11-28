@@ -7,7 +7,8 @@ internal enum ContactPart
     Anus,
 }
 
-/// <summary>Which part the shaft aims for. A mouth already in contact always wins.</summary>
+/// <summary>Was the room's "Aim at" choice; bone align picks the opening now. Kept so older settings
+/// files still load.</summary>
 public enum ContactPreference
 {
     Closest,

@@ -66,11 +66,12 @@ A room member can turn on **FREE USE mode** in the room panel to hand their role
 - Room members receive an actionable animation-activation popup, even while Synastry is closed, showing the complete local mod, with the sender's selected animation highlighted in purple. They can choose their own role or ignore the request.
 - Use the footer to run lobby-only **EmoteSync** manually. When Simple Heels is loaded, **Temp Offset** opens `/heels temp` and **Livepose** opens `/heels livepose`.
 - Right-click another player to send a room invitation they can accept or decline immediately.
-- Align your character with a nearby target before playback.
+- Align your character with a nearby target before playback. Room starts do it for you: during the countdown everyone walks onto the room host's spot and facing, so the animation starts lined up (skipped for animations everyone plays the same way, like group dances).
+- Change your animation speed, or match your target's. Your speed is shared with your room, so partners see it and can match it.
 - **Bone align** moves your drawn character so a body part meets a partner's, through Simple Heels, and remembers each animation it lined up so it can do it again by itself.
 - **Saved places** remember where an animation landed (a spot, a piece of furniture or next to a partner) and put you back there when you play it again.
 - **Free cam** flies the camera around (`/syn freecam`): Cammy's when Cammy is on, Synastry's own otherwise.
-- Your character stays still while a Synastry animation plays, so a stray key can't end it. Unlock with the lock button or `/syn unlock`.
+- Optionally turn on the **animation lock** in Settings: your character stays still while a Synastry animation plays, so a stray key can't end it. Double-tap any movement key to break free, or use the lock button or `/syn unlock`.
 - Offers and suggestions pop up even while Synastry is closed.
 - Optionally enable **Sit/doze anywhere** for furniture-free chair-sit and doze animations.
 - Choose an existing Penumbra mod-list folder for received animations, or create a dedicated folder without leaving Synastry.

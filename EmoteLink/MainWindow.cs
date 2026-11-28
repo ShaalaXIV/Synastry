@@ -196,7 +196,7 @@ public sealed partial class MainWindow : Window
             ImGui.SetCursorScreenPos(new Vector2(right - button * 5 - 16f * s, start.Y + (height - button) * 0.5f));
             if (IconButton("##unlock", button, Theme.LockIcon, true)) plugin.UnlockMovement();
             if (ImGui.IsItemHovered())
-                ImGui.SetTooltip("Your movement is locked so the animation doesn't end. Click to unlock, then move to end it.");
+                ImGui.SetTooltip("Your movement is locked so the animation doesn't end. Click to unlock, or double-tap a movement key.");
         }
         ImGui.SetCursorScreenPos(new Vector2(right - button * 4 - 12f * s, start.Y + (height - button) * 0.5f));
         if (IconButton("##freecam", button, Theme.CameraIcon, plugin.FreeCamOn)) plugin.ToggleFreeCam();
@@ -313,7 +313,8 @@ public sealed partial class MainWindow : Window
             ? "Animation speed isn't available for this game version."
             : plugin.IsAnimationSpeedMatching
                 ? "Following your target's speed. Stop matching to set it yourself."
-                : "Drag to change your animation speed: negative plays backwards, 0 freezes. Right-click resets it.");
+                : "Drag to change your animation speed: negative plays backwards, 0 freezes. Right-click resets it. " +
+                  "Your room sees it too.");
 
         ImGui.SameLine(0, 6f * s);
         var text = $"{speed}%";
@@ -333,7 +334,7 @@ public sealed partial class MainWindow : Window
                 plugin.ToggleAnimationSpeedMatch();
         });
         Tooltip(plugin.CanMatchAnimationSpeed || plugin.IsAnimationSpeedMatching
-            ? "Keep your animation speed matched to your target's."
+            ? "Keep your animation speed matched to your target's: the speed they set in Synastry, or in LivePose."
             : "Target another player to match their speed.");
     }
 
@@ -1083,21 +1084,6 @@ public sealed partial class MainWindow : Window
         if (Theme.Toggle("##free-use", "Free Use Mode", ref freeUse)) plugin.SetFreeUse(freeUse);
         Tooltip("Others in the room choose your role and options. They apply to that animation only and you're readied automatically. Private animations are never used.");
 
-        ImGui.Dummy(new Vector2(0, 4f * s));
-        Theme.Label("Aim at");
-        ImGui.SetNextItemWidth(MathF.Min(width, 200f * s));
-        var preference = plugin.LineUpPreference;
-        if (ImGui.BeginCombo("##aim-at", LineUpPreferenceName(preference)))
-        {
-            foreach (var option in Enum.GetValues<ContactPreference>())
-                if (ImGui.Selectable(LineUpPreferenceName(option), option == preference))
-                    plugin.SetLineUpPreference(option);
-            ImGui.EndCombo();
-        }
-        Tooltip("Which opening the penis aims at during a couple animation, when aiming is on in Settings.\n" +
-                "Animation's choice: the one the animation was made for (or the closest, if it has no contact map).\n" +
-                "Mouth, Vagina or Anus: your own choice, overriding the animation's. A mouth already in contact always wins.");
-
         DrawMeshPicker(width);
 
         ImGui.Dummy(new Vector2(0, 6f * s));
@@ -1125,7 +1111,7 @@ public sealed partial class MainWindow : Window
             if (Theme.Primary("Start now", width, 36f * s)) plugin.ForceSyncStart();
             Tooltip("Start everyone who has picked a role now, without waiting for the rest or for their files.");
         }
-        DrawUnlockButton(width);
+        if (plugin.LockMovementEnabled) DrawUnlockButton(width);
         if (Theme.Text("Unready", Theme.Soft)) plugin.CancelSyncReady();
         ImGui.SameLine();
         var leave = "Leave room";
@@ -1145,7 +1131,7 @@ public sealed partial class MainWindow : Window
             ImGui.PopStyleColor();
         });
         Tooltip(locked
-            ? "Frees your movement keys. Moving then ends the animation."
+            ? "Frees your movement keys. Moving then ends the animation. Double-tapping a movement key does the same."
             : "Your movement isn't locked. It locks while a Synastry animation plays, so a stray key can't end it.");
     }
 
@@ -1536,13 +1522,6 @@ public sealed partial class MainWindow : Window
         ImGui.PopStyleVar();
     }
 
-    private static string LineUpPreferenceName(ContactPreference preference) => preference switch
-    {
-        ContactPreference.Mouth => "Mouth",
-        ContactPreference.Vagina => "Vagina",
-        ContactPreference.Anus => "Anus",
-        _ => "Animation's choice"
-    };
 
     private static void DrawMinimizeIcon(ImDrawListPtr draw, Vector2 center, uint color)
     {

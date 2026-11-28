@@ -114,7 +114,7 @@ internal sealed class AutoAlign
     private void TickPending(PlayContext play, ICharacter local, bool ready, IReadOnlyList<ICharacter> partners,
         IReadOnlyList<ICharacter> settled, long now)
     {
-        if (!plugin.AutoAlignFromMemory || plugin.HasPartnerPlace || !align.Available)
+        if (!plugin.AutoAlignFromMemory || plugin.HasPartnerPlace)
         {
             Stop("");
             return;
@@ -132,6 +132,12 @@ internal sealed class AutoAlign
         }
 
         if (!partsFilled) partsFilled = Fill(entry);
+        // Moving you needs Simple Heels; bending the penis doesn't.
+        if (!entry.ShaftOnly && !align.Available)
+        {
+            Stop("");
+            return;
+        }
         var name = plugin.BoneAlignName(partner);
         if (!ready || plugin.IsSettlingIn)
         {
@@ -141,6 +147,13 @@ internal sealed class AutoAlign
         if (!plugin.IsPosing(partner) || settled.All(candidate => candidate.Address != partner.Address))
         {
             Waiting = $"Waiting for {name}'s animation to start.";
+            return;
+        }
+        // Nobody moves, so it doesn't matter who goes first: both sides aim the same way.
+        if (entry.ShaftOnly)
+        {
+            Stop("");
+            plugin.AimShaftFromMemory(entry, partner);
             return;
         }
         if (plugin.IsPlacing)
@@ -205,7 +218,12 @@ internal sealed class AutoAlign
         }
     }
 
-    private void Record(AlignRequest request, AlignResult result, ICharacter partner)
+    /// <summary>Remembers a penis-only align for the playing animation.</summary>
+    public void RememberShaftAim(BodyPart self, BodyPart partnerPart, ICharacter partner) =>
+        Record(new AlignRequest(self, partnerPart, 0f, null, null, AlignOrigin.Manual), new AlignResult(0f, Vector3.Zero),
+            partner, shaftOnly: true);
+
+    private void Record(AlignRequest request, AlignResult result, ICharacter partner, bool shaftOnly = false)
     {
         if (plugin.RememberablePlay is not { } play || plugin.LocalCharacter is not { } local) return;
         var own = plugin.AnimationHashOf(local);
@@ -222,6 +240,7 @@ internal sealed class AutoAlign
             RelativeYaw = result.RelativeYaw,
             ContactOffset = StoredVector.From(result.ContactOffset),
             PartnerHash = theirs,
+            ShaftOnly = shaftOnly,
             Updated = DateTime.UtcNow,
         };
         memory.Record(entry);
