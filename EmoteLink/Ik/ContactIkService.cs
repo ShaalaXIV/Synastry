@@ -68,6 +68,16 @@ internal sealed unsafe class ContactIkService : IDisposable
     private const float OpenWhenIn = 0.01f;
     private const float OpenMiss = 0.03f;
     private const float AimReportSeconds = 2.5f;
+    // Inside a partner the shaft can't be seen, but a long one pokes out of the back of the head, under
+    // the chin, or out of the belly or back. So past a little way in, the rest is drawn shorter and
+    // thinner: full size up to Keep (so the opening closes round it), squeezed after that and never past
+    // Limit, the tip down to TipSize. Distances are fractions of the receiver's hip width, so a small
+    // body has less room than a large one.
+    private const float MouthKeep = 0.09f, MouthLimit = 0.2f, MouthTipSize = 0.35f;
+    private const float BodyKeep = 0.3f, BodyLimit = 0.45f, BodyTipSize = 0.5f;
+    private const float InsideSqueeze = 0.35f;
+    // Hip width when the hip bones can't be read, and the range a read one is trusted in.
+    private const float DefaultHipWidth = 0.17f;
     private const float PalmTurnLimitDegrees = 40f;
     private const float EaseSeconds = 0.3f;
 
@@ -314,7 +324,13 @@ internal sealed unsafe class ContactIkService : IDisposable
             var deltas = SequentialDeltas(chain, final);
             shaftDeltas[key] = deltas;
             finalTip = final[^1];
-            work = () => ApplyChain(view, names, deltas, weight);
+            var room = RoomInside(view, goal.Receiver, part);
+            var opening = goal.Point;
+            work = () =>
+            {
+                ApplyChain(view, names, deltas, weight);
+                KeepInside(view, names, chain, deltas, weight, opening, direction, room);
+            };
         }
         else
         {
@@ -355,6 +371,57 @@ internal sealed unsafe class ContactIkService : IDisposable
             }
         }
         return work;
+    }
+
+    /// <summary>How far in the shaft stays full size, how far in it may reach at all, and how small its
+    /// tip gets, in the giver's own space, for this receiver's opening.</summary>
+    private static (float Keep, float Limit, float TipSize) RoomInside(SkeletonView giver, SkeletonView receiver, ContactPart part)
+    {
+        var hips = receiver.TryModel("j_asi_a_l", out var left) && receiver.TryModel("j_asi_a_r", out var right)
+            ? Vector3.Distance(left, right)
+            : DefaultHipWidth;
+        if (hips is < 0.06f or > 0.4f) hips = DefaultHipWidth;
+        var toGiver = hips * receiver.Scale / giver.Scale;
+        return part == ContactPart.Mouth
+            ? (MouthKeep * toGiver, MouthLimit * toGiver, MouthTipSize)
+            : (BodyKeep * toGiver, BodyLimit * toGiver, BodyTipSize);
+    }
+
+    /// <summary>
+    /// Keeps the part of the shaft that went in from poking out the far side: each joint past
+    /// <c>Keep</c> slides back along the shaft (never past <c>Limit</c>) and shrinks toward
+    /// <c>TipSize</c>, eased in and out with the aim. The opening hides it, so nothing visible changes.
+    /// </summary>
+    private static void KeepInside(SkeletonView view, string[] names, List<Vector3> chain, Quaternion[] deltas,
+        float weight, Vector3 opening, Vector3 direction, (float Keep, float Limit, float TipSize) room)
+    {
+        var eased = IkSolver.Ease(weight);
+        if (eased <= 0f) return;
+        // Where the joints are after the aim at this weight: the same turns ApplyChain just made.
+        var points = chain.ToArray();
+        for (var joint = 0; joint < deltas.Length; joint++)
+        {
+            var turn = Quaternion.Slerp(Quaternion.Identity, deltas[joint], eased);
+            for (var after = joint + 1; after < points.Length; after++)
+                points[after] = points[joint] + Vector3.Transform(points[after] - points[joint], turn);
+        }
+        foreach (var (index, position, size) in InsidePlacements(points, names.Length, opening, direction, room))
+            view.Place(names[index], points[index] + (position - points[index]) * eased, 1f + (size - 1f) * eased);
+    }
+
+    /// <summary>Where each joint past <c>Keep</c> goes and how big it is drawn. The base never moves.</summary>
+    internal static IEnumerable<(int Index, Vector3 Position, float Size)> InsidePlacements(
+        Vector3[] points, int joints, Vector3 opening, Vector3 direction, (float Keep, float Limit, float TipSize) room)
+    {
+        var span = MathF.Max(room.Limit - room.Keep, 1e-4f);
+        for (var i = 1; i < joints && i < points.Length; i++)
+        {
+            var depth = Vector3.Dot(points[i] - opening, direction);
+            if (depth <= room.Keep) continue;
+            var squeezed = MathF.Min(room.Keep + (depth - room.Keep) * InsideSqueeze, room.Limit);
+            var size = 1f - (1f - room.TipSize) * Math.Clamp((depth - room.Keep) / span, 0f, 1f);
+            yield return (i, points[i] - direction * (depth - squeezed), size);
+        }
     }
 
     /// <summary>No opening to aim at this frame: eases out, and tells the player when it's their aim.</summary>

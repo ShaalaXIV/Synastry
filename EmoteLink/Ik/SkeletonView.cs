@@ -18,6 +18,7 @@ internal sealed unsafe class SkeletonView
     private readonly Dictionary<string, (int Partial, int Index)> bones = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Vector3> positions = new(StringComparer.Ordinal);
     private readonly Dictionary<string, Quaternion> rotations = new(StringComparer.Ordinal);
+    private readonly Dictionary<string, Vector3> scales = new(StringComparer.Ordinal);
     private readonly Vector3 origin;
     private readonly Quaternion orientation;
     private readonly Vector3 scale;
@@ -73,6 +74,7 @@ internal sealed unsafe class SkeletonView
                 view.positions[wantedName] = new Vector3(model.Translation.X, model.Translation.Y, model.Translation.Z);
                 view.rotations[wantedName] = Quaternion.Normalize(
                     new Quaternion(model.Rotation.X, model.Rotation.Y, model.Rotation.Z, model.Rotation.W));
+                view.scales[wantedName] = new Vector3(model.Scale.X, model.Scale.Y, model.Scale.Z);
             }
         }
         return view;
@@ -166,5 +168,27 @@ internal sealed unsafe class SkeletonView
         transform->Translation.X += offset.X;
         transform->Translation.Y += offset.Y;
         transform->Translation.Z += offset.Z;
+    }
+
+    /// <summary>Moves a bone to a model-space position and draws it <paramref name="size"/> times the
+    /// size the animation gave it (a body mod's own scaling included), keeping its turn. Used only for
+    /// the part of a shaft hidden inside a partner, so it stays inside them; its children follow.</summary>
+    public void Place(string bone, Vector3 position, float size)
+    {
+        if (!bones.TryGetValue(bone, out var location) || !scales.TryGetValue(bone, out var scale)) return;
+        if (!float.IsFinite(position.LengthSquared()) || !float.IsFinite(size) || size <= 0f) return;
+        var skeleton = character->Skeleton;
+        if (skeleton is null || location.Partial >= skeleton->PartialSkeletonCount) return;
+        var pose = skeleton->PartialSkeletons[location.Partial].GetHavokPose(0);
+        if (pose is null || pose->Skeleton is null || location.Index >= pose->Skeleton->Bones.Length) return;
+        var transform = pose->AccessBoneModelSpace(location.Index, hkaPose.PropagateOrNot.Propagate);
+        if (transform is null) return;
+        transform->Translation.X = position.X;
+        transform->Translation.Y = position.Y;
+        transform->Translation.Z = position.Z;
+        // Set from the size it was read at, not added to: a parent's change may have reached it already.
+        transform->Scale.X = scale.X * size;
+        transform->Scale.Y = scale.Y * size;
+        transform->Scale.Z = scale.Z * size;
     }
 }
