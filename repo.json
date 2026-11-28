@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.98.0",
+    "AssemblyVersion": "1.0.99.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -18,9 +18,9 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.98/Synastry-1.0.98.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.98/Synastry-1.0.98.zip",
-    "Changelog": "Bone align is now in the room panel, above Start now, and Unlock movement is a full-width button right below Start now, so both are easy to find. 1.0.97 added big-pack listings, bone align with memory, saved places, free cam, the animation lock (/syn unlock) and popups that show while Synastry is closed, adapted from PoseKit by RaylaPetal with permission.",
-    "LastUpdate": "1795497676"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.99/Synastry-1.0.99.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.99/Synastry-1.0.99.zip",
+    "Changelog": "Room starts now line everyone up on the host's spot and facing during the countdown, like Align to target (turn it off in Settings). Bone align has a Penis only mode that bends the penis into the opening and opens it to fit instead of moving your body, and \"Aim at\" is gone. Your animation speed is shared with your room, so Match target works. The animation lock is now off by default; while on, double-tap a movement key to break free.",
+    "LastUpdate": "1795838582"
   }
 ]
