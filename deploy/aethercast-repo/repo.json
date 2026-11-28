@@ -26,7 +26,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.99.0",
+    "AssemblyVersion": "1.0.100.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -41,10 +41,10 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.99/Synastry-1.0.99.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.99/Synastry-1.0.99.zip",
-    "Changelog": "Room starts now line everyone up on the host's spot and facing during the countdown, like Align to target (turn it off in Settings). Bone align has a Penis only mode that bends the penis into the opening and opens it to fit instead of moving your body, and \"Aim at\" is gone. Your animation speed is shared with your room, so Match target works. The animation lock is now off by default; while on, double-tap a movement key to break free.",
-    "LastUpdate": "1795838582"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.100/Synastry-1.0.100.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.100/Synastry-1.0.100.zip",
+    "Changelog": "The penis now stays inside a partner once it goes in: past the lips, or a few centimetres into a vagina or anus, the rest is drawn shorter and thinner so it no longer pokes out of the head, chin, belly or back. 1.0.99 added lining up with the room host before a start, Penis only bone align, shared animation speed, and made the animation lock opt-in with double-tap to break free.",
+    "LastUpdate": "1795840115"
   },
   {
     "Author": "ShaalaXIV",
