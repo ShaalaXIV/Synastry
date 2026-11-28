@@ -3,7 +3,7 @@
     "Author": "ShaalaXIV",
     "Name": "Synastry",
     "InternalName": "EmoteLink",
-    "AssemblyVersion": "1.0.100.0",
+    "AssemblyVersion": "1.0.101.0",
     "Description": "A Penumbra animation launcher for organizing, pairing, and synchronizing multi-actor animations.",
     "ApplicableVersion": "any",
     "DalamudApiLevel": 15,
@@ -18,9 +18,9 @@
     ],
     "IsHide": false,
     "IsTestingExclusive": false,
-    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.100/Synastry-1.0.100.zip",
-    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.100/Synastry-1.0.100.zip",
-    "Changelog": "The penis now stays inside a partner once it goes in: past the lips, or a few centimetres into a vagina or anus, the rest is drawn shorter and thinner so it no longer pokes out of the head, chin, belly or back. 1.0.99 added lining up with the room host before a start, Penis only bone align, shared animation speed, and made the animation lock opt-in with double-tap to break free.",
-    "LastUpdate": "1795840115"
+    "DownloadLinkInstall": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.101/Synastry-1.0.101.zip",
+    "DownloadLinkUpdate": "https://github.com/ShaalaXIV/Synastry/releases/download/v1.0.101/Synastry-1.0.101.zip",
+    "Changelog": "Bodies are now measured by themselves in a room, yours and every partner's who hasn't shared one, so hands land on real skin from the first animation. Hands the animation pulls away fast, like a slap or a pat, now let go at once instead of staying glued. 1.0.100 keeps the penis inside a partner once it goes in; 1.0.99 added lining up before a start, Penis only bone align, shared speed and the opt-in animation lock.",
+    "LastUpdate": "1795840767"
   }
 ]
