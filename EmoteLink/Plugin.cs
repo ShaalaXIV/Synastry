@@ -1357,6 +1357,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         configuration.ActiveBodyMesh[name] = mesh;
         configuration.Save(PluginInterface);
         ownBody = null;
+        // Picked by hand: kept, not measured over, until you change what you wear.
+        if (!automatic && Objects.LocalPlayer is { } local)
+            meshChosenFor = Ik.BodyMeasurer.SignatureOf(penumbra.GetLoadedModels(local.ObjectIndex));
         ShareOwnProfile();
         Status = automatic ? $"Your body changed; using the {mesh} mesh." : $"Using the {mesh} mesh.";
     }
@@ -1398,12 +1401,14 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
 
     /// <summary>Measures this character's body from its loaded models into a saved mesh (the current
     /// one, or a new one when a name is given), uses it, and shares it with the room.</summary>
-    public void SetUpBody(string? newMesh = null)
+    /// <param name="automatic">Measured because nothing saved matches what you wear: quiet unless it
+    /// works, and your own adjustments carry over from the mesh you were using.</param>
+    public void SetUpBody(string? newMesh = null, bool automatic = false)
     {
         if (bodySetupRunning) return;
         if (Objects.LocalPlayer is not { } local || CurrentCharacterName() is not { } name)
         {
-            Status = "Log in to a character before setting up your body.";
+            if (!automatic) Status = "Log in to a character before setting up your body.";
             return;
         }
         var mesh = (newMesh ?? "").Trim();
@@ -1412,18 +1417,20 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         var capture = ReadBody(local.Address, local.ObjectIndex);
         if (capture is null)
         {
-            Status = "Couldn't read your body. Make sure Penumbra is running and your character is drawn.";
+            if (!automatic) Status = "Couldn't read your body. Make sure Penumbra is running and your character is drawn.";
             return;
         }
         bodySetupRunning = true;
-        Status = $"Measuring your {mesh} mesh...";
-        var tuning = MeshesOf(name).TryGetValue(mesh, out var existing) ? Ik.BodyProfile.FromJson(existing)?.Tuning : null;
+        if (!automatic) Status = $"Measuring your {mesh} mesh...";
+        var tuning = MeshesOf(name).TryGetValue(mesh, out var existing) ? Ik.BodyProfile.FromJson(existing)?.Tuning
+            : automatic ? OwnBody()?.Tuning : null;
         _ = Task.Run(() => Ik.BodyMeasurer.Measure(capture, DataManager, Log)).ContinueWith(task =>
         {
             bodySetupRunning = false;
             if (!task.IsCompletedSuccessfully)
             {
-                Status = "Body setup failed: " + task.Exception?.GetBaseException().Message;
+                if (automatic) Log.Warning(task.Exception?.GetBaseException(), "Measuring your body automatically failed.");
+                else Status = "Body setup failed: " + task.Exception?.GetBaseException().Message;
                 return;
             }
             var profile = task.Result;
@@ -1436,7 +1443,9 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
                 ownBody = profile;
                 ownBodyName = name;
                 ShareOwnProfile();
-                Status = $"{mesh} mesh set up: {DescribeBody(profile)}.";
+                Status = automatic
+                    ? $"Measured your body for the room: {DescribeBody(profile)}."
+                    : $"{mesh} mesh set up: {DescribeBody(profile)}.";
             });
         }, TaskScheduler.Default);
     }
@@ -1496,28 +1505,85 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         return meshes;
     }
 
-    /// <summary>Every few seconds, when the loaded models match a saved mesh exactly (the body, gear
-    /// and everything else that was on when it was measured), switch to that mesh.</summary>
-    private void RememberBodyMesh(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter local)
+    private const string AutoMeshName = "Auto";
+    private const long BodyCheckMs = 5000;
+    // A body is measured again at most this often, however often what's worn changes.
+    private const long RemeasureMs = 30000;
+    // A partner whose models weren't loaded yet is tried again this soon.
+    private const long MeasureRetryMs = 5000;
+    private long nextAutoMeasure;
+    private readonly Dictionary<string, long> nextPartnerMeasure = new(StringComparer.OrdinalIgnoreCase);
+    // What you wore when you picked a mesh yourself: kept until you change.
+    private string meshChosenFor = "";
+
+    /// <summary>
+    /// Every few seconds: switches to the saved mesh that matches what you're wearing, and while you're
+    /// in a room (or have a test partner) measures every body that isn't measured yet, so hands land on
+    /// real skin from the first animation. Yours goes into the Auto mesh when no saved one matches; a
+    /// room partner's is measured here unless their own Synastry shared it. Measuring reads the loaded
+    /// models in the background and takes about a second.
+    /// </summary>
+    private void TrackBodies()
     {
         var now = Environment.TickCount64;
-        if (now < nextMeshCheck || bodySetupRunning || CurrentCharacterName() is not { } name) return;
-        nextMeshCheck = now + 5000;
-        var meshes = MeshesOf(name);
-        if (meshes.Count < 2) return;
+        if (now < nextMeshCheck || Objects.LocalPlayer is not { } local) return;
+        nextMeshCheck = now + BodyCheckMs;
+        TrackOwnBody(local, sync.IsInRoom || testPartner.Active, now);
+        if (sync.IsInRoom) MeasureRoomPartners(local, now);
+    }
+
+    private void TrackOwnBody(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter local, bool measure, long now)
+    {
+        if (bodySetupRunning || CurrentCharacterName() is not { } name) return;
         var models = penumbra.GetLoadedModels(local.ObjectIndex);
         if (models.Count == 0) return;
         var signature = Ik.BodyMeasurer.SignatureOf(models);
-        var active = ActiveBodyMeshName;
-        foreach (var (mesh, json) in meshes)
-        {
-            if (mesh.Equals(active, StringComparison.OrdinalIgnoreCase)) continue;
+        if (signature == meshChosenFor || OwnBody()?.BodySignature == signature) return;
+        foreach (var (mesh, json) in MeshesOf(name))
             if (Ik.BodyProfile.FromJson(json)?.BodySignature == signature)
             {
                 SelectBodyMesh(mesh, true);
                 return;
             }
+        if (!measure || now < nextAutoMeasure) return;
+        nextAutoMeasure = now + RemeasureMs;
+        SetUpBody(AutoMeshName, automatic: true);
+    }
+
+    /// <summary>Measures room partners who haven't shared a body: once when they're first seen, and again
+    /// when they change what they wear.</summary>
+    private void MeasureRoomPartners(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter local, long now)
+    {
+        foreach (var player in Objects.OfType<Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter>())
+        {
+            var name = player.Name.TextValue;
+            if (player.Address == local.Address || !IsRoomMemberNamed(name)) continue;
+            if (sharedBodies.ContainsKey(name) || measuringBodies.Contains(name)) continue;
+            if (nextPartnerMeasure.TryGetValue(name, out var next) && now < next) continue;
+            if (measuredBodies.TryGetValue(name, out var measured))
+            {
+                var models = penumbra.GetLoadedModels(player.ObjectIndex);
+                if (models.Count == 0 || Ik.BodyMeasurer.SignatureOf(models) == measured.BodySignature) continue;
+                nextPartnerMeasure[name] = now + RemeasureMs;
+            }
+            else
+            {
+                nextPartnerMeasure[name] = now + MeasureRetryMs;
+            }
+            measuringBodies.Add(name);
+            MeasurePartner(player, name);
         }
+    }
+
+    /// <summary>A partner near your animation who hasn't been measured: measure them now.</summary>
+    private void MeasurePartnerSoon(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter player, string name)
+    {
+        var now = Environment.TickCount64;
+        if (sharedBodies.ContainsKey(name) || measuredBodies.ContainsKey(name) || measuringBodies.Contains(name)) return;
+        if (nextPartnerMeasure.TryGetValue(name, out var next) && now < next) return;
+        nextPartnerMeasure[name] = now + MeasureRetryMs;
+        measuringBodies.Add(name);
+        MeasurePartner(player, name);
     }
 
     internal static string DescribeBody(Ik.BodyProfile profile)
@@ -1582,7 +1648,6 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             return;
         }
         OwnBody();
-        RememberBodyMesh(local);
         var nearby = new List<Ik.IkActor> { WithMap(ToIkActor(local, true), local) };
         foreach (var player in Objects.OfType<Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter>())
         {
@@ -1592,8 +1657,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             var partner = IsRoomMemberNamed(name) || Targets.Target?.Address == player.Address;
             if (!partner) continue;
             nearby.Add(WithMap(ToIkActor(player, false), player));
-            if (!sharedBodies.ContainsKey(name) && !measuredBodies.ContainsKey(name) && measuringBodies.Add(name))
-                MeasurePartner(player, name);
+            MeasurePartnerSoon(player, name);
         }
         // Your test partner (a dressed minion) counts as a partner too.
         if (testPartner.Active)
@@ -1917,13 +1981,20 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         }, TaskScheduler.Default);
     }
 
+    /// <summary>Measures a partner in the background. Whatever the outcome, they can be measured again
+    /// (after a moment), so models that weren't loaded yet are tried once more.</summary>
     private void MeasurePartner(Dalamud.Game.ClientState.Objects.SubKinds.IPlayerCharacter player, string name)
     {
         var capture = ReadBody(player.Address, player.ObjectIndex);
-        if (capture is null) return;
+        if (capture is null)
+        {
+            measuringBodies.Remove(name);
+            return;
+        }
         _ = Task.Run(() => Ik.BodyMeasurer.Measure(capture, DataManager, Log)).ContinueWith(task =>
         {
             if (task.IsCompletedSuccessfully) measuredBodies[name] = task.Result;
+            Framework.RunOnFrameworkThread(() => measuringBodies.Remove(name));
         }, TaskScheduler.Default);
     }
 
@@ -4400,6 +4471,7 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
         testPartner.Tick();
         MeasureTestPartner();
         UpdateTestPartnerRoom();
+        TrackBodies();
         UpdateContactIk();
         preloader.Tick();
         UpdateAnimationSpeed();
@@ -4794,6 +4866,10 @@ public sealed unsafe partial class Plugin : IDalamudPlugin
             remoteReadyModKeys.Clear();
             roleSyncPending = true;
             bodySyncPending = true;
+            // Joining a room: measure everyone now rather than at the next check.
+            nextMeshCheck = 0;
+            nextAutoMeasure = 0;
+            nextPartnerMeasure.Clear();
             sharedBodies.Clear();
             sharedAims.Clear();
             sharedSpeeds.Clear();

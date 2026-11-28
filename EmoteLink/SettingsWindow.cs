@@ -231,10 +231,12 @@ public sealed class SettingsWindow : Window
         var profile = plugin.OwnBodyProfile;
         var mesh = plugin.ActiveBodyMeshName;
         Theme.Wrapped(profile is null
-            ? "Not set up yet. Setup reads your skeleton and the body models Penumbra has loaded for you, " +
-              "measures where your skin is, and shares it with your room so hands land on you and openings are found."
-            : $"{mesh} mesh: {Plugin.DescribeBody(profile)}. Measure again after changing body mods. " +
-              "Save other bodies (Male, Female, Futa…) from the Current mesh list in the room.", Theme.Soft);
+            ? "Not measured yet. In a room it happens by itself in about a second: it reads your skeleton and the " +
+              "body models Penumbra has loaded for you, measures where your skin is, and shares it with your room " +
+              "so hands land on you and openings are found. Partners who haven't shared theirs are measured too."
+            : $"{mesh} mesh: {Plugin.DescribeBody(profile)}. In a room you're measured again by itself (into the " +
+              "Auto mesh) when what you wear matches no saved mesh. Save other bodies (Male, Female, Futa…) from " +
+              "the Current mesh list in the room.", Theme.Soft);
         if (plugin.BodySetupRunning) ImGui.BeginDisabled();
         if (Theme.Primary(plugin.BodySetupRunning ? "Measuring..." : profile is null ? "Set up my body" : $"Measure {mesh} again"))
             plugin.SetUpBody();

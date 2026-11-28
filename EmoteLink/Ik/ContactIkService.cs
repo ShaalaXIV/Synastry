@@ -56,6 +56,13 @@ internal sealed unsafe class ContactIkService : IDisposable
     private const float HandEngageDistance = 0.03f;   // world yalms to skin
     private const float HandReleaseDistance = 0.06f;
     private const float HandHoldSeconds = 0.27f;      // eight animation frames at 30 fps
+    // A held hand the animation pulls away fast (a slap's wind-up, a pat) is let go at once and eases
+    // off quickly, rather than being held until 6 cm and easing off over 0.3 s. On the same hands:
+    // hands meant to stay on open the gap faster than 0.3 y/s in under 1% of held frames (p99 0.28),
+    // while hands that touch and leave depart at 0.6-1 y/s. Only once the palm is past 3 cm, so a
+    // hand that stays on keeps 99% of its contact.
+    private const float HandLeaveSpeed = 0.3f;        // world yalms per second, gap opening
+    private const float HandQuickEaseSeconds = 0.08f;
     // A palm this low (model space, above the feet) is propping on the floor, not on a partner.
     private const float FloorHeight = 0.12f;
     // The whole penis pivots at its root first, keeping the shape the animation gave it; only what that
@@ -127,6 +134,10 @@ internal sealed unsafe class ContactIkService : IDisposable
     {
         public bool Engaged;
         public float Waiting;
+        /// <summary>The animated palm's gap to skin last frame, for how fast it's leaving.</summary>
+        public float? LastGap;
+        /// <summary>Let go because the animation pulled away: ease off fast.</summary>
+        public bool QuickRelease;
         public (string Actor, string From, string To, float Radius)? Surface;
     }
     private volatile IReadOnlyList<IkActor> actors = [];
@@ -609,8 +620,13 @@ internal sealed unsafe class ContactIkService : IDisposable
             }
         }
 
-        // Engage only after staying within 3 cm for a moment; hold on until past 6 cm; never on the floor.
+        // Engage only after staying within 3 cm for a moment; hold on until past 6 cm, or until the
+        // animation pulls the hand away fast; never on the floor.
         var onFloor = palmModel.Y < FloorHeight;
+        var opening = best is { } now && state.LastGap is { } before && deltaSeconds > 0f
+            ? (now.Gap - before) / deltaSeconds
+            : 0f;
+        state.LastGap = best?.Gap;
         if (onFloor || best is null)
         {
             state.Engaged = false;
@@ -618,7 +634,9 @@ internal sealed unsafe class ContactIkService : IDisposable
         }
         else if (state.Engaged)
         {
-            state.Engaged = best.Value.Gap <= HandReleaseDistance * view.Scale;
+            var leaving = opening > HandLeaveSpeed * view.Scale && best.Value.Gap > HandEngageDistance * view.Scale;
+            state.Engaged = best.Value.Gap <= HandReleaseDistance * view.Scale && !leaving;
+            if (leaving) state.QuickRelease = true;
         }
         else if (best.Value.Gap <= HandEngageDistance * view.Scale)
         {
@@ -629,9 +647,14 @@ internal sealed unsafe class ContactIkService : IDisposable
         {
             state.Waiting = 0f;
         }
-        if (state.Engaged && best is { } held) state.Surface = held.Surface;
+        if (state.Engaged && best is { } held)
+        {
+            state.Surface = held.Surface;
+            state.QuickRelease = false;
+        }
 
-        var weight = Ease(key, state.Engaged ? 1f : 0f, deltaSeconds);
+        var weight = Ease(key, state.Engaged ? 1f : 0f, deltaSeconds,
+            !state.Engaged && state.QuickRelease ? HandQuickEaseSeconds : EaseSeconds);
         if (weight <= 0f)
         {
             state.Surface = null;
@@ -769,9 +792,9 @@ internal sealed unsafe class ContactIkService : IDisposable
 
     // ---- Helpers --------------------------------------------------------------------------------
 
-    private float Ease(string key, float target, float deltaSeconds)
+    private float Ease(string key, float target, float deltaSeconds, float seconds = EaseSeconds)
     {
-        var weight = IkSolver.Approach(weights.GetValueOrDefault(key), target, deltaSeconds, EaseSeconds);
+        var weight = IkSolver.Approach(weights.GetValueOrDefault(key), target, deltaSeconds, seconds);
         if (weight <= 0f) weights.Remove(key);
         else weights[key] = weight;
         return weight;
